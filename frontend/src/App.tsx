@@ -4,9 +4,10 @@ import {
   Library,
   MessagesSquare,
   PanelLeftClose,
+  PanelLeftOpen,
   Settings,
 } from "lucide-react";
-import { useEffect, type ReactElement } from "react";
+import { useEffect, type CSSProperties, type ReactElement } from "react";
 
 import { IconButton } from "./components";
 import { SideRow } from "./components/ui/SideRow";
@@ -300,10 +301,9 @@ function Shell(): ReactElement {
          * git-helper's sidebar): a flat column on the window canvas — no
          * card of its own; the content island stays the carded surface. Its
          * header clears the native invisible-titlebar band (pt-6: the first
-         * 25px of the window drag); the collapse toggle sits on the rail
-         * header's right, and when collapsed the row stays as
-         * a quiet spacer — the expand control moves above the sessions
-         * rail's SESSIONS label (SessionRail hosts it). */}
+         * 25px of the window drag) and carries the collapse toggle while
+         * expanded; collapsed, the way back floats on the rail/content
+         * boundary — to the menu's right, not on the menu itself. */}
         <aside
           data-testid="nav-rail"
           className={cn(
@@ -351,6 +351,28 @@ function Shell(): ReactElement {
           </div>
         </aside>
 
+        {/* Collapsed-rail expand: an island-chrome button in the content
+         * island's top-left corner on every menu EXCEPT chat — chat hosts
+         * its own in the sessions rail (above the SESSIONS label), whose
+         * column starts higher and would collide with a corner button.
+         * The button sits in the window's invisible titlebar band (first
+         * 25px), so it opts out of window dragging via
+         * `--wails-draggable: nodrag`; worst case on a runtime without
+         * per-element opt-out, one 28px corner spot stops dragging the
+         * window. lg-only, mirroring the rail's own visibility. */}
+        {railCollapsed && menu !== "chat" && (
+          <button
+            type="button"
+            aria-label="Expand navigation"
+            data-testid="btn-toggle-rail"
+            onClick={toggleRail}
+            style={{ "--wails-draggable": "nodrag" } as CSSProperties}
+            className="absolute left-[100px] top-[14px] z-20 hidden h-7 w-7 items-center justify-center rounded-md border border-line bg-surface text-muted shadow-sm transition-colors hover:text-fg lg:flex"
+          >
+            <PanelLeftOpen aria-hidden="true" className="size-3.5" />
+          </button>
+        )}
+
         {/* The content island runs the full work-area height. Chat mounts
          * the sessions rail INSIDE it as its left column — the island's
          * border separates the two (design D3's chrome-level rail is
@@ -391,30 +413,16 @@ function Shell(): ReactElement {
 
         {/* The strip overlays the island's top band at lg+ as a read-only
          * desk copy (pointer-events-none; nothing interactive may sit in
-         * the titlebar drag zone it overlays). Textless on chat — the
-         * header below carries the live state — only the view title on
-         * agents, schedules, and settings. Below lg the header bar above takes over; on the web
-         * the wordmark leads. */}
+         * the titlebar drag zone it overlays). Textless on every menu:
+         * each view names itself with a PaneHeader inside the island —
+         * settings included, so no strip copy can collide with the
+         * collapsed rail's corner expand button. Below lg the header bar
+         * above takes over; on the web the wordmark leads the band. */}
         <div
           data-testid="titlebar-strip"
-          className={cn(
-            "pointer-events-none absolute inset-x-0 top-0 z-10 hidden h-10 select-none items-center gap-2 lg:flex",
-            isDesktopApp ? (railCollapsed ? "ps-24" : "ps-20") : "ps-4"
-          )}
+          className="pointer-events-none absolute inset-x-0 top-0 z-10 hidden h-10 select-none items-center gap-2 ps-4 lg:flex"
         >
           {!isDesktopApp && <Wordmark className="text-lg" />}
-          {menu === "agents" && (
-            <div className="font-display font-bold">Agents</div>
-          )}
-          {menu === "schedules" && (
-            <div className="font-display font-bold">Schedules</div>
-          )}
-          {menu === "knowledge" && (
-            <div className="font-display font-bold">Knowledge</div>
-          )}
-          {menu === "settings" && (
-            <div className="font-display font-bold">Settings</div>
-          )}
         </div>
       </div>
     </div>

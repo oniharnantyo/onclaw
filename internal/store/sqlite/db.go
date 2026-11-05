@@ -52,6 +52,8 @@ type Store struct {
 	templates store.DocumentTemplateStore
 	models    *providerModelStore
 	memory    *memoryStore
+	groups    *agentGroupStore
+	vault     *vaultItemStore
 }
 
 // Open connects to (creating if necessary) the SQLite database at path,
@@ -96,6 +98,15 @@ func openWith(ctx context.Context, path string, migs []migration) (store.Store, 
 	if err := migrate(ctx, db, migs, backfill); err != nil {
 		_ = db.Close()
 		return nil, fmt.Errorf("open store %s: migrate: %w", path, err)
+	}
+	// The retired browser tool's allowlist migration
+	// (rebrand-browser-use-system-mcp task 4.2) runs once against the fully
+	// migrated schema — it only reads the agents table's JSON columns, which
+	// exist since 000001, so it needs no migration boundary. A failure fails
+	// the open like a migration failure.
+	if err := migrateBrowserAllowlists(ctx, db); err != nil {
+		_ = db.Close()
+		return nil, fmt.Errorf("open store %s: %w", path, err)
 	}
 	// The template store roots at the data directory — the database's parent,
 	// mirroring the resolved layout exactly like the backfill's workspaces
@@ -145,6 +156,8 @@ func newStore(db *sql.DB, dataDir string) *Store {
 	s.templates = store.NewDocumentTemplateStore(dataDir)
 	s.models = &providerModelStore{db}
 	s.memory = &memoryStore{db}
+	s.groups = &agentGroupStore{db}
+	s.vault = &vaultItemStore{db}
 	return s
 }
 
@@ -170,6 +183,8 @@ func (s *Store) DocumentPresets() store.DocumentPresetStore     { return s.prese
 func (s *Store) DocumentTemplates() store.DocumentTemplateStore { return s.templates }
 func (s *Store) ProviderModels() store.ProviderModelStore       { return s.models }
 func (s *Store) Memory() store.MemoryStore                      { return s.memory }
+func (s *Store) Groups() store.AgentGroupStore                  { return s.groups }
+func (s *Store) VaultItems() store.VaultItemStore               { return s.vault }
 
 func (s *Store) Create(ctx context.Context, model *store.ProviderModel) error {
 	return s.models.Create(ctx, model)

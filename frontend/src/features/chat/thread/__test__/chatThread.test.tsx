@@ -524,6 +524,31 @@ describe("ChatThread (task 3.1)", () => {
 
     await h.unmount();
   });
+
+  it("exposes the transcript as a live log, busy while a turn streams (task 4.1, D8)", async () => {
+    const entries = streamingTurn();
+    const h = await renderThread(entries);
+
+    const log = document.querySelector("[data-testid='transcript-log']");
+    expect(log).not.toBeNull();
+    expect(log!.getAttribute("role")).toBe("log");
+
+    // Idle: no busy state. Streaming (store busy): the log flips busy, and
+    // the streamed text lands inside the live region.
+    expect(log!.getAttribute("aria-busy")).toBeNull();
+    await act(async () => {
+      useChatStore.setState({ busy: true, activeSessionID: "s1" });
+    });
+    expect(log!.getAttribute("aria-busy")).toBe("true");
+    expect(log!.textContent).toContain("streamed answer");
+
+    await act(async () => {
+      useChatStore.setState({ busy: false });
+    });
+    expect(log!.getAttribute("aria-busy")).toBeNull();
+
+    await h.unmount();
+  });
 });
 
 describe("the user prompt (port of the legacy Transcript suite)", () => {
@@ -544,6 +569,37 @@ describe("the user prompt (port of the legacy Transcript suite)", () => {
     expect(row?.className).toContain("justify-end");
     expect(prompt.getAttribute("data-role")).toBe("user");
     expect(prompt.textContent).toContain("hello there");
+
+    await h.unmount();
+  });
+
+  it("an unbreakable run wraps inside the prompt's column, not past it", async () => {
+    const h = await renderThread(
+      fold(
+        ev(Kind.KindUserMessage, {
+          text:
+            "check https://example.atlassian.net/wiki/spaces/DEVOPS/pages/5456822273/" +
+            "Anomali+Aktivitas+Transaksi+Cash+Out+Bank+yang+Terindikasi+Fraud" +
+            "+Unauthorized+Access?atl auth=ZCI6IjE3OTM4NDY3ODM5ODEiLCJzb3VyY2Ui",
+          turn_id: "t1",
+        }),
+        ev(Kind.KindAssistantMessage, { text: "hi", turn_id: "t1" })
+      )
+    );
+
+    // The two-level flex chain must carry both wrap constraints: the column
+    // may shrink below its content's min width (min-w-0), and the bubble
+    // breaks anywhere (overflow-wrap: anywhere — break-words alone does not
+    // shrink min-content, which is what pushed this bubble past the edge).
+    const prompt = screen.getByTestId("entry-user");
+
+    expect(prompt.className).toContain("min-w-0");
+    expect(prompt.className).toContain("max-w-[85%]");
+
+    const bubble = screen.getByTestId("user-text");
+
+    expect(bubble.className).toContain("wrap-anywhere");
+    expect(bubble.className).toContain("break-words");
 
     await h.unmount();
   });

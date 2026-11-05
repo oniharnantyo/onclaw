@@ -101,9 +101,12 @@ func ParseServerOptions() ServerHostOptions {
 // (/wails/events, /wails/stream/ws) — through the bearer-token gate and
 // reverse-proxies to the Wails handler, closing the auth gap noted in
 // spike-server-mode.md (AssetOptions.Middleware does not cover the WS
-// endpoints). It returns when the public server shuts down (signal or
-// error); the caller's defer closes the assembled app.
-func RunServerHost(ctx context.Context, host *App, emitter services.Emitter, assets http.Handler, opts ServerHostOptions) error {
+// endpoints). Extras are host-provided services appended to the bound set:
+// types only the entrypoint can construct (main-package types) that the
+// shared frontend's binding surface needs the generator to discover under
+// the server tag set. It returns when the public server shuts down (signal
+// or error); the caller's defer closes the assembled app.
+func RunServerHost(ctx context.Context, host *App, emitter services.Emitter, assets http.Handler, opts ServerHostOptions, extras ...application.Service) error {
 	if opts.Addr == "" {
 		opts.Addr = "127.0.0.1:8080"
 	}
@@ -120,23 +123,30 @@ func RunServerHost(ctx context.Context, host *App, emitter services.Emitter, ass
 	os.Setenv("WAILS_SERVER_HOST", "127.0.0.1")
 	os.Setenv("WAILS_SERVER_PORT", strconv.Itoa(internalPort))
 
+	// The bound service set, closed by the host-provided extras (services
+	// the shared frontend's binding surface needs the generator to discover
+	// under this tag set, but that only the entrypoint can construct —
+	// main-package types; bound inert in server mode).
+	bound := []application.Service{
+		application.NewService(host.Services.AppInfo),
+		application.NewService(host.Services.Agents),
+		application.NewService(host.Services.Chat),
+		application.NewService(host.Services.Groups),
+		application.NewService(host.Services.Settings),
+		application.NewService(host.Services.Gateway),
+		application.NewService(host.Services.Schedule),
+		application.NewService(host.Services.Knowledge),
+		application.NewService(host.Services.Channels),
+		application.NewService(services.NewClipboardService()),
+	}
+	bound = append(bound, extras...)
 	wailsApp := application.New(application.Options{
 		Name:        services.AppName,
 		Description: "A local agent gateway that keeps running in the background",
 		Assets: application.AssetOptions{
 			Handler: assets,
 		},
-		Services: []application.Service{
-			application.NewService(host.Services.AppInfo),
-			application.NewService(host.Services.Agents),
-			application.NewService(host.Services.Chat),
-			application.NewService(host.Services.Settings),
-			application.NewService(host.Services.Gateway),
-			application.NewService(host.Services.Schedule),
-			application.NewService(host.Services.Knowledge),
-			application.NewService(host.Services.Channels),
-			application.NewService(services.NewClipboardService()),
-		},
+		Services: bound,
 		Server: application.ServerOptions{
 			Host: "127.0.0.1",
 			Port: internalPort,

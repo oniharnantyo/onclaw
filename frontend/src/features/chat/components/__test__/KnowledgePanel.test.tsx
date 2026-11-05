@@ -232,6 +232,22 @@ describe("KnowledgePanel — upload", () => {
 
     await waitFor(() => screen.getByTestId("knowledge-upload-input"));
 
+    // The description input is labeled, and the name survives typing.
+    const description = screen.getByLabelText(
+      "Document description"
+    ) as HTMLInputElement;
+
+    expect(description.getAttribute("data-testid")).toBe(
+      "knowledge-upload-description"
+    );
+
+    await act(async () => {
+      fireEvent.change(description, { target: { value: "incident notes" } });
+    });
+    expect(
+      (screen.getByLabelText("Document description") as HTMLInputElement).value
+    ).toBe("incident notes");
+
     await act(async () => {
       fireEvent.change(screen.getByTestId("knowledge-upload-description"), {
         target: { value: "incident notes" },

@@ -268,6 +268,51 @@ describe("DocumentConfigDialog", () => {
     ).toBe("Client Report");
   });
 
+  it("moves the format selection with the arrow keys and labels the panel by the active tab", async () => {
+    const user = userEvent.setup();
+
+    // The settings render helper leaves prior containers mounted; the tab
+    // hook reaches tabs by document id, so drop them first to keep the
+    // document-id lookup scoped to this render.
+    document.body.innerHTML = "";
+
+    const { container, getByTestId, getByRole, findByTestId } = await renderUI(
+      <DocumentConfigDialog onClose={vi.fn()} />
+    );
+
+    await findByTestId("document-config-dialog");
+
+    const pdf = getByTestId("document-tab-pdf");
+
+    // Roving tabindex: only the active format tab is in the tab order.
+    expect(pdf.getAttribute("tabindex")).toBe("0");
+    expect(getByTestId("document-tab-docx").getAttribute("tabindex")).toBe(
+      "-1"
+    );
+
+    pdf.focus();
+    await user.keyboard("{ArrowRight}");
+
+    const docx = getByTestId("document-tab-docx");
+
+    expect(docx.getAttribute("aria-selected")).toBe("true");
+    expect(docx.getAttribute("tabindex")).toBe("0");
+    expect(pdf.getAttribute("aria-selected")).toBe("false");
+    expect(document.activeElement).toBe(docx);
+
+    // The preset body is the panel labelled by the selected format tab.
+    const panel = container.querySelector(
+      `[role="tabpanel"][aria-labelledby="${docx.id}"]`
+    );
+
+    expect(panel).toBeTruthy();
+
+    // The tabs live inside the tablist container.
+    const tablist = getByRole("tablist", { name: "Document formats" });
+
+    expect(tablist.contains(docx)).toBe(true);
+  });
+
   it("shows a stored default naming a missing preset as none", async () => {
     presets = [entry("Invoice", JSON.stringify({ schema_version: 1 }))];
     defaults = { pdf: "Ghost" };

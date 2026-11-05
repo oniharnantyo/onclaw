@@ -19,6 +19,14 @@
  * A persisted telegram origin (add-telegram-channel 9.2) badges the row with
  * a small paper-plane chip — channel prompts are visually distinguishable in
  * the transcript; user-origin and legacy rows (empty origin) render bare.
+ *
+ * The row is a two-level flex chain (justify-end row → max-w-85% column →
+ * bubble), so an unbreakable run — a long URL — would otherwise size the
+ * item's min-content width beyond the column and spill the bubble past the
+ * viewport edge (`overflow-wrap: break-word` does not shrink min-content).
+ * `min-w-0` on the column and `wrap-anywhere` on the bubble let the run
+ * break inside the 85% cap instead (overflow-wrap: anywhere affects
+ * min-content sizing).
  */
 import type { ReactElement } from "react";
 
@@ -90,7 +98,7 @@ export function ChatUserMessage(): ReactElement {
       <MessagePrimitive.Root
         data-role="user"
         data-testid="entry-user"
-        className="flex max-w-[85%] flex-col items-end gap-1.5"
+        className="flex min-w-0 max-w-[85%] flex-col items-end gap-1.5"
       >
         {isTelegram && (
           <div
@@ -115,7 +123,7 @@ export function ChatUserMessage(): ReactElement {
         {hasText && (
           <div
             data-testid="user-text"
-            className="rounded-xl bg-[color-mix(in_oklab,var(--fg)_7%,transparent)] px-4 py-2 text-sm leading-relaxed whitespace-pre-wrap break-words text-fg"
+            className="rounded-xl bg-[color-mix(in_oklab,var(--fg)_7%,transparent)] px-4 py-2 text-sm leading-relaxed whitespace-pre-wrap break-words wrap-anywhere text-fg"
           >
             <MessagePrimitive.Parts components={TEXT_COMPONENTS} />
           </div>

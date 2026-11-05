@@ -23,7 +23,9 @@ elevation grammar retired with change `replace-daisyui-with-styled-components`.
 - **Accent:** single blue `#2f6feb` (`--accent`, `--accent-on: #ffffff` as its
   label color; hover/active derive via `color-mix` toward black 8%/14%).
   Status hues are the only other colors: `--success: #17a34a`,
-  `--warn: #eab308`, `--danger: #dc2626`. `--brand: #d97757` exists solely as
+  `--warn: #eab308`, `--danger: #dc2626`. Status hues reach the UI only
+  through contract tokens; palette utilities must not encode status colors,
+  vendored surfaces included. `--brand: #d97757` exists solely as
   the theme-invariant brand-mark fill (`lib/brandMarks.tsx`) — it is not a UI
   color.
 - **Shape:** radii 8/12/16 px (`--radius-sm/md/lg`) plus `--radius-pill`.
@@ -55,7 +57,9 @@ Tailwind v4 `@theme` names so utilities resolve to the contract.
 | `--accent-on` `#ffffff`; `--accent-hover`/`--accent-active` (`color-mix` toward black) | `--color-accenton` | `text-accenton`, `hover:bg-[var(--accent-hover)]` |
 | `--accent-text` alias → `#6b93f2` (dark lifted tier) | `--color-accenttext` | `text-accenttext` |
 | `--success` `#17a34a` / `--warn` `#eab308` / `--danger` `#dc2626` | `--color-success/warn/danger` | `bg-success`, `text-danger` |
-| `--danger-text` alias → `#f87171` (dark lifted tier) | `--color-dangertext` | `text-dangertext` |
+| `--warn-text` `#b45309` → `#eab308` (lifted tier) | `--color-warntext` | `text-warntext` |
+| `--success-text` `#15803d` → `#17a34a` (lifted tier) | `--color-successtext` | `text-successtext` |
+| `--danger-text` `#b91c1c` → `#f87171` (lifted tier) | `--color-dangertext` | `text-dangertext` |
 | `--font-body` / `--font-display` (both Inter Variable) / `--font-mono` (JetBrains Mono Variable) | `--font-sans`, `--font-mono` | `font-sans`, `font-mono` |
 | `--radius-sm/md/lg` 8/12/16 px, `--radius-pill` | `--radius-sm/md/lg` | `rounded-sm`, `rounded-md`, `rounded-lg` |
 

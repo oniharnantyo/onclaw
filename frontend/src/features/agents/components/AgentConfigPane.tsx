@@ -35,6 +35,7 @@ import { Toggle } from "../../../components/ui/Toggle";
 import { cn } from "../../../lib/cn";
 import { client } from "../../../lib/client";
 import { toast } from "../../../lib/toasts";
+import { useTablist } from "../../../lib/useTablist";
 import { catalogContextWindow } from "../modelContextWindow";
 import { parseOptionalInt } from "../parseOptionalInt";
 import { PROMPTS_STATUS } from "../types";
@@ -86,6 +87,16 @@ export function AgentConfigPane({
 }: AgentConfigPaneProps): ReactElement {
   const [tab, setTab] = useState<TabKey>("identity");
   const [providers, setProviders] = useState<ProviderView[]>([]);
+
+  // The tab strip rides the shared tablist grammar (fix-ui-audit-findings
+  // 3.2, design D7b): roving tabindex + arrow/Home/End movement (arrows stop
+  // at the ends), each panel labelled by its tab.
+  const { tab: tabProps, panel: panelProps } = useTablist<TabKey>({
+    idPrefix: "agent-config",
+    ids: TABS.map((t: { key: TabKey }): TabKey => t.key),
+    active: tab,
+    onChange: setTab,
+  });
 
   const [modelCapabilities, setModelCapabilities] = useState<{
     providerID: string;
@@ -572,8 +583,7 @@ export function AgentConfigPane({
             <button
               key={t.key}
               type="button"
-              role="tab"
-              aria-selected={tab === t.key}
+              {...tabProps(t.key)}
               data-testid={`config-tab-${t.key}`}
               onClick={(): void => setTab(t.key)}
               className={cn(
@@ -590,7 +600,7 @@ export function AgentConfigPane({
 
         {/* --- Identity: the stored procedural face plus immutable context. */}
         <div
-          role="tabpanel"
+          {...panelProps("identity")}
           data-testid="config-section-identity"
           className={cn("max-w-xl space-y-6", tab !== "identity" && "hidden")}
         >
@@ -678,7 +688,7 @@ export function AgentConfigPane({
 
         {/* --- Model: provider/model pick plus Advanced collapse (Design D6: stored rows only). */}
         <div
-          role="tabpanel"
+          {...panelProps("model")}
           data-testid="config-section-model"
           className={cn("max-w-xl space-y-6", tab !== "model" && "hidden")}
         >
@@ -869,7 +879,7 @@ export function AgentConfigPane({
                       type="button"
                       data-testid="btn-reset-config-context-window"
                       onClick={resetContextWindow}
-                      className="text-[11px] font-medium text-accent transition-colors hover:text-[var(--accent-hover)]"
+                      className="text-[11px] font-medium text-accenttext transition-colors hover:text-[var(--accent-hover)]"
                     >
                       Reset to auto
                     </button>
@@ -935,7 +945,7 @@ export function AgentConfigPane({
 
         {/* --- Capabilities: chip clouds for tools/skills, opt-in rows for MCP, and subagents switch. */}
         <div
-          role="tabpanel"
+          {...panelProps("capabilities")}
           data-testid="config-section-capabilities"
           className={cn(
             "max-w-xl space-y-6",
@@ -945,9 +955,9 @@ export function AgentConfigPane({
           <MicroLabel>Capabilities</MicroLabel>
 
           <div data-testid="config-section-tools">
-            <h4 className="mb-1.5 block text-[12px] font-medium text-fg2">
+            <h3 className="mb-1.5 block text-[12px] font-medium text-fg2">
               Built-in Tools
-            </h4>
+            </h3>
             <p className="mb-2 text-xs text-muted">
               {allToolsOn
                 ? "All catalog tools are enabled (default). Deselecting any tool switches to an explicit selection."
@@ -970,9 +980,9 @@ export function AgentConfigPane({
           </div>
 
           <div data-testid="config-section-skills">
-            <h4 className="mb-1.5 block text-[12px] font-medium text-fg2">
+            <h3 className="mb-1.5 block text-[12px] font-medium text-fg2">
               Skills
-            </h4>
+            </h3>
             {skills.length === 0 ? (
               <p className="text-xs text-muted">No skills in the registry.</p>
             ) : (
@@ -998,9 +1008,9 @@ export function AgentConfigPane({
               task 4.1): promote copies into the global library, delete
               removes the workspace copy only — the library is untouched. */}
           <div data-testid="config-section-workspace-skills">
-            <h4 className="mb-1.5 block text-[12px] font-medium text-fg2">
+            <h3 className="mb-1.5 block text-[12px] font-medium text-fg2">
               This agent&apos;s skills
-            </h4>
+            </h3>
             <p className="mb-2 text-xs text-muted">
               Promoting copies a skill into the global library; the agent keeps
               its personal copy, which still shadows the promoted one.
@@ -1066,9 +1076,9 @@ export function AgentConfigPane({
           </div>
 
           <div data-testid="config-section-mcp">
-            <h4 className="mb-1.5 block text-[12px] font-medium text-fg2">
+            <h3 className="mb-1.5 block text-[12px] font-medium text-fg2">
               MCP Servers
-            </h4>
+            </h3>
             <p className="text-xs text-muted">
               Every enabled server is available by default; turn servers off to
               restrict this agent (stored on save). To remove a server from
@@ -1114,7 +1124,7 @@ export function AgentConfigPane({
 
         {/* --- Hooks: per-agent assignment in evaluation order. */}
         <div
-          role="tabpanel"
+          {...panelProps("hooks")}
           data-testid="config-section-hooks"
           className={cn("max-w-xl space-y-4", tab !== "hooks" && "hidden")}
         >
@@ -1218,7 +1228,7 @@ export function AgentConfigPane({
 
         {/* --- Prompts: the file-rail document editors. */}
         <div
-          role="tabpanel"
+          {...panelProps("prompts")}
           className={cn("max-w-xl", tab !== "prompts" && "hidden")}
         >
           <IdentitySection agent={agent} onAgentRefreshed={onSaved} />

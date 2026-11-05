@@ -25,6 +25,7 @@ import type {
   ImageMessagePartComponent,
 } from "@assistant-ui/react";
 import { cn } from "@/lib/utils";
+import { useFocusTrap } from "@/components/ui/useFocusTrap";
 import { hostOf, safeHref } from "../utils/href";
 
 const extensionForMimeType = (mimeType?: string): string => {
@@ -400,6 +401,8 @@ function ImageZoom({ src, alt = "Image preview", children }: ImageZoomProps) {
   const closeRef = useRef<HTMLButtonElement>(null);
   const overlayRef = useRef<HTMLDivElement>(null);
 
+  useFocusTrap(overlayRef, isOpen);
+
   const handleOpen = useCallback(() => setIsOpen(true), []);
   const handleClose = useCallback(() => {
     setIsOpen(false);
@@ -412,20 +415,6 @@ function ImageZoom({ src, alt = "Image preview", children }: ImageZoomProps) {
       if (e.key === "Escape") {
         handleClose();
         return;
-      }
-      if (e.key !== "Tab") return;
-      const focusables = overlayRef.current?.querySelectorAll<HTMLElement>(
-        'a[href], button:not([disabled]), [tabindex]:not([tabindex="-1"])',
-      );
-      const first = focusables?.[0];
-      const last = focusables?.[focusables.length - 1];
-      if (!first || !last) return;
-      if (e.shiftKey && document.activeElement === first) {
-        e.preventDefault();
-        last.focus();
-      } else if (!e.shiftKey && document.activeElement === last) {
-        e.preventDefault();
-        first.focus();
       }
     };
     document.addEventListener("keydown", handleKeyDown);

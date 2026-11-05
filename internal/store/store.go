@@ -34,6 +34,13 @@ type Store interface {
 	ProviderModels() ProviderModelStore
 	ProviderModelStore
 	Memory() MemoryStore
+	// Groups returns the agent-group aggregate store
+	// (add-agent-groups design D1).
+	Groups() AgentGroupStore
+	// VaultItems returns the vault item store
+	// (add-browser-login-handover design D5): metadata in the clear,
+	// secrets as opaque sealed blobs.
+	VaultItems() VaultItemStore
 	// WithTx runs fn atomically: every write fn makes through the Store it
 	// receives commits together, or — when fn returns an error — rolls
 	// back, leaving no partial rows.

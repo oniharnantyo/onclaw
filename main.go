@@ -16,13 +16,12 @@ import (
 	"runtime"
 	"sync/atomic"
 
-	"github.com/wailsapp/wails/v3/pkg/application"
-	"github.com/wailsapp/wails/v3/pkg/events"
-
 	"github.com/oniharnantyo/buddies/internal/cli"
 	"github.com/oniharnantyo/buddies/internal/desktop"
 	"github.com/oniharnantyo/buddies/internal/gateway"
 	"github.com/oniharnantyo/buddies/internal/services"
+	"github.com/wailsapp/wails/v3/pkg/application"
+	"github.com/wailsapp/wails/v3/pkg/events"
 )
 
 // Wails uses Go's `embed` package to embed the frontend files into the
@@ -42,8 +41,11 @@ var appIcon []byte
 var trayIcon []byte
 
 // init registers the typed custom events the services emit so the binding
-// generator produces their frontend definitions (the per-session event names
-// are dynamic and intentionally unregistered).
+// generator produces their frontend definitions. The per-session event names
+// (SessionEventName) are dynamic and intentionally unregistered; the
+// per-group event name (GroupEventName) is dynamic the same way, and its
+// payload registers under the documented "<id>" placeholder so the generator
+// emits the GroupEvent type for the frontend.
 func init() {
 	application.RegisterEvent[services.GatewayStateEvent](services.EventGatewayState)
 	application.RegisterEvent[services.MCPOAuthCompletedEvent](services.EventMCPOAuthCompleted)
@@ -52,6 +54,8 @@ func init() {
 	application.RegisterEvent[services.TurnsChangedEvent](services.EventTurnsChanged)
 	application.RegisterEvent[services.ChannelChangedEvent](services.EventChannelChanged)
 	application.RegisterEvent[services.ChannelStateEvent](services.EventChannelState)
+	application.RegisterEvent[services.GroupsChangedEvent](services.EventGroupsChanged)
+	application.RegisterEvent[services.GroupEvent]("group:<id>:event")
 }
 
 // wailsEmitter adapts services.Emitter onto the Wails event bus. The app
@@ -133,6 +137,7 @@ func runDesktop(ctx context.Context, app *cli.App, emitter *wailsEmitter, opener
 			application.NewService(app.Services.AppInfo),
 			application.NewService(app.Services.Agents),
 			application.NewService(app.Services.Chat),
+			application.NewService(app.Services.Groups),
 			application.NewService(app.Services.Settings),
 			application.NewService(app.Services.Gateway),
 			application.NewService(app.Services.Schedule),

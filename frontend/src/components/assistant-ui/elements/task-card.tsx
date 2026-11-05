@@ -33,7 +33,7 @@ export function TaskStateIcon({
       <span
         aria-hidden
         className={cn(
-          "flex size-5 shrink-0 items-center justify-center rounded-md border border-emerald-500/25 bg-emerald-500/10 text-emerald-600 dark:text-emerald-400",
+          "flex size-5 shrink-0 items-center justify-center rounded-md border border-success/25 bg-success/10 text-successtext",
           className
         )}
       >
@@ -160,7 +160,7 @@ export function TaskCard({
         </span>
         <span className="shrink-0 font-mono text-[11px]">
           {state === "done" ? (
-            <span className="text-emerald-600 dark:text-emerald-400 font-medium">
+            <span className="text-successtext font-medium">
               done
             </span>
           ) : state === "working" ? (

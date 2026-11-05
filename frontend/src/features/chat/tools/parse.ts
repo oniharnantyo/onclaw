@@ -93,6 +93,68 @@ export function parseJSONResult(
   }
 }
 
+/** The inner `text` of a single-text MCP `content` envelope, or null when
+ * the value is not exactly that shape (multi-part, wrong-typed, absent). */
+function textEnvelopeInner(value: Json): string | null {
+  if (!isObject(value)) return null;
+
+  const content = value.content;
+
+  if (!Array.isArray(content) || content.length !== 1) return null;
+
+  const entry = content[0];
+
+  if (!isObject(entry) || entry.type !== "text" || !isString(entry.text)) {
+    return null;
+  }
+
+  return entry.text;
+}
+
+/**
+ * Unwraps one level of the MCP JSON-RPC envelope the backend historically
+ * recorded around tool results (`{"content":[{"type":"text","text":…}]}`):
+ * when the value is exactly that shape, the inner text is returned — parsed
+ * as JSON when it parses, as the raw string otherwise. Any other value (a
+ * pre-unwrapped payload, a multi-part envelope, a non-object) passes through
+ * unchanged; no recursive unwrapping.
+ */
+export function unwrapMCPEnvelope(value: Json): Json {
+  const inner = textEnvelopeInner(value);
+
+  if (inner === null) return value;
+
+  return parseJSONResult(inner) ?? inner;
+}
+
+/**
+ * The parsed result payload for display: `parseJSONResult` followed by one
+ * `unwrapMCPEnvelope` level, so historically recorded MCP envelopes render
+ * their payload while pre-unwrapped results pass through untouched.
+ */
+export function parseToolResult(
+  result: string | undefined | null
+): ParsedResult | null {
+  const parsed = parseJSONResult(result);
+
+  return parsed === null ? null : unwrapMCPEnvelope(parsed);
+}
+
+/**
+ * The result text for verbatim/pretty display panes: when the delivered
+ * string is exactly the single-text MCP envelope, the inner text replaces it;
+ * anything else — including a pre-unwrapped payload — returns unchanged.
+ */
+export function unwrapMCPResultText(result: string): string {
+  const parsed = parseJSONResult(result);
+
+  if (parsed === null) return result;
+
+  const inner = textEnvelopeInner(parsed);
+
+  return inner === null ? result : inner;
+}
+
 /**
  * Reads a string field off parsed arguments with a default. A wrong-typed or
  * missing field degrades to the default instead of throwing.

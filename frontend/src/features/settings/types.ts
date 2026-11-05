@@ -16,6 +16,7 @@ export type PaneKey =
   | "providers"
   | "integrations"
   | "channels"
+  | "browseruse"
   | "skills"
   | "tools"
   | "hooks"

@@ -8,6 +8,7 @@ import { Textarea } from "../../../components/ui/Textarea";
 import { Alert } from "../../../components/ui/Alert";
 import { MicroLabel } from "../../../components/ui/MicroLabel";
 import { client } from "../../../lib/client";
+import { useTablist } from "../../../lib/useTablist";
 
 /** One entry of the Identity file rail: rail label, workspace file name, caption. */
 interface PromptDoc {
@@ -79,6 +80,16 @@ export function IdentitySection({
 }: IdentitySectionProps): ReactElement {
   const [selected, setSelected] = useState<PromptDoc["key"]>("identity");
   const [docs, setDocs] = useState<PromptDocuments | null>(null);
+
+  // The file rail is a real tablist (fix-ui-audit-findings 3.2, design D7b):
+  // roving tabindex + arrow/Home/End movement (arrows stop at the ends), the
+  // editor labelled by the selected rail entry.
+  const { tab, panel } = useTablist<PromptDoc["key"]>({
+    idPrefix: "prompt-doc",
+    ids: PROMPT_DOCS.map((d: PromptDoc): PromptDoc["key"] => d.key),
+    active: selected,
+    onChange: setSelected,
+  });
 
   const [drafts, setDrafts] = useState<DocDrafts>({
     identity: "",
@@ -191,7 +202,7 @@ export function IdentitySection({
         {status === "generating" && (
           <span
             data-testid="prompts-generating"
-            className="text-xs font-medium text-accent"
+            className="text-xs font-medium text-accenttext"
             role="status"
           >
             Generating prompts...
@@ -227,8 +238,7 @@ export function IdentitySection({
             <button
               key={doc.key}
               type="button"
-              role="tab"
-              aria-selected={selected === doc.key}
+              {...tab(doc.key)}
               data-testid={`prompt-file-${doc.key}`}
               onClick={() => setSelected(doc.key)}
               className={`flex shrink-0 items-center justify-between gap-2 rounded-md px-2.5 py-2 text-left transition-colors ${
@@ -246,7 +256,7 @@ export function IdentitySection({
         </div>
 
         {/* Editor for the selected document, reflecting the workspace file. */}
-        <div className="min-w-0">
+        <div {...panel(selected)} className="min-w-0">
           <div className="flex items-center justify-between gap-2">
             <label
               htmlFor={`config-prompt-${selectedDoc.key}`}

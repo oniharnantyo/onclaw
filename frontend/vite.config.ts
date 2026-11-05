@@ -223,6 +223,26 @@ export default defineConfig({
     },
     options: { typeAware: true, typeCheck: true },
   },
+  build: {
+    rollupOptions: {
+      output: {
+        // Default chunking, deliberately (design D6 fallback, live smoke
+        // 2026-11-02): explicit vendor groups — whether the `manualChunks`
+        // shim or Rolldown `codeSplitting.groups` — kept producing static
+        // import cycles across chunks (vendor-radix binding base-ui's
+        // eval-time CJS requires back to the entry; vendor-assistant-ui
+        // importing first-party kit that imports it back; beautiful-mermaid
+        // split against its own dist facade). A cycle evaluates some module
+        // body while a top-level binding is still uninitialized, which kills
+        // boot ("require_shim is not a function"). Rolldown's default
+        // chunking is cycle-safe by construction, and the on-demand goal
+        // never needed groups: the dynamic boundaries (mermaid renderer,
+        // markdown-text chains, shiki loaders) are what keep renderers out
+        // of the entry. Gate: .team/smoke/fix-ui-audit-findings/
+        // scan_chunks.py — static-cycle scan + entry size + markers.
+      },
+    },
+  },
   server: {
     host: "127.0.0.1",
     port: Number(process.env.WAILS_VITE_PORT) || 9245,

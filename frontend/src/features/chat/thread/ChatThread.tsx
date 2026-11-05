@@ -14,7 +14,7 @@
  */
 import { ArrowDown } from "lucide-react";
 import { useEffect, useState } from "react";
-import type { ReactElement } from "react";
+import type { ReactElement, ReactNode } from "react";
 import { createPortal } from "react-dom";
 
 import {
@@ -28,6 +28,8 @@ import {
 import { cn } from "../../../lib/cn";
 import { RunSurfaces } from "../run/RunSurfaces";
 import { useChatStore, type ExtendedChatStore } from "../store";
+import { GroupActivity } from "../../groups/GroupActivity";
+import { GroupStoppedNotice } from "../../groups/GroupStoppedNotice";
 import { ChatAssistantMessage } from "./ChatAssistantMessage";
 import { ChatUserMessage } from "./ChatUserMessage";
 import { ConversationMapRail } from "./ConversationMapRail";
@@ -99,7 +101,7 @@ function ThreadIntro(): ReactElement | null {
   if (loadingSession) {
     return (
       <div
-        aria-label="Loading session"
+        aria-busy="true"
         className="mx-auto flex w-full flex-col gap-3"
         data-testid="transcript-skeleton"
       >
@@ -143,6 +145,25 @@ function JumpToLatest(): ReactElement | null {
   );
 }
 
+/** The live transcript wrapper inside the viewport: `role="log"` (implicit
+ * polite live region, insertion-ordered announcements) with `aria-busy`
+ * flipped while a turn streams, so screen readers follow the growing
+ * transcript without announcing every sibling re-render. */
+function TranscriptLog({ children }: { children: ReactNode }): ReactElement {
+  const isRunning = useAuiState((s: AssistantState) => s.thread.isRunning);
+
+  return (
+    <div
+      role="log"
+      aria-busy={isRunning || undefined}
+      className="mx-auto flex w-full max-w-3xl flex-col gap-3 px-4 py-4"
+      data-testid="transcript-log"
+    >
+      {children}
+    </div>
+  );
+}
+
 /** The transcript. The viewport subtree owns the viewport context, so the
  * map rail (the composition's sticky overlay form, pinned to the viewport's
  * right edge) and the jump pill mount inside it; the run card needs no
@@ -176,14 +197,16 @@ export function ChatThread(): ReactElement {
           className="od-scroll relative min-h-0 min-w-0 flex-1 overflow-y-auto scroll-smooth"
           data-testid="transcript"
         >
-          <div className="mx-auto flex w-full max-w-3xl flex-col gap-3 px-4 py-4">
+          <TranscriptLog>
             <LoadEarlierSlot />
             <ThreadIntro />
             <div className="flex flex-col gap-4">
               <ThreadPrimitive.Messages components={MESSAGE_COMPONENTS} />
               <TurnActivity />
+              <GroupActivity />
+              <GroupStoppedNotice />
             </div>
-          </div>
+          </TranscriptLog>
           {/* The map renders into the overlay layer, OUTSIDE the scrollport:
            * its zero-height sticky rail inside the scrollport inflates the
            * scroll height by one viewport, which parks the auto-scroll in

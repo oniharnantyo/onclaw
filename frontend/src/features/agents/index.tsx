@@ -158,7 +158,7 @@ export default function AgentsView(): ReactElement {
 
         {error && (
           <p
-            className="m-3 text-sm text-danger"
+            className="m-3 text-sm text-dangertext"
             role="alert"
             data-testid="agents-error"
           >
@@ -168,7 +168,11 @@ export default function AgentsView(): ReactElement {
 
         <div className="od-scroll flex-1 overflow-y-auto p-2">
           {loading ? (
-            <div className="space-y-2 p-2" aria-label="Loading agents">
+            <div
+              className="space-y-2 p-2"
+              aria-busy="true"
+              data-testid="agents-loading"
+            >
               {[0, 1, 2].map((i: number) => (
                 <div key={i} className="flex items-center gap-3 rounded-md p-2">
                   <Skeleton className="size-9 rounded-full" />
@@ -224,7 +228,7 @@ export default function AgentsView(): ReactElement {
                     key={agent.ID}
                     role="button"
                     tabIndex={0}
-                    aria-selected={isSelected}
+                    aria-pressed={isSelected}
                     data-testid={`agent-item-${agent.ID}`}
                     onClick={() => setSelectedID(agent.ID)}
                     onKeyDown={(e: ReactKeyboardEvent<HTMLDivElement>) => {
@@ -295,7 +299,7 @@ export default function AgentsView(): ReactElement {
 
                     {failed && (
                       <div
-                        className="mt-1 flex items-center justify-between gap-1 rounded bg-danger/10 p-1.5 text-[11px] text-danger"
+                        className="mt-1 flex items-center justify-between gap-1 rounded bg-danger/10 p-1.5 text-[11px] text-dangertext"
                         data-testid={`agent-item-failed-${agent.ID}`}
                       >
                         <div className="min-w-0 flex-1">
@@ -308,7 +312,7 @@ export default function AgentsView(): ReactElement {
                         </div>
                         <button
                           type="button"
-                          className="shrink-0 rounded border border-danger/40 bg-surface px-1.5 py-0.5 text-[10px] font-semibold text-danger transition-colors hover:bg-danger hover:text-accenton"
+                          className="shrink-0 rounded border border-danger/40 bg-surface px-1.5 py-0.5 text-[10px] font-semibold text-dangertext transition-colors hover:bg-danger hover:text-accenton"
                           data-testid={`agent-retry-${agent.ID}`}
                           aria-label={`Retry prompt generation for ${agent.Name}`}
                           onClick={(e: ReactMouseEvent<HTMLButtonElement>) => {

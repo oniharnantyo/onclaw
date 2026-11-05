@@ -15,18 +15,20 @@
  * at a time (rail-local state, design D4): the active agent's; any context
  * move (a session click, create-and-open, the boot restore) overwrites the
  * expansion through an effect on `activeAgentID`, while clicking a collapsed
- * row expands it without touching the store — the open conversation is
- * unchanged. The expanded group lists that agent's sessions as compact 26px
+ * row expands it and clicking the expanded row collapses it (round 11) —
+ * without touching the store either way, the open conversation unchanged.
+ * The expanded group lists that agent's sessions as compact 26px
  * rows (design D11's density carries over) — title truncated, the
  * last-activity relative time right-aligned on the same line (the critique
  * wave restored it: title-only rows left dozens of sessions
- * indistinguishable) — the four most recent plus the agent's active session
- * when it is older, behind a progressive "Load more sessions" control that
- * appends batches of eight and retires once the agent's sessions are
- * exhausted; once the revealed history outgrows the column, the group's rows
- * scroll in a region of their own beneath the pinned agent row — the agent
- * row never scrolls away, only the session list does — while a search lists
- * every match across all agents with the column scrolling as one, matching
+ * indistinguishable) — the five most recent plus the agent's active session
+ * when it is older (round 10: four → five), behind a progressive "Load more
+ * sessions" control that appends batches of eight and retires once the
+ * agent's sessions are exhausted. Every group's list grows to its content —
+ * an open group renders at natural height and the column scrolls as one
+ * (round 10: the old fill-leftover-height pinning reserved a large empty
+ * region under a short list, which read as a dead gap between groups) — and
+ * a search lists every match across all agents the same way, matching
  * groups expanded, the rest collapsed rows (the per-group window counts
  * reset when a search starts). The tree reads as a tree (impeccable
  * hierarchy pass): the group row carries the container voice — medium-weight
@@ -40,8 +42,10 @@
  * flight shows the running indicator inline: a spinner before the title with
  * the title pulsing, both static under prefers-reduced-motion. Each entry
  * carries a hover delete affordance (spec chat-view "Sessions organized per
- * agent") — a 24px hit area around the small glyph (design D6) — and a
- * type-agnostic confirmation dialog guards it; the backend's refusal for a
+ * agent") — a 24px hit area around the small glyph (design D6) that
+ * cross-fades with the relative time, the two trading the trailing slot on
+ * hover/focus (round 11) — and a type-agnostic confirmation dialog guards
+ * it; the backend's refusal for a
  * session with a turn in flight surfaces as a danger toast.
  * Navigation stays on the shell rail; selecting a session under any agent
  * swaps the whole conversation context through `selectAgent`. Hidden below
@@ -66,17 +70,29 @@ import { useEffect, useRef, useState } from "react";
 import type {
   ChangeEvent,
   CSSProperties,
+  KeyboardEvent as ReactKeyboardEvent,
   PointerEvent as ReactPointerEvent,
   ReactElement,
 } from "react";
-import { ChevronDown, PanelLeftOpen, Plus, Search, Trash2 } from "lucide-react";
+import {
+  ChevronDown,
+  PanelLeftOpen,
+  Plus,
+  Search,
+  Trash2,
+  Users,
+} from "lucide-react";
 
 import type {
   Agent,
+  AgentGroup,
   Session,
 } from "../../../../bindings/github.com/oniharnantyo/buddies/internal/store/models";
+import { useNavStore } from "../../../stores/nav";
+
 import { AgentAvatar, IconButton } from "../../../components";
 import { ConfirmDialog } from "../../../components/ConfirmDialog";
+import { GroupSettingsPane } from "../../groups/GroupSettingsPane";
 import { cn } from "../../../lib/cn";
 import { SectionLabel } from "../../../components/ui/SectionLabel";
 import { SideRow } from "../../../components/ui/SideRow";
@@ -84,7 +100,6 @@ import { StatusDot } from "../../../components/ui/StatusDot";
 import { toast } from "../../../lib/toasts";
 import { relativeTime } from "../../../lib/relativeTime";
 import { useLocalNumberPreference } from "../../../lib/useLocalPreference";
-import { useNavStore } from "../../../stores/nav";
 import { useChatStore, type ExtendedChatStore } from "../store";
 import type { ChatStore } from "../types";
 
@@ -96,9 +111,10 @@ const MIN_RAIL_WIDTH = 176;
 
 const MAX_RAIL_WIDTH = 400;
 
-/** A group's initial window (design D4): the four most recent sessions,
- * plus the agent's active one when it is older than those. */
-const RECENT_CAP = 4;
+/** A group's initial window (design D4, round 10: four → five): the five
+ * most recent sessions, plus the agent's active one when it is older than
+ * those. */
+const RECENT_CAP = 5;
 
 /** Each "Load more sessions" activation appends the next batch (design D4). */
 const LOAD_MORE_BATCH = 8;
@@ -139,6 +155,9 @@ export function SessionRail(): ReactElement {
     (s: ExtendedChatStore) => s.runningSessions
   );
 
+  // The groups section (add-agent-groups design D9): the store's group list,
+  // the open group's id (the active row), and the groups with a member turn
+  // in flight (the busy dots).
   const railCollapsed = useNavStore(
     (s: ReturnType<typeof useNavStore.getState>) => s.railCollapsed
   );
@@ -147,17 +166,27 @@ export function SessionRail(): ReactElement {
     (s: ReturnType<typeof useNavStore.getState>) => s.toggleRail
   );
 
+  const chatGroups = useChatStore((s: ExtendedChatStore) => s.groups);
+  const activeGroupID = useChatStore((s: ExtendedChatStore) => s.activeGroupID);
+  const busyGroups = useChatStore((s: ExtendedChatStore) => s.busyGroups);
+  const openGroup = useChatStore((s: ExtendedChatStore) => s.openGroup);
+
   const selectAgent = useChatStore((s: ChatStore) => s.selectAgent);
   const newChat = useChatStore((s: ChatStore) => s.newChat);
   const deleteSession = useChatStore((s: ExtendedChatStore) => s.deleteSession);
   const [query, setQuery] = useState("");
   // The session whose delete confirmation is open (one at a time).
   const [deleting, setDeleting] = useState<Session | null>(null);
+  // The create-group dialog's open flag (spec "Create a group with
+  // members"): the Groups header's "+" hosts the pane's create mode; the
+  // dialog closes on success (the store opens the created conversation) and
+  // cancel/dismiss leaves nothing behind.
+  const [creatingGroup, setCreatingGroup] = useState(false);
 
   // Accordion state (design D4): rail-local, anchored to the active agent —
   // exactly one group expanded at a time. A context move (activeAgentID
-  // change) overwrites it via the effect below; a collapsed-row click sets
-  // it without touching the chat store.
+  // change) overwrites it via the effect below; a row click toggles it
+  // (round 11) without touching the chat store.
   const [expandedAgentID, setExpandedAgentID] = useState<string | null>(
     activeAgentID
   );
@@ -242,6 +271,30 @@ export function SessionRail(): ReactElement {
     window.addEventListener("pointermove", move);
     window.addEventListener("pointerup", stop);
     window.addEventListener("pointercancel", stop);
+  };
+
+  // Keyboard resize (fix-ui-audit-findings 3.3, design D7c): the handle is
+  // focusable and reports the rail's width; the handle rides the rail's
+  // right edge, so widening follows the edge rightward — ArrowRight grows
+  // the rail, ArrowLeft shrinks it — by the same 4px step the drag's pointer
+  // moves use, Home/End jump to the clamps. setWidth is the same
+  // persist-on-set path a drag release takes, so the width lands in the
+  // preference too.
+  const onResizeKeyDown = (e: ReactKeyboardEvent<HTMLDivElement>): void => {
+    const target =
+      e.key === "ArrowRight"
+        ? width + 4
+        : e.key === "ArrowLeft"
+          ? width - 4
+          : e.key === "Home"
+            ? MIN_RAIL_WIDTH
+            : e.key === "End"
+              ? MAX_RAIL_WIDTH
+              : null;
+
+    if (target === null) return;
+    e.preventDefault();
+    setWidth(Math.min(MAX_RAIL_WIDTH, Math.max(MIN_RAIL_WIDTH, target)));
   };
 
   // Client-side filter only: narrowing the list must never move the active
@@ -397,10 +450,11 @@ export function SessionRail(): ReactElement {
       }
       data-testid="chat-session-rail"
     >
-      {/* Rail expand control (nav store): when the nav rail is collapsed its
-          80px shell is reserved for the traffic lights, so the way back
-          lives here — a row above the SESSIONS label. lg-only: below lg the
-          nav rail is hidden entirely, so there is nothing to expand. */}
+      {/* Chat hosts the rail expand control in its own column (the shell's
+          island-corner button would collide with this label — the sessions
+          column starts higher than the other views' cleared bands): a row
+          above the SESSIONS label, when the nav rail is collapsed. lg-only:
+          below lg the nav rail is hidden, so there is nothing to expand. */}
       {railCollapsed && (
         <div className="hidden items-center px-3 lg:flex lg:pt-4">
           <IconButton
@@ -435,10 +489,11 @@ export function SessionRail(): ReactElement {
           />
         </label>
       </div>
-      {/* The column is a flex stack of groups: the open group grows to the
-          height left over and scrolls its rows internally (see `pinned`
-          below), the collapsed rows stay fixed, and the container's own
-          scroll is the fallback for a search view or more agents than fit. */}
+      {/* The column is a flex stack of groups: every group grows to its
+          content — an open group's list renders at natural height and the
+          column scrolls as one (round 10: the old pinned fill-leftover-
+          height grammar reserved a large empty region under a short list,
+          which read as a dead gap between groups). */}
       <div
         className="od-scroll flex min-h-0 flex-1 flex-col overflow-y-auto px-1.5 pb-2"
         data-testid="session-list"
@@ -453,12 +508,6 @@ export function SessionRail(): ReactElement {
             ? visibleSessions(group)
             : plainWindow(group);
 
-          // Non-search grammar opens exactly one group: it pins its agent
-          // row and scrolls its session rows in the column's leftover
-          // height. A search expands every matching group at natural height
-          // instead — the column scrolls as one.
-          const pinned = expanded && !searching;
-
           return (
             // Tight inside a group, generous between groups (impeccable
             // hierarchy pass): every group after the first gets a small top
@@ -467,12 +516,7 @@ export function SessionRail(): ReactElement {
               key={group.agent.ID}
               className={cn(
                 "flex min-h-0 flex-col",
-                group !== groups[0] && "mt-1.5",
-                pinned &&
-                  // The tiny floor keeps the pinned region (and its
-                  // scrollbar) usable even when many collapsed agents crowd
-                  // the column and the outer container must scroll too.
-                  "min-h-[52px] flex-1"
+                group !== groups[0] && "mt-1.5"
               )}
             >
               {/* Group row (design D5): the container voice — medium-weight
@@ -483,7 +527,9 @@ export function SessionRail(): ReactElement {
                   button, so no nested-button HTML) sits always-visible in
                   the trailing corner the row reserves via padding, beside
                   the metadata — no hover gating on the primary action.
-                  Clicking the row expands the group and nothing else. */}
+                  Clicking the row toggles the group (round 11): a collapsed
+                  row expands it, the expanded row collapses it — and nothing
+                  else moves (no context change, the conversation stays). */}
               <div
                 className="group relative [&>button:first-child]:pe-9 [&_.truncate]:font-medium [&_.truncate]:text-fg"
                 data-testid={`agent-group-${group.agent.ID}`}
@@ -492,6 +538,7 @@ export function SessionRail(): ReactElement {
                   odId={`chat-agent-group-${group.agent.ID}`}
                   label={group.agent.Name || group.agent.ID}
                   expanded={expanded}
+                  ariaControls={`chat-agent-group-content-${group.agent.ID}`}
                   icon={
                     <AgentAvatar
                       id={group.agent.ID}
@@ -531,7 +578,11 @@ export function SessionRail(): ReactElement {
                       />
                     </span>
                   }
-                  onClick={() => setExpandedAgentID(group.agent.ID)}
+                  onClick={() =>
+                    setExpandedAgentID((prev: string | null): string | null =>
+                      prev === group.agent.ID ? null : group.agent.ID
+                    )
+                  }
                 />
                 <button
                   type="button"
@@ -544,25 +595,28 @@ export function SessionRail(): ReactElement {
                   <Plus aria-hidden="true" className="size-4" />
                 </button>
               </div>
-              {/* Accordion reveal (design D8): the group's content
-                  expands/collapses through a grid-template-rows 0fr ↔ 1fr
-                  transition on the shared motion grammar — no raw height
-                  animation. The grid row item (min-h-0, overflow-hidden)
-                  does the clipping so the 0fr track collapses fully while
-                  the scroll region inside it keeps working. The rows stay
-                  mounted through both states — bounded by the group's own
-                  load-more window, never every session — so the 1fr→0fr
-                  close animates with inherent content height instead of
-                  snapping empty; a collapsed group's rows carry inert +
-                  aria-hidden (toggled in the commit, React-18-safe), so
-                  they are neither focusable nor announced (display:none
-                  would kill the transition). Reduced motion needs no
-                  branch: the global contract collapses every transition to
-                  opacity-only. */}
+              {/* Accordion reveal (design D8, round 10 revision): the
+                  group's content expands into a grid-template-rows track —
+                  0fr collapsed, content-sized when open — with the clip in
+                  the row item (min-h-0, overflow-hidden) so the 0fr track
+                  collapses fully. The rows stay mounted through both states
+                  — bounded by the group's own load-more window, never every
+                  session — so a collapsed group's rows carry inert +
+                  aria-hidden (toggled in the commit, React-18-safe): neither
+                  focusable nor announced. The HEIGHT transition rides the
+                  close only: with the pinned fill-leftover-height grammar
+                  gone, an open track is content-sized in an auto-height
+                  grid, and Chrome resolves a transitioning 1fr track
+                  against zero free space — it stuck at 0px and clipped the
+                  rows away (live-found round 10). Opening therefore lands
+                  immediately, and the close keeps the 1fr→0fr animation.
+                  Reduced motion needs no branch: the global contract
+                  collapses every transition to opacity-only. */}
               <div
                 className={cn(
-                  "grid transition-[grid-template-rows] duration-[var(--motion-base)] ease-[var(--ease-standard)]",
-                  pinned && "min-h-0 flex-1"
+                  "grid",
+                  !expanded &&
+                    "transition-[grid-template-rows] duration-[var(--motion-base)] ease-[var(--ease-standard)]"
                 )}
                 style={{ gridTemplateRows: expanded ? "1fr" : "0fr" }}
               >
@@ -575,18 +629,9 @@ export function SessionRail(): ReactElement {
                       // and assistive tech while the track animates.
                       if (el) el.toggleAttribute("inert", !expanded);
                     }}
-                    className={cn(
-                      pinned
-                        ? // The open group's rows scroll in the height the
-                          // column has left over while the agent row above
-                          // stays pinned — only the session list scrolls.
-                          "flex-1 overflow-y-auto od-scroll"
-                        : // Collapsed track: rows ride the 0fr clip; a search
-                          // lists matches at natural height and the column
-                          // scrolls as one.
-                          "shrink-0"
-                    )}
+                    className="shrink-0"
                     aria-hidden={!expanded || undefined}
+                    id={`chat-agent-group-content-${group.agent.ID}`}
                     data-testid={`group-sessions-${group.agent.ID}`}
                   >
                     {visible.map((session: Session) => {
@@ -617,7 +662,7 @@ export function SessionRail(): ReactElement {
                             label={session.Title || "Untitled session"}
                             sub={
                               <span
-                                className="shrink-0 text-[11px] tabular-nums text-muted"
+                                className="shrink-0 text-[11px] tabular-nums text-muted transition-opacity group-hover:opacity-0 group-focus-within:opacity-0"
                                 data-testid={`session-meta-${session.ID}`}
                               >
                                 {relativeTime(session.LastActivityAt)}
@@ -642,16 +687,18 @@ export function SessionRail(): ReactElement {
                           />
                           {/* Delete affordance (task 6.5): a sibling of the
                             row button, so no nested-button HTML; revealed on
-                            hover/focus. The 24px hit area wraps the small
-                            glyph rather than enlarging it (design D6, task
-                            1.3). */}
+                            hover/focus as the relative time fades out of the
+                            same trailing slot (round 11) — the two trade the
+                            corner instead of stacking. The 24px hit area
+                            wraps the small glyph rather than enlarging it
+                            (design D6, task 1.3). */}
                           <button
                             type="button"
                             aria-label={`Delete ${session.Title || "Untitled session"}`}
                             title="Delete session"
                             data-testid={`session-delete-${session.ID}`}
                             onClick={() => setDeleting(session)}
-                            className="absolute end-1.5 top-1/2 flex h-6 w-6 -translate-y-1/2 items-center justify-center rounded text-muted opacity-0 transition-opacity group-hover:opacity-100 group-focus-within:opacity-100 hover:bg-[color-mix(in_oklab,var(--fg)_8%,transparent)] hover:text-danger"
+                            className="absolute end-1.5 top-1/2 flex h-6 w-6 -translate-y-1/2 items-center justify-center rounded text-muted opacity-0 transition-opacity group-hover:opacity-100 group-focus-within:opacity-100 hover:bg-[color-mix(in_oklab,var(--fg)_8%,transparent)] hover:text-dangertext"
                           >
                             <Trash2 aria-hidden="true" className="size-3" />
                           </button>
@@ -700,6 +747,73 @@ export function SessionRail(): ReactElement {
             No matching sessions
           </p>
         )}
+        {/* Groups (add-agent-groups design D9, task 5.1): the agent-group
+            conversations beside the agent session groups — the same row
+            grammar (SideRow, container-voice label, busy dot) with the
+            group's title-or-name and a member's-turn-in-flight dot. Opening
+            one swaps the whole conversation surface through openGroup. The
+            section header stays visible with zero groups — the "+" (the
+            per-agent new-session grammar's section-header twin, riding the
+            kit SectionLabel's action slot, always visible with no hover
+            gating) must be reachable before any group exists — while the
+            rows render only when the list has them. With no agents there is
+            nothing to roster, so the whole section hides. */}
+        {agents.length > 0 && (
+          <>
+            <SectionLabel
+              action={
+                <button
+                  type="button"
+                  aria-label="New group"
+                  title="New group"
+                  data-testid="btn-new-group"
+                  onClick={() => setCreatingGroup(true)}
+                  className="flex h-6 w-6 items-center justify-center rounded text-muted transition-colors hover:bg-[color-mix(in_oklab,var(--fg)_8%,transparent)] hover:text-fg"
+                >
+                  <Plus aria-hidden="true" className="size-4" />
+                </button>
+              }
+            >
+              Groups
+            </SectionLabel>
+            {chatGroups.length > 0 && (
+              <div className="pb-1" data-testid="group-list">
+                {chatGroups.map((group: AgentGroup): ReactElement => {
+                  const busy = busyGroups.has(group.ID);
+
+                  return (
+                    <div className="group relative" key={group.ID}>
+                      <SideRow
+                        odId={`chat-group-${group.ID}`}
+                        active={group.ID === activeGroupID}
+                        label={group.Title || group.Name}
+                        icon={
+                          <span className="flex size-[18px] items-center justify-center rounded-md bg-[color-mix(in_oklab,var(--fg)_8%,transparent)] text-muted">
+                            <Users aria-hidden="true" className="size-3" />
+                          </span>
+                        }
+                        sub={
+                          busy ? (
+                            <span
+                              className="flex shrink-0"
+                              data-testid={`group-busy-${group.ID}`}
+                            >
+                              <StatusDot
+                                status="running"
+                                live={!reducedMotion}
+                              />
+                            </span>
+                          ) : undefined
+                        }
+                        onClick={() => void openGroup(group.ID)}
+                      />
+                    </div>
+                  );
+                })}
+              </div>
+            )}
+          </>
+        )}
       </div>
       {deleting && (
         <ConfirmDialog
@@ -716,11 +830,23 @@ export function SessionRail(): ReactElement {
           </p>
         </ConfirmDialog>
       )}
+      {creatingGroup && (
+        // The create-group dialog (spec "Create a group with members"): the
+        // pane hosts the app's dialog shell itself. On success the store has
+        // already opened the created conversation, so onClosed just drops
+        // the dialog; cancel/dismiss leaves nothing behind.
+        <GroupSettingsPane create onClosed={() => setCreatingGroup(false)} />
+      )}
       <div
         role="separator"
         aria-orientation="vertical"
         aria-label="Resize sessions list"
+        tabIndex={0}
+        aria-valuemin={MIN_RAIL_WIDTH}
+        aria-valuemax={MAX_RAIL_WIDTH}
+        aria-valuenow={width}
         onPointerDown={onResizeStart}
+        onKeyDown={onResizeKeyDown}
         className="absolute inset-y-0 right-0 z-10 hidden w-1.5 cursor-col-resize hover:bg-[color-mix(in_oklab,var(--fg)_8%,transparent)] md:block"
         data-testid="session-rail-resize"
       />

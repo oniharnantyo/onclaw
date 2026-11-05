@@ -492,3 +492,223 @@ type ChannelUpdateReceipt struct {
 	UpdateID    int64
 	CreatedAt   time.Time
 }
+
+// Agent group message kinds — the AgentGroupMessage.Kind vocabulary
+// (add-agent-groups design D1/D7): authored transcript rows and the
+// coordinator's routing lines.
+const (
+	// GroupMessageKindMessage marks an authored conversation message.
+	GroupMessageKindMessage = "message"
+	// GroupMessageKindAssigned marks a coordinator routing line
+	// ("Assigned to Scout") written for a task- or member-targeted route.
+	GroupMessageKindAssigned = "assigned"
+	// GroupMessageKindResult marks a reported task result.
+	GroupMessageKindResult = "result"
+	// GroupMessageKindError marks a failure note.
+	GroupMessageKindError = "error"
+	// GroupMessageKindChange marks a roster or settings change line.
+	GroupMessageKindChange = "change"
+)
+
+// Agent group author kinds — the AgentGroupMessage.AuthorKind vocabulary
+// (add-agent-groups design D7).
+const (
+	// GroupAuthorKindUser marks a message the user typed into the group.
+	GroupAuthorKindUser = "user"
+	// GroupAuthorKindAgent marks a message copied back from a member's
+	// turn; AuthorAgentID then names the author.
+	GroupAuthorKindAgent = "agent"
+	// GroupAuthorKindCoordinator marks a system routing line written by
+	// the group service itself.
+	GroupAuthorKindCoordinator = "coordinator"
+)
+
+// Agent group task states — the AgentGroupTask.State vocabulary
+// (add-agent-groups design D6/D8). Queued/running/waiting/paused are the
+// open states a restart re-drains; completed/failed/cancelled are terminal.
+const (
+	// GroupTaskStateQueued marks a persisted dispatch waiting for the
+	// agent's lane (or a group budget slot) to free up.
+	GroupTaskStateQueued = "queued"
+	// GroupTaskStateRunning marks a dispatch whose member turn is in
+	// flight.
+	GroupTaskStateRunning = "running"
+	// GroupTaskStateWaiting marks a task paused on the owner's follow-up
+	// or an external dependency.
+	GroupTaskStateWaiting = "waiting"
+	// GroupTaskStatePaused marks a task stopped by the user or by agent
+	// cleanup; StopReason then carries the visible reason.
+	GroupTaskStatePaused = "paused"
+	// GroupTaskStateCompleted marks a task whose result landed in the
+	// transcript.
+	GroupTaskStateCompleted = "completed"
+	// GroupTaskStateFailed marks a task whose turn errored out; Error
+	// carries the failure reason.
+	GroupTaskStateFailed = "failed"
+	// GroupTaskStateCancelled marks a task ended by a root-chain cancel.
+	GroupTaskStateCancelled = "cancelled"
+)
+
+// GroupTaskOpenStates is the set of non-terminal task states a restart (or
+// the scheduler's drain) considers outstanding.
+var GroupTaskOpenStates = []string{
+	GroupTaskStateQueued,
+	GroupTaskStateRunning,
+	GroupTaskStateWaiting,
+	GroupTaskStatePaused,
+}
+
+// AgentGroup is one agent group aggregate (add-agent-groups design D1): a
+// named roster of agents sharing one authored transcript.
+type AgentGroup struct {
+	ID   string
+	Name string
+	// Title is the group's display title; empty means derive from Name.
+	Title string
+	// Instructions are the group's standing instruction prompt.
+	Instructions string
+	// LeadAgentID names the group's lead (design D5: exactly one lead,
+	// the default routing target); nil until the first member arrives.
+	LeadAgentID *string
+	// Archived soft-hides the group without deleting its transcript.
+	Archived bool
+	// Revision guards group edits the way tasks are revision-guarded.
+	Revision  int64
+	CreatedAt time.Time
+	UpdatedAt time.Time
+}
+
+// AgentGroupMember is one roster row (add-agent-groups design D1): a link,
+// not a copy — the agent definition lives in the agents table. PK
+// (group_id, agent_id): a duplicate add is ErrDuplicate.
+type AgentGroupMember struct {
+	GroupID string
+	AgentID string
+	AddedAt time.Time
+}
+
+// AgentGroupMessage is one row of the group's shared transcript
+// (add-agent-groups design D1/D7): an ordered, authored log keyed by
+// (group_id, seq) with a stable MessageID per authored message (the turn id
+// for copy-back rows) so regenerate replaces in place.
+type AgentGroupMessage struct {
+	GroupID string
+	// MessageID is stable per authored message across retries and
+	// regenerates; UNIQUE within the group.
+	MessageID string
+	// Seq is the store-allocated per-group sequence, gapless and
+	// monotonically increasing.
+	Seq int64
+	// Kind is one of the GroupMessageKind* values.
+	Kind string
+	// AuthorKind is one of the GroupAuthorKind* values.
+	AuthorKind string
+	// AuthorAgentID names the agent author; nil for user and coordinator
+	// rows.
+	AuthorAgentID *string
+	// TaskID links the message to a task (results, assignments); nil when
+	// unlinked.
+	TaskID *string
+	// Payload is opaque JSON owned by the groups service (attachments,
+	// routing details) carried as JSON TEXT so it round-trips the Wails
+	// bindings unchanged — a []byte would base64-marshal and the frontend
+	// could not decode it.
+	Payload string
+	// OccurredAt is stamped by the store (UTC) when empty.
+	OccurredAt time.Time
+}
+
+// AgentGroupContext is one member's acceptance cursor (add-agent-groups
+// design D1/D3): the member's own session, the transcript Seq its packets
+// have been delivered through, and the summary version it has accepted.
+type AgentGroupContext struct {
+	GroupID string
+	AgentID string
+	// SessionID is the member's real per-(group, member) session row.
+	SessionID string
+	// ThroughSeq is the last transcript Seq the member has been sent.
+	ThroughSeq int64
+	// SummaryVersion is the version of the transcript summary the
+	// member's packets have incorporated.
+	SummaryVersion int64
+}
+
+// AgentGroupTask is one unit of group work (add-agent-groups design D1/D8):
+// revision-guarded so a stale dispatch can never complete a task, and
+// persisted before dispatch so a crash never double-dispatches.
+type AgentGroupTask struct {
+	// TaskID is store-assigned when empty and immutable afterwards.
+	TaskID  string
+	GroupID string
+	// ParentTaskID names the parent task of a delegated child; nil for a
+	// root task.
+	ParentTaskID *string
+	// RootTaskID is the chain's root task id (the task itself for a root).
+	RootTaskID string
+	// OwnerAgentID names the member the task is assigned to; nil while
+	// unassigned.
+	OwnerAgentID *string
+	// RequestMessageID is the transcript message the task was created
+	// from.
+	RequestMessageID string
+	// Instruction is the work the owner is asked to do.
+	Instruction string
+	// ExpectedResult is the optional acceptance criterion.
+	ExpectedResult string
+	// State is one of the GroupTaskState* values.
+	State string
+	// StopReason carries the visible reason a task was paused; nil
+	// otherwise.
+	StopReason *string
+	// Revision increments on every state-changing write; dispatches carry
+	// the revision they started from.
+	Revision int64
+	// AssignmentCount counts (re-)dispatches for the budget guards.
+	AssignmentCount int
+	// Error carries the last failure's reason when State is failed; nil
+	// otherwise.
+	Error *string
+}
+
+// AgentGroupSummary is the group transcript's versioned summary
+// (add-agent-groups design D1/D3): members incorporate it for history older
+// than their packet window, keyed by SummaryVersion in their cursor.
+type AgentGroupSummary struct {
+	GroupID string
+	// Version increments on every save; 0 means no summary yet.
+	Version int64
+	// ThroughSeq is the transcript Seq the summary covers through.
+	ThroughSeq int64
+	Text       string
+}
+
+// Vault item kinds — the VaultItem.Kind vocabulary
+// (add-browser-login-handover design D5). v1 stores logins only; new kinds
+// arrive as explicit migrations widening the CHECK vocabulary.
+const (
+	// VaultKindLogin marks a stored website login: an origin, a username,
+	// and a sealed secret.
+	VaultKindLogin = "login"
+)
+
+// VaultItem is one row of the vault (add-browser-login-handover design
+// D5): metadata in the clear, the secret sealed. SecretBlob carries the
+// AES-GCM ciphertext — write-only by convention, per the CredentialSet
+// discipline: it never serializes (json:"-"), the only plaintext consumer
+// being the reveal/fill path, and no surface ever reads it back.
+type VaultItem struct {
+	ID   string
+	Kind string
+	Name string
+	// Origin is the normalized login origin (lowercased scheme+host).
+	Origin   string
+	Username string
+	// AddedBy records who handed the secret over (the agent name, or the
+	// user through settings).
+	AddedBy string
+	// SecretBlob is the sealed secret (AES-GCM ciphertext, nonce
+	// prefixed). It must never serialize or be logged.
+	SecretBlob []byte `json:"-"`
+	CreatedAt  time.Time
+	UpdatedAt  time.Time
+}

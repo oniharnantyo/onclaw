@@ -183,7 +183,7 @@ export default function SchedulesView(): ReactElement {
 
       {error && (
         <p
-          className="text-sm text-danger"
+          className="text-sm text-dangertext"
           role="alert"
           data-testid="schedules-error"
         >
@@ -192,7 +192,11 @@ export default function SchedulesView(): ReactElement {
       )}
 
       {loading ? (
-        <div className="flex flex-col gap-2" aria-label="Loading schedules">
+        <div
+          className="flex flex-col gap-2"
+          aria-busy="true"
+          data-testid="schedules-loading"
+        >
           {[0, 1, 2].map((i: number) => (
             <Skeleton key={i} className="h-16 w-full" />
           ))}

@@ -308,15 +308,15 @@ export function TerminalBlock({
         {done ? (
           <div className="flex shrink-0 items-center gap-1">
             {failed ? (
-              <XIcon className="size-3 text-red-600 dark:text-red-400" />
+              <XIcon className="size-3 text-dangertext" />
             ) : (
-              <CheckIcon className="size-3 text-emerald-500" />
+              <CheckIcon className="size-3 text-successtext" />
             )}
             <span
               className={cn(
                 mono,
                 failed
-                  ? "text-red-600 dark:text-red-400"
+                  ? "text-dangertext"
                   : ink
                     ? "text-background/40 dark:text-muted-foreground"
                     : "text-muted-foreground",
@@ -353,7 +353,7 @@ export function TerminalBlock({
                 )}
               >
                 {isCopied ? (
-                  <CheckIcon className="size-3.5 text-emerald-500" />
+                  <CheckIcon className="size-3.5 text-successtext" />
                 ) : (
                   <CopyIcon className="size-3.5" />
                 )}
@@ -388,7 +388,7 @@ export function TerminalBlock({
                 className={cn(
                   "fade-in animate-in fill-mode-both break-words whitespace-pre-wrap duration-300 motion-reduce:animate-none",
                   isStderr
-                    ? "text-red-600 dark:text-red-400"
+                    ? "text-dangertext"
                     : isLast &&
                         (ink
                           ? "text-background/90 dark:text-foreground/90"
@@ -444,7 +444,7 @@ export function TerminalBlock({
         {!done && (
           <span
             aria-hidden
-            className="inline-block h-3 w-1.5 animate-pulse bg-blue-500/70 motion-reduce:animate-none dark:bg-blue-400/70"
+            className="inline-block h-3 w-1.5 animate-pulse bg-accent/70 motion-reduce:animate-none"
           />
         )}
       </div>

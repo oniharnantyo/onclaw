@@ -4,9 +4,11 @@
  * and lists come through the text prop, the wrapper carries the `aui-md`
  * class, the body re-renders when the text changes, and inline code keeps
  * the transcript's `aui-md-inline-code` styling — all without any message
- * context.
+ * context. The shared component map loads on demand (design D6b), so the
+ * class-contract assertions wait for its chunk.
  */
 import { act, useState } from "react";
+import { waitFor } from "@testing-library/dom";
 import { describe, expect, it } from "vite-plus/test";
 
 import { MarkdownBody } from "../MarkdownBody";
@@ -44,7 +46,11 @@ describe("MarkdownBody", () => {
     expect(container.querySelector("table")).toBeTruthy();
     expect(container.querySelectorAll("th")).toHaveLength(2);
     expect(container.querySelectorAll("td")).toHaveLength(2);
-    expect(container.querySelector("ul")?.className).toContain("aui-md-ul");
+
+    await waitFor(() => {
+      expect(container.querySelector("ul")?.className).toContain("aui-md-ul");
+    }, { timeout: 10_000 });
+
     expect(container.querySelectorAll("li")).toHaveLength(2);
     expect(container.querySelectorAll("li")[0]!.textContent).toBe("first");
 
@@ -82,10 +88,15 @@ describe("MarkdownBody", () => {
       <MarkdownBody text="run `npm test` now" />
     );
 
+    await waitFor(() => {
+      expect(container.querySelector("code")?.className).toContain(
+        "aui-md-inline-code"
+      );
+    }, { timeout: 10_000 });
+
     const code = container.querySelector("code");
 
     expect(code).toBeTruthy();
-    expect(code!.className).toContain("aui-md-inline-code");
     expect(code!.textContent).toBe("npm test");
 
     await unmount();

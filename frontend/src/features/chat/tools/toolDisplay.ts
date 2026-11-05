@@ -13,10 +13,15 @@ import type { IconName } from "../../../components/ui/Icon";
 import {
   isObject,
   isString,
-  parseJSONResult,
+  parseToolResult,
   str,
   type ToolArgs,
 } from "./parse";
+
+/** The MCP namespace prefix the Browser Use system server's tools surface
+ * under (design D6). Matched as a PREFIX — never exact equality — because a
+ * name collision can suffix the server key in pathological cases. */
+const BROWSER_USE_PREFIX = "mcp__browser-use__";
 
 /** Which form of the sentence the card needs. "failed" and legacy terminal
  * records (no status) read the outcome form when one exists. */
@@ -91,7 +96,7 @@ export function countLines(text: string): number {
 function resultCount(result: string, listKey?: string): number | null {
   if (listKey === undefined) return null;
 
-  const parsed = parseJSONResult(result);
+  const parsed = parseToolResult(result);
 
   if (!isObject(parsed)) return null;
 
@@ -177,7 +182,7 @@ type SentenceFn = (input: SentenceInput) => string | null;
 
 /** The `path` field of the browser screenshot's typed JSON result. */
 function resultJSONPath(result: string): string | null {
-  const parsed = parseJSONResult(result);
+  const parsed = parseToolResult(result);
 
   if (!isObject(parsed)) return null;
 
@@ -363,10 +368,10 @@ function sentenceCurrentTime(input: SentenceInput): string | null {
   return input.state === "running" ? "Getting the time" : "Got the time";
 }
 
-/** The browser sentence is keyed by the call's action (design D3). */
-function sentenceBrowser(input: SentenceInput): string | null {
+/** The browser sentence is keyed by the tool name's action suffix (design
+ * D5): the discrete MCP tools carry the action in the NAME, not the args. */
+function sentenceBrowser(input: SentenceInput, action: string): string | null {
   const { args, result, state } = input;
-  const action = str(args, "action");
 
   switch (action) {
     case "":
@@ -446,7 +451,7 @@ function sentenceTaskList(input: SentenceInput): string | null {
 
   if (state === "running") return "Listing tasks";
 
-  const parsed = parseJSONResult(result);
+  const parsed = parseToolResult(result);
 
   const text =
     isObject(parsed) && isString(parsed.result) ? parsed.result : result;
@@ -530,7 +535,6 @@ const SENTENCES = new Map<string, SentenceFn>([
   ["web_fetch", sentenceWebFetch],
   ["http_get", sentenceHttpGet],
   ["current_time", sentenceCurrentTime],
-  ["browser", sentenceBrowser],
 ]);
 
 /**
@@ -541,13 +545,30 @@ const SENTENCES = new Map<string, SentenceFn>([
 export function toolSentence(input: SentenceInput): string | null {
   const entry = SENTENCES.get(input.name);
 
-  if (entry === undefined) return null;
-
-  try {
-    return entry(input);
-  } catch {
-    return null;
+  if (entry !== undefined) {
+    try {
+      return entry(input);
+    } catch {
+      return null;
+    }
   }
+
+  // The Browser Use MCP tools mint sentences keyed by the tool name's
+  // action suffix (design D6): `mcp__browser-use__navigate` and friends.
+  // The retired built-in `browser` name keys nothing — historical
+  // transcripts fall back to the generic card with no sentence.
+  if (input.name.startsWith(BROWSER_USE_PREFIX)) {
+    try {
+      return sentenceBrowser(
+        input,
+        input.name.slice(BROWSER_USE_PREFIX.length)
+      );
+    } catch {
+      return null;
+    }
+  }
+
+  return null;
 }
 
 /** The display name and kit glyph a card header renders for one tool. */

@@ -7,7 +7,9 @@
  * without requiring it to be active, expanding a group changes nothing but
  * the expansion, a context move (activeAgentID) moves the expansion, the
  * group running dot rides the app-wide running set (never-opened sessions
- * included), load-more batches 4 → +8 → retire per group, and the search
+ * included), load-more batches 5 → +8 → retire per group (round 10: the
+ * initial window grew from four to five and the open list grows to its
+ * content — no reserved scroll region), and the search
  * spans every agent — matching groups expand and list every match, clearing
  * restores the collapse grammar without ever moving the active session.
  * The lib client is mocked wholesale like ChatView's suite (now including
@@ -515,22 +517,54 @@ describe("SessionRail", () => {
     expect(a1?.getAttribute("aria-expanded")).toBe("false");
   });
 
+  it("collapses the expanded group when its header is clicked again (round 11)", async () => {
+    await renderIsland();
+
+    // The active agent's group starts expanded (design D4).
+    expect(row("sA")).toBeTruthy();
+
+    await act(async () => {
+      expandGroup("a1");
+    });
+
+    // Clicking the expanded header collapses it: rows freeze (but stay
+    // mounted for the close transition), aria-expanded flips to false.
+    expectCollapsedRows("a1");
+    expect(
+      group("a1").querySelector("button")?.getAttribute("aria-expanded")
+    ).toBe("false");
+
+    // Clicking again re-expands — a plain toggle; the conversation never
+    // moved.
+    await act(async () => {
+      expandGroup("a1");
+    });
+    expect(row("sA")).toBeTruthy();
+    expect(useChatStore.getState().activeAgentID).toBe("a1");
+    expect(useChatStore.getState().activeSessionID).toBe("sB");
+  });
+
   it("binds the group's reveal to the grid-rows accordion transition", async () => {
     await renderIsland();
 
-    // Design D8: the reveal rides grid-template-rows 0fr ↔ 1fr on the
-    // shared motion grammar — no raw height animation.
+    // Design D8 (round 10 revision): the reveal rides grid-template-rows
+    // 0fr ↔ content-sized, with the height transition on the CLOSE only —
+    // an open track is content-sized in an auto-height grid, and a
+    // transitioning 1fr resolved against zero free space in Chrome and
+    // clipped the rows away.
     const open = group("a1").nextElementSibling;
     expect(open?.className).toContain("grid");
-    expect(open?.className).toContain("transition-[grid-template-rows]");
-    expect(open?.className).toContain("duration-[var(--motion-base)]");
-    expect(open?.className).toContain("ease-[var(--ease-standard)]");
+    expect(open?.className).not.toContain("transition-[grid-template-rows]");
     expect(open?.getAttribute("style")?.replace(/\s+/g, "")).toContain(
       "grid-template-rows:1fr"
     );
 
-    // A collapsed group holds the same binding at 0fr.
+    // A collapsed group holds the same binding at 0fr and carries the
+    // height transition for its close.
     const closed = group("a3").nextElementSibling;
+    expect(closed?.className).toContain("transition-[grid-template-rows]");
+    expect(closed?.className).toContain("duration-[var(--motion-base)]");
+    expect(closed?.className).toContain("ease-[var(--ease-standard)]");
     expect(closed?.getAttribute("style")?.replace(/\s+/g, "")).toContain(
       "grid-template-rows:0fr"
     );
@@ -676,6 +710,23 @@ describe("SessionRail", () => {
     );
   });
 
+  it("fades the relative time out of the trailing slot as the delete glyph fades in (round 11)", async () => {
+    await renderIsland();
+
+    // The time and the delete button trade the same corner on hover/focus
+    // instead of stacking: the time cross-fades out exactly when the delete
+    // cross-fades in (same transition, same selectors).
+    const meta = screen.getByTestId("session-meta-sA");
+    expect(meta.className).toContain("transition-opacity");
+    expect(meta.className).toContain("group-hover:opacity-0");
+    expect(meta.className).toContain("group-focus-within:opacity-0");
+
+    const del = screen.getByTestId("session-delete-sA");
+    expect(del.className).toContain("opacity-0");
+    expect(del.className).toContain("group-hover:opacity-100");
+    expect(del.className).toContain("group-focus-within:opacity-100");
+  });
+
   it("runs the inline spinner before a pulsing title while motion is allowed", async () => {
     stubMatchMedia(false);
     useChatStore.setState({ busy: true, runningSessions: new Set(["sB"]) });
@@ -756,7 +807,8 @@ describe("SessionRail", () => {
   });
 
   // When the nav rail is collapsed its 80px shell is reserved for the
-  // macOS traffic lights, so the rail's expand control lives here — in a
+  // macOS traffic lights, and the shell's island-corner button would
+  // collide with this label — so chat hosts the expand control here, in a
   // row above the SESSIONS label; clicking it flips the nav store (and
   // persists) and the row disappears with the rail expanded again.
   it("hosts the rail expand control above the label while the nav rail is collapsed", async () => {
@@ -837,7 +889,7 @@ describe("SessionRail search (spec: Session search filter)", () => {
     useChatStore.setState({ sessions: [...sessions, ...batch] });
     await renderIsland();
 
-    // Unfiltered, a1's group caps at the four most recent.
+    // Unfiltered, a1's group caps at the five most recent.
     expect(row("x1")).toBeTruthy();
     expect(row("x6")).toBeNull();
 
@@ -897,45 +949,46 @@ describe("SessionRail load more (design D4)", () => {
     });
   }
 
-  it("caps the expanded group at the four most recent sessions", async () => {
-    seed(6, "s2");
+  it("caps the expanded group at the five most recent sessions", async () => {
+    seed(7, "s2");
     await renderIsland();
 
-    for (const id of ["s1", "s2", "s3", "s4"]) {
+    for (const id of ["s1", "s2", "s3", "s4", "s5"]) {
       expect(row(id)).toBeTruthy();
     }
 
-    expect(row("s5")).toBeNull();
     expect(row("s6")).toBeNull();
+    expect(row("s7")).toBeNull();
     expect(screen.getByTestId("group-load-more-a1")).toBeTruthy();
   });
 
   it("keeps the active session visible when it is older than the cap", async () => {
-    seed(6, "s6");
+    seed(8, "s8");
     await renderIsland();
 
-    // The four most recent plus the active (oldest) one.
-    for (const id of ["s1", "s2", "s3", "s4", "s6"]) {
+    // The five most recent plus the active (oldest) one.
+    for (const id of ["s1", "s2", "s3", "s4", "s5", "s8"]) {
       expect(row(id)).toBeTruthy();
     }
 
-    expect(row("s5")).toBeNull();
+    expect(row("s6")).toBeNull();
+    expect(row("s7")).toBeNull();
   });
 
   it("appends the next batch of eight per activation and retires on exhaustion", async () => {
-    seed(14, "s1");
+    seed(16, "s1");
     await renderIsland();
 
     await act(async () => {
       fireEvent.click(screen.getByTestId("group-load-more-a1"));
     });
 
-    // 4 + 8: s1–s12 listed, s13–s14 still behind the control.
-    for (const id of ["s1", "s12"]) {
+    // 5 + 8: s1–s13 listed, s14–s16 still behind the control.
+    for (const id of ["s1", "s13"]) {
       expect(row(id)).toBeTruthy();
     }
 
-    expect(row("s13")).toBeNull();
+    expect(row("s14")).toBeNull();
     expect(screen.getByTestId("group-load-more-a1")).toBeTruthy();
 
     await act(async () => {
@@ -943,7 +996,7 @@ describe("SessionRail load more (design D4)", () => {
     });
 
     // Everything is listed; the control retires.
-    expect(row("s14")).toBeTruthy();
+    expect(row("s16")).toBeTruthy();
     expect(screen.queryByTestId("group-load-more-a1")).toBeNull();
   });
 
@@ -964,7 +1017,7 @@ describe("SessionRail load more (design D4)", () => {
 
     // Clearing restores the cap with the counts reset (design D4).
     await userEvent.setup().clear(search);
-    expect(row("s5")).toBeNull();
+    expect(row("s5")).toBeTruthy();
     expect(row("s6")).toBeNull();
   });
 
@@ -972,10 +1025,14 @@ describe("SessionRail load more (design D4)", () => {
     seed(6, "s1");
     await renderIsland();
 
+    // The five most recent are the initial window; the sixth hides.
+    expect(row("s5")).toBeTruthy();
+    expect(row("s6")).toBeNull();
+
     await act(async () => {
       fireEvent.click(screen.getByTestId("group-load-more-a1"));
     });
-    expect(row("s5")).toBeTruthy();
+    expect(row("s6")).toBeTruthy();
 
     // a2's own single-session group is unaffected by a1's window.
     await act(async () => {
@@ -991,31 +1048,26 @@ describe("SessionRail load more (design D4)", () => {
     expect(row("s5")).toBeTruthy();
   });
 
-  it("scrolls an agent's long history beneath its pinned group row", async () => {
+  it("grows the open group's list to its content — no reserved scroll region (round 10)", async () => {
     seed(14, "s1");
     await renderIsland();
     await act(async () => {
       fireEvent.click(screen.getByTestId("group-load-more-a1"));
     });
 
-    // The open group's rows live in a dedicated scroll region…
-    const scroll = screen.getByTestId("group-sessions-a1");
-    expect(scroll.className).toContain("overflow-y-auto");
-    expect(scroll.className).toContain("flex-1");
-    // …holding the session rows and the load-more control but never the
-    // agent row: scrolling the history cannot scroll the agent row away.
+    // The open list renders at natural height (the column scrolls as one):
+    // no flex-1 stretch, no inner scroll region — the old pinned grammar
+    // reserved the column's leftover height and read as a dead gap.
+    const list = screen.getByTestId("group-sessions-a1");
+    expect(list.className).toContain("shrink-0");
+    expect(list.className).not.toContain("flex-1");
+    expect(list.className).not.toContain("overflow-y-auto");
+
+    // The revealed rows and the load-more control ride the same list.
+    expect(list.querySelector('[data-od-id="chat-session-s1"]')).toBeTruthy();
     expect(
-      scroll.querySelector('[data-od-id="chat-agent-group-a1"]')
-    ).toBeNull();
-    expect(scroll.querySelector('[data-od-id="chat-session-s1"]')).toBeTruthy();
-    expect(
-      scroll.querySelector('[data-testid="group-load-more-a1"]')
+      list.querySelector('[data-testid="group-load-more-a1"]')
     ).toBeTruthy();
-    // Pinned row and scroll region live in the same group block — the
-    // accordion reveal grid (design D8) sits between them.
-    expect(scroll.parentElement?.parentElement?.parentElement).toBe(
-      group("a1").parentElement
-    );
   });
 });
 
@@ -1196,5 +1248,60 @@ describe("SessionRail resize", () => {
     expect(handle.className).toContain("md:block");
 
     vi.unstubAllGlobals();
+  });
+
+  it("resizes by the 4px step with the arrow keys, clamps with Home/End, and persists like a drag", async () => {
+    stubLocalStorage({ "buddies.sessionRailWidth": "300" });
+
+    const { unmount } = await renderUI(<SessionRail />);
+    const handle = screen.getByTestId("session-rail-resize");
+
+    // The handle is a focusable separator reporting the rail's width.
+    expect(handle.getAttribute("role")).toBe("separator");
+    expect(handle.getAttribute("tabindex")).toBe("0");
+    expect(handle.getAttribute("aria-valuenow")).toBe("300");
+
+    await act(async () => {
+      fireEvent.keyDown(handle, { key: "ArrowRight" });
+    });
+    expect(handle.getAttribute("aria-valuenow")).toBe("304");
+    expect(localStorage.getItem("buddies.sessionRailWidth")).toBe("304");
+
+    await act(async () => {
+      fireEvent.keyDown(handle, { key: "ArrowLeft" });
+    });
+    expect(localStorage.getItem("buddies.sessionRailWidth")).toBe("300");
+
+    // Home/End jump to the clamps.
+    await act(async () => {
+      fireEvent.keyDown(handle, { key: "Home" });
+    });
+    expect(handle.getAttribute("aria-valuenow")).toBe("176");
+    expect(localStorage.getItem("buddies.sessionRailWidth")).toBe("176");
+
+    await act(async () => {
+      fireEvent.keyDown(handle, { key: "End" });
+    });
+    expect(handle.getAttribute("aria-valuenow")).toBe("400");
+    expect(localStorage.getItem("buddies.sessionRailWidth")).toBe("400");
+
+    await unmount();
+    vi.unstubAllGlobals();
+  });
+});
+
+describe("SessionRail group headers", () => {
+  it("points every group header's aria-controls at its rendered content region", async () => {
+    await renderIsland();
+
+    for (const id of ["a1", "a2", "a3"]) {
+      const header = group(id).querySelector("[aria-controls]");
+      const target = header?.getAttribute("aria-controls");
+
+      expect(target).toBe(`chat-agent-group-content-${id}`);
+      // Every aria-controls value resolves to a rendered id.
+      expect(document.getElementById(target as string)).toBeTruthy();
+      expect(screen.getByTestId(`group-sessions-${id}`).id).toBe(target);
+    }
   });
 });

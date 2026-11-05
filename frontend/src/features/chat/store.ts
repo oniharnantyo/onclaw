@@ -30,24 +30,32 @@ import { create, type StoreApi } from "zustand";
 
 import {
   Kind,
+  type Attachment as SessionAttachment,
   type Event as SessionEvent,
 } from "../../../bindings/github.com/oniharnantyo/buddies/internal/sessions/models";
 import type {
   Agent,
+  AgentGroup,
+  AgentGroupMessage,
+  AgentGroupTask,
   Session,
   Skill,
 } from "../../../bindings/github.com/oniharnantyo/buddies/internal/store/models";
+import type { GroupEvent } from "../../../bindings/github.com/oniharnantyo/buddies/internal/services/models";
 import type { WorkspaceSkill } from "../../../bindings/github.com/oniharnantyo/buddies/internal/services/models";
 import type { ModelCapability } from "../../../bindings/github.com/oniharnantyo/buddies/internal/services/models";
 import type { TurnsChangedEvent } from "../../lib/events";
 import type { Unsubscribe } from "../../lib/transport";
 import { client } from "../../lib/client";
 import { useNavStore } from "../../stores/nav";
+import { mapGroupMessages } from "../groups/groupEntries";
+import { useAttachmentStore, type AttachmentChip } from "./attachments";
 import {
   applyEvent,
   asEntry,
   asRichUser,
   entryID,
+  expireUnresolvedInputs,
   mergePrepended,
 } from "./entries";
 import type { ToolCatalog } from "./tools/toolDisplay";
@@ -149,6 +157,17 @@ export type ExtendedChatStore = ChatStore & ChatStoreExtras;
  * background turns keep their rail indicators (session-row running state). */
 const subscriptions = new Map<string, Unsubscribe>();
 
+/** Live subscriptions by group id (add-agent-groups design D9): one per known
+ * group, feeding the rail's busy dots for every group and the open group's
+ * transcript appends. Wired by connectGroups (the view mounts it), never at
+ * import time. */
+const groupSubscriptions = new Map<string, Unsubscribe>();
+
+/** Group message ids already folded into the open group's projection: the
+ * dedupe key that keeps a live append from doubling a row the initial page
+ * already carried (the session path's seenEventIDs seam). */
+let seenGroupMessageIDs = new Set<string>();
+
 /** Transcript page size (design D6: limit ≈ 60) for the newest-page load and
  * each "load earlier" fetch. */
 export const TRANSCRIPT_PAGE_SIZE = 60;
@@ -167,6 +186,75 @@ function oldestSeqOf(page: SessionEvent[]): number | null {
   }
 
   return min;
+}
+
+/** The group transcript's paging cursor (add-agent-groups design D6): the
+ * same windowing contract as the session path — a short page means the
+ * group's beginning is reached. */
+function groupOldestSeqOf(page: AgentGroupMessage[]): number | null {
+  if (page.length < TRANSCRIPT_PAGE_SIZE) return null;
+
+  let min: number | null = null;
+
+  for (const row of page) {
+    if (row.Seq > 0 && (min === null || row.Seq < min)) min = row.Seq;
+  }
+
+  return min;
+}
+
+/** Inserts or refreshes one group row in the rail's list (a fresh open or a
+ * rename must not wait for the next groups:changed). */
+function upsertGroupRow(groups: AgentGroup[], row: AgentGroup): AgentGroup[] {
+  const idx = groups.findIndex((g: AgentGroup): boolean => g.ID === row.ID);
+
+  if (idx === -1) return [...groups, row];
+
+  return groups.map((g: AgentGroup): AgentGroup => (g.ID === row.ID ? row : g));
+}
+
+/** The group half of "load earlier" (add-agent-groups design D6): pages the
+ * transcript window backward through the same mapping, prepending the older
+ * rows. Mirrors the session path's stale-guard and keep-going contract. */
+async function loadGroupEarlierPage(): Promise<void> {
+  const s = useChatStore.getState();
+  const groupID = s.activeGroupID;
+
+  if (!groupID || s.oldestSeq === null || s.loadingEarlier) return;
+
+  const before = s.oldestSeq;
+  useChatStore.setState({ loadingEarlier: true });
+
+  try {
+    const page = await client.groups.transcriptPage(
+      groupID,
+      before,
+      TRANSCRIPT_PAGE_SIZE
+    );
+
+    if (useChatStore.getState().activeGroupID !== groupID) return;
+
+    const fresh = page.filter(
+      (m: AgentGroupMessage): boolean => !seenGroupMessageIDs.has(m.MessageID)
+    );
+
+    for (const m of fresh) seenGroupMessageIDs.add(m.MessageID);
+
+    const rows = [...fresh, ...useChatStore.getState().groupMessages];
+
+    useChatStore.setState({
+      groupMessages: rows,
+      entries: mapGroupMessages(rows),
+      oldestSeq: groupOldestSeqOf(page),
+      loadingEarlier: false,
+    });
+  } catch (err: unknown) {
+    if (useChatStore.getState().activeGroupID !== groupID) return;
+    useChatStore.setState({
+      error: errorMessage(err, "Failed to load earlier messages"),
+      loadingEarlier: false,
+    });
+  }
 }
 
 /** Attachment keys queued alongside a queued message (task 5.4): the shared
@@ -188,6 +276,24 @@ let eventBuffer: {
   seq: number;
   events: SessionEvent[];
 } | null = null;
+
+/**
+ * Live per-token deltas awaiting the next animation-frame commit (task 5.1,
+ * design D3) — a NEW path beside `eventBuffer` above, which stays the
+ * page-load replay seam. The batch folds into `entries` as ONE setState at
+ * the frame's rAF flush (or synchronously ahead of any non-delta event, so
+ * arrival order — delta, tool card, delta, terminal — survives), and
+ * subscribers never observe a half-applied batch. The buffer exists only
+ * between scheduled flushes: an external getState() of `entries` between a
+ * delta's arrival and its flush shows the last-flushed state — accepted,
+ * nothing exposes the pending batch. The flush is scheduled when the FIRST
+ * delta of a frame lands (leading edge, no trailing debounce), so the first
+ * token commits in the very next frame — the same paint the un-coalesced
+ * path would have hit, since React renders at the next vsync either way. */
+let pendingDeltas: SessionEvent[] = [];
+
+/** The scheduled frame flush's handle; null while nothing is pending. */
+let pendingFlushHandle: number | null = null;
 
 let nextQueueID = 0;
 
@@ -358,7 +464,24 @@ function sortSessions(sessions: Session[]): Session[] {
 
 function setBusy(): void {
   const s = useChatStore.getState();
-  useChatStore.setState({ busy: s.dispatching || s.activeTurnID !== null });
+  const busy = s.dispatching || s.activeTurnID !== null;
+
+  // add-browser-login-handover, spec "Expired pending request": a busy→false
+  // transition while an input entry is still pending means the turn ended
+  // without the request ever being answered — fold it expired (the shared
+  // helper in entries.ts; client-side only, no event is written). Live the
+  // answering path records its input_resolved receipt first, so a pending
+  // card never survives a terminal that legitimately resumed.
+  if (s.busy && !busy) {
+    useChatStore.setState({
+      busy,
+      entries: expireUnresolvedInputs(s.entries),
+    });
+
+    return;
+  }
+
+  useChatStore.setState({ busy });
 }
 
 /** True when the kind ends a turn — the rail's running flag retires on any
@@ -385,6 +508,62 @@ function isTurnActivityKind(kind: SessionEvent["kind"]): boolean {
     kind === Kind.KindToolActivity ||
     kind === Kind.KindApprovalRequired
   );
+}
+
+/** True for the live-only per-token kinds the frame coalescer batches
+ * (task 5.1, design D3): the two delta kinds only. Every other kind applies
+ * immediately (after draining the pending batch), which keeps turn-terminal
+ * state changes synchronous and preserves arrival order across a delta that
+ * precedes a structural event. */
+function isCoalescedKind(kind: SessionEvent["kind"]): boolean {
+  return kind === Kind.KindTextDelta || kind === Kind.KindReasoningDelta;
+}
+
+/** Folds the pending delta batch into `entries` as ONE commit. Runs on the
+ * scheduled frame flush, and synchronously before any non-delta event — a
+ * turn terminal therefore applies after the deltas that preceded it, in the
+ * same tick. */
+function flushPendingDeltas(): void {
+  if (pendingFlushHandle !== null) {
+    cancelAnimationFrame(pendingFlushHandle);
+    pendingFlushHandle = null;
+  }
+
+  if (pendingDeltas.length === 0) return;
+
+  const batch = pendingDeltas;
+  pendingDeltas = [];
+
+  useChatStore.setState((prev: ExtendedChatStore) => ({
+    entries: batch.reduce(
+      (entries: Entry[], e: SessionEvent): Entry[] => applyEvent(entries, e),
+      prev.entries
+    ),
+  }));
+}
+
+/** Schedules the frame flush for the first delta of a frame; later deltas
+ * of the same frame join the same batch. */
+function scheduleDeltaFlush(): void {
+  if (pendingFlushHandle !== null) return;
+
+  pendingFlushHandle = requestAnimationFrame((): void => {
+    pendingFlushHandle = null;
+    flushPendingDeltas();
+  });
+}
+
+/** Drops the pending batch without applying it: a session switch replaces
+ * `entries` wholesale, so the session being left must not fold its
+ * still-unflushed deltas into the new transcript. Cleared beside every
+ * `eventBuffer` reset on a selection. */
+function clearPendingDeltas(): void {
+  if (pendingFlushHandle !== null) {
+    cancelAnimationFrame(pendingFlushHandle);
+    pendingFlushHandle = null;
+  }
+
+  pendingDeltas = [];
 }
 
 /** Folds one session's running flag into the per-session set. */
@@ -414,6 +593,146 @@ async function syncRunningSessions(): Promise<void> {
     useChatStore.setState({ runningSessions: new Set(running) });
   } catch {
     // Keep the last known set; the next turn flip or focus re-query retries.
+  }
+}
+
+/** Folds one group's busy flag into the rail's set (add-agent-groups design
+ * D9): busy = any task of the group with a member turn in flight. */
+function setGroupBusy(groupID: string, busy: boolean): void {
+  const prev = useChatStore.getState().busyGroups;
+
+  if (prev.has(groupID) === busy) return;
+
+  const next = new Set(prev);
+
+  if (busy) next.add(groupID);
+  else next.delete(groupID);
+  useChatStore.setState({ busyGroups: next });
+}
+
+/** Applies one group's fetched task list: the open group's task rows update,
+ * and the rail's busy dot follows any running task. */
+function applyGroupTasks(groupID: string, tasks: AgentGroupTask[]): void {
+  if (useChatStore.getState().activeGroupID === groupID) {
+    useChatStore.setState({ groupTasks: tasks });
+  }
+
+  setGroupBusy(
+    groupID,
+    tasks.some((t: AgentGroupTask): boolean => t.State === "running")
+  );
+}
+
+/** Fetches one group's tasks and applies them (the live task-updated path).
+ * Keep-going: a failed fetch keeps the last known state. */
+async function refreshTasksFor(groupID: string): Promise<void> {
+  try {
+    const tasks = await client.groups.tasks(groupID);
+
+    applyGroupTasks(groupID, tasks);
+  } catch {
+    // Keep the last known tasks; the next event or refresh retries.
+  }
+}
+
+/** Upserts one live transcript row into the OPEN group's projection
+ * (add-agent-groups design D9): a new MessageID appends; a known one (a
+ * copy-back replace after a regenerate, design D7) replaces in place. The
+ * rendered entries re-map from the rows — the mapping is pure and the
+ * MessageID-keyed entry ids keep the render stable. Events for a group that
+ * is not open are ignored (its transcript loads on open). */
+function ingestGroupMessage(groupID: string, row: AgentGroupMessage): void {
+  const state = useChatStore.getState();
+
+  if (state.activeGroupID !== groupID) return;
+
+  const known = seenGroupMessageIDs.has(row.MessageID);
+  let rows: AgentGroupMessage[];
+
+  if (known) {
+    rows = state.groupMessages.map((m: AgentGroupMessage): AgentGroupMessage =>
+      m.MessageID === row.MessageID ? row : m
+    );
+  } else {
+    seenGroupMessageIDs.add(row.MessageID);
+    rows = [...state.groupMessages, row];
+  }
+
+  useChatStore.setState({
+    groupMessages: rows,
+    entries: mapGroupMessages(rows),
+  });
+}
+
+/** Live handler factory: one closure per subscribed group (design D9). The
+ * transcript ingest stays active-group-only; task updates refresh the busy
+ * dot for EVERY group and the open group's task rows. */
+function makeGroupIngest(groupID: string): (event: GroupEvent) => void {
+  return (event: GroupEvent): void => {
+    if (event.kind === "message-appended" && event.message) {
+      ingestGroupMessage(groupID, event.message);
+
+      return;
+    }
+
+    if (event.kind === "task-updated") {
+      void refreshTasksFor(groupID);
+    }
+  };
+}
+
+/** Aligns the per-group live subscriptions with the known group list (design
+ * D9): new groups subscribe, removed groups unsubscribe. Called from
+ * refreshGroups once the list has landed. */
+function syncGroupSubscriptions(groups: AgentGroup[]): void {
+  const known = new Set(groups.map((g: AgentGroup): string => g.ID));
+
+  for (const [id, off] of groupSubscriptions) {
+    if (!known.has(id)) {
+      off();
+      groupSubscriptions.delete(id);
+    }
+  }
+
+  for (const group of groups) {
+    if (!groupSubscriptions.has(group.ID)) {
+      groupSubscriptions.set(
+        group.ID,
+        client.groups.onGroupEvent(group.ID, makeGroupIngest(group.ID))
+      );
+    }
+  }
+}
+
+/**
+ * Wires the group surfaces' live sources (add-agent-groups design D9):
+ * `groups:changed` refetches the list (and re-aligns the per-group event
+ * subscriptions), and each group's own channel feeds the rail's busy dots
+ * and the open group's transcript. Returns the combined unsubscribe. Called
+ * once from the chat feature root's mount effect, beside
+ * connectRunningSessions — the store module stays free of import-time side
+ * effects.
+ */
+export function connectGroups(): Unsubscribe {
+  try {
+    const offChanged = client.events.onGroupsChanged((): void => {
+      void useChatStore.getState().refreshGroups();
+    });
+
+    return (): void => {
+      offChanged();
+
+      for (const off of groupSubscriptions.values()) off();
+
+      groupSubscriptions.clear();
+    };
+  } catch {
+    // Keep-going at the seam: the client is injectable and the suites mock
+    // only the members they drive, so a transport without the additive
+    // groups channel opts out of the wiring instead of failing the mount.
+    // The real client always carries it, and nothing else has subscribed
+    // when this fires.
+    return (): void => undefined;
   }
 }
 
@@ -470,13 +789,27 @@ function makeIngest(sessionID: string): (e: SessionEvent) => void {
   };
 }
 
-/** Live handler + the ingest step of the replay loop share this: dedupe by
- * event id, fold, then run the turn-terminal side effects. */
+/** The live path's fold (task 5.1): dedupe by event id, then either batch
+ * the per-token delta kinds for the frame's single commit or — every other
+ * kind — drain the pending batch first and fold this event immediately, so
+ * arrival order survives and turn terminals stay synchronous. The replay
+ * loops (selectSession / loadEarlier) fold with applyEvent directly and
+ * never enter here; the page-load `eventBuffer` above intercepts live
+ * events before this while a session's initial page is in flight. */
 function ingest(e: SessionEvent): void {
   if (e.id) {
     if (seenEventIDs.has(e.id)) return;
     seenEventIDs.add(e.id);
   }
+
+  if (isCoalescedKind(e.kind)) {
+    pendingDeltas.push(e);
+    scheduleDeltaFlush();
+
+    return;
+  }
+
+  flushPendingDeltas();
 
   useChatStore.setState((prev: ExtendedChatStore) => ({
     entries: applyEvent(prev.entries, e),
@@ -616,6 +949,63 @@ async function dispatch(
   setBusy();
 }
 
+/** The attachment metadata rows one group send rides in with (add-agent-groups
+ * design D4): the ready uploads' capability keys resolve back through the
+ * chip tray the composer filled — the send binding carries full attachment
+ * metadata, not bare keys. */
+function groupAttachments(keys: string[]): SessionAttachment[] {
+  if (keys.length === 0) return [];
+
+  const chips = useAttachmentStore.getState().chips;
+  const attachments: SessionAttachment[] = [];
+
+  for (const key of keys) {
+    const chip = chips.find((c: AttachmentChip): boolean => c.key === key);
+
+    if (chip)
+      attachments.push({
+        key,
+        name: chip.name,
+        mime: chip.mime,
+        size: chip.size,
+      });
+  }
+
+  return attachments;
+}
+
+/** The group send path (add-agent-groups design D4): the message routes
+ * through the groups Send binding — the explicit recipient the mention
+ * picker recorded rides along and clears with the send. The transcript
+ * updates through the group's live events (the user row and any coordinator
+ * line arrive as message-appended events), so no local echo is minted. */
+async function dispatchGroup(text: string, keys: string[]): Promise<void> {
+  const groupID = useChatStore.getState().activeGroupID;
+
+  if (!groupID) return;
+
+  useChatStore.setState({ dispatching: true });
+  setBusy();
+
+  try {
+    await client.groups.send({
+      GroupID: groupID,
+      Text: text,
+      Attachments: groupAttachments(keys),
+      RecipientAgentID: useChatStore.getState().groupRecipient ?? "",
+      ReplyToMessageID: "",
+    });
+    useChatStore.setState({ groupRecipient: null });
+  } catch (err: unknown) {
+    useChatStore.setState({
+      error: errorMessage(err, "Failed to send message"),
+    });
+  }
+
+  useChatStore.setState({ dispatching: false });
+  setBusy();
+}
+
 export const useChatStore = create<ExtendedChatStore>(
   (set: ChatSetState, get: ChatGetState) => ({
     agents: [],
@@ -625,6 +1015,14 @@ export const useChatStore = create<ExtendedChatStore>(
     activeAgentID: null,
     sessions: [],
     activeSessionID: null,
+
+    groups: [],
+    activeGroupID: null,
+    groupMembers: [],
+    groupMessages: [],
+    groupTasks: [],
+    busyGroups: new Set<string>(),
+    groupRecipient: null,
 
     models: [],
     modelOverride: "",
@@ -684,14 +1082,26 @@ export const useChatStore = create<ExtendedChatStore>(
       // leaves the empty set for turns:changed and the focus re-query.
       void syncRunningSessions();
 
+      // The rail's groups section (add-agent-groups design D9): the list and
+      // the busy dots load beside the first selection; keep-going on failure.
+      void get().refreshGroups();
+
       const target = useNavStore.getState().chatTarget;
 
       if (target) {
         useNavStore.getState().clearChatTarget();
 
+        // A group target (design D9) opens the group conversation.
+        if (target.groupID) {
+          await get().openGroup(target.groupID);
+
+          return;
+        }
+
         if (
-          target.agentID !== get().activeAgentID ||
-          (target.sessionID && target.sessionID !== get().activeSessionID)
+          target.agentID !== undefined &&
+          (target.agentID !== get().activeAgentID ||
+            (target.sessionID && target.sessionID !== get().activeSessionID))
         ) {
           await get().selectAgent(target.agentID, target.sessionID);
         }
@@ -710,7 +1120,19 @@ export const useChatStore = create<ExtendedChatStore>(
     ): Promise<void> => {
       const seq = ++loadSeq;
       eventBuffer = null;
-      set({ activeAgentID: agentID, error: null });
+      clearPendingDeltas();
+      // Leaving the group surface (add-agent-groups design D9): any agent-
+      // session selection closes the open group and its state goes with it.
+      seenGroupMessageIDs = new Set<string>();
+      set({
+        activeAgentID: agentID,
+        error: null,
+        activeGroupID: null,
+        groupMessages: [],
+        groupMembers: [],
+        groupTasks: [],
+        groupRecipient: null,
+      });
       // The composer's model/effort pickers read the agent's provider
       // capabilities; a stale continuation must not overwrite a newer agent's.
       void loadModels(agentID);
@@ -823,6 +1245,7 @@ export const useChatStore = create<ExtendedChatStore>(
     selectSession: async (sessionID: string): Promise<void> => {
       const seq = ++loadSeq;
       eventBuffer = { sessionID, seq, events: [] };
+      clearPendingDeltas();
 
       seenEventIDs = new Set<string>();
       // The queue belongs to the session being left: dispatch always targets
@@ -929,6 +1352,18 @@ export const useChatStore = create<ExtendedChatStore>(
 
         if (seq !== loadSeq) return;
 
+        // add-browser-login-handover, spec "Expired pending request": a
+        // transcript ending in a bare input_required while the session is NOT
+        // busy (cold restart — the pending-value map is gone) folds expired
+        // client-side, the same normalization as the live busy→false
+        // transition. A busy (live-parked) session keeps the card pending.
+        // Client-side only: the log stays append-only-from-turns.
+        if (!turnState.busy) {
+          set({
+            entries: expireUnresolvedInputs(get().entries),
+          });
+        }
+
         if (turnState.busy && !get().finishedTurnIDs.has(turnState.turn_id)) {
           const nextRunning = new Set(get().runningSessions);
           nextRunning.add(sessionID);
@@ -955,13 +1390,209 @@ export const useChatStore = create<ExtendedChatStore>(
       }
     },
 
+    // Opens a group conversation (add-agent-groups design D9, task 5.1):
+    // the group row, roster, newest transcript page, and tasks load together,
+    // the projection maps into the shared entries, and the surface switches —
+    // activeSessionID clears so the composer targets the group. The loadSeq
+    // guard mirrors selectAgent/selectSession: a superseded load must not
+    // write state.
+    openGroup: async (groupID: string): Promise<void> => {
+      const seq = ++loadSeq;
+      eventBuffer = null;
+      clearPendingDeltas();
+      seenEventIDs = new Set<string>();
+      seenGroupMessageIDs = new Set<string>();
+      set({
+        activeGroupID: groupID,
+        activeAgentID: null,
+        activeSessionID: null,
+        entries: [],
+        groupMessages: [],
+        groupMembers: [],
+        groupTasks: [],
+        groupRecipient: null,
+        usage: null,
+        loadingSession: true,
+        error: null,
+        queue: [],
+        dispatching: false,
+        activeTurnID: null,
+        finishedTurnIDs: new Set<string>(),
+        modelOverride: "",
+        effortOverride: "",
+        oldestSeq: null,
+        loadingEarlier: false,
+        panelTabs: [],
+        activePanelTabID: null,
+        lastTurnOutcome: null,
+      });
+      setBusy();
+
+      try {
+        const [group, members, page, tasks] = await Promise.all([
+          client.groups.get(groupID),
+          client.groups.members(groupID),
+          client.groups.transcriptPage(groupID, 0, TRANSCRIPT_PAGE_SIZE),
+          client.groups.tasks(groupID),
+        ]);
+
+        if (seq !== loadSeq) return;
+
+        seenGroupMessageIDs = new Set(
+          page.map((m: AgentGroupMessage): string => m.MessageID)
+        );
+
+        set({
+          groups: upsertGroupRow(get().groups, group),
+          groupMembers: members,
+          groupMessages: page,
+          groupTasks: tasks,
+          entries: mapGroupMessages(page),
+          loadingSession: false,
+          oldestSeq: groupOldestSeqOf(page),
+        });
+
+        // The opened group's live channel rides the same seam as the rail's
+        // subscriptions (design D9): ensure it is listening even when
+        // refreshGroups has not run yet.
+        syncGroupSubscriptions(get().groups);
+      } catch (err: unknown) {
+        if (seq !== loadSeq) return;
+
+        set({
+          error: errorMessage(err, "Failed to load group"),
+          loadingSession: false,
+        });
+      }
+    },
+
+    // Creates a group (spec "Group entity and membership", scenario "Create
+    // a group with members"): the binding writes the row and its initial
+    // roster (the first member becomes the lead backend-side), then
+    // refreshGroups aligns the rail's list and per-group subscriptions and
+    // openGroup opens the created group's conversation — the new group
+    // opens as a conversation, exactly the spec scenario. A failed create
+    // records the store error and resolves null (the caller keeps its form
+    // and announces it); the surface is unchanged.
+    createGroup: async (
+      name: string,
+      title: string,
+      instructions: string,
+      memberAgentIDs: string[] | null
+    ): Promise<AgentGroup | null> => {
+      let group: AgentGroup;
+
+      try {
+        group = await client.groups.create(
+          name,
+          title,
+          instructions,
+          memberAgentIDs
+        );
+      } catch (err: unknown) {
+        set({ error: errorMessage(err, "Failed to create group") });
+
+        return null;
+      }
+
+      await get().refreshGroups();
+      await get().openGroup(group.ID);
+
+      return group;
+    },
+
+    // The rail's groups list and busy dots (add-agent-groups design D9):
+    // fired at boot and on every groups:changed. One tasks read per group
+    // (groups are few) feeds the busy set; the open group's task rows ride
+    // the same pass. Keep-going: a failed fetch keeps the current list.
+    refreshGroups: async (): Promise<void> => {
+      try {
+        const groups = await client.groups.list();
+
+        const taskLists = await Promise.all(
+          groups.map(async (g: AgentGroup): Promise<AgentGroupTask[]> => {
+            try {
+              return await client.groups.tasks(g.ID);
+            } catch {
+              return [];
+            }
+          })
+        );
+
+        const busy = new Set<string>();
+
+        groups.forEach((g: AgentGroup, i: number): void => {
+          if (
+            taskLists[i].some(
+              (t: AgentGroupTask): boolean => t.State === "running"
+            )
+          ) {
+            busy.add(g.ID);
+          }
+        });
+
+        useChatStore.setState({ groups, busyGroups: busy });
+        syncGroupSubscriptions(groups);
+
+        const activeID = useChatStore.getState().activeGroupID;
+
+        if (activeID !== null) {
+          const idx = groups.findIndex(
+            (g: AgentGroup): boolean => g.ID === activeID
+          );
+
+          if (idx !== -1) useChatStore.setState({ groupTasks: taskLists[idx] });
+
+          // The open group's roster rides the same pass: member and lead
+          // mutations fire groups:changed (design D5), so the mention
+          // picker's source stays fresh without a second subscription.
+          try {
+            const members = await client.groups.members(activeID);
+
+            if (useChatStore.getState().activeGroupID === activeID) {
+              useChatStore.setState({ groupMembers: members });
+            }
+          } catch {
+            // Keep the last known roster; the next event or open retries.
+          }
+        }
+      } catch {
+        // Keep the last known list; the next groups:changed retries.
+      }
+    },
+
+    // The open group's task rows (the live task-updated path and the task
+    // controls' post-mutation refresh share this).
+    refreshGroupTasks: async (): Promise<void> => {
+      const groupID = get().activeGroupID;
+
+      if (!groupID) return;
+
+      await refreshTasksFor(groupID);
+    },
+
+    // The mention picker's explicit recipient (design D4): recorded between
+    // the pick and the send, cleared with it.
+    setGroupRecipient: (agentID: string | null): void => {
+      set({ groupRecipient: agentID });
+    },
+
     // Older history pages backward through the SAME reducer (task 6.1,
     // design D6): the older page folds into a fresh list — merging it into
     // the live window would wrongly extend trailing streaming entries — and
     // mergePrepended then joins the segments, dropping the boundary turn's
-    // leftover streaming entry so it renders as one unbroken entry.
+    // leftover streaming entry so it renders as one unbroken entry. With a
+    // group open the same windowing contract pages the group transcript
+    // (add-agent-groups design D6).
     loadEarlier: async (): Promise<void> => {
       const s = get();
+
+      if (s.activeGroupID !== null) {
+        await loadGroupEarlierPage();
+
+        return;
+      }
+
       const sessionID = s.activeSessionID;
 
       if (!sessionID || s.oldestSeq === null || s.loadingEarlier) return;
@@ -1026,6 +1657,12 @@ export const useChatStore = create<ExtendedChatStore>(
       void client.chat.unsubscribe(sessionID);
 
       if (eventBuffer?.sessionID === sessionID) eventBuffer = null;
+
+      // Only the viewed session's deltas can be pending (makeIngest's
+      // active-session guard); a background delete must not drain them.
+      if (useChatStore.getState().activeSessionID === sessionID) {
+        clearPendingDeltas();
+      }
 
       setSessionRunning(sessionID, false);
 
@@ -1193,12 +1830,21 @@ export const useChatStore = create<ExtendedChatStore>(
     // Attachment keys ride the send (task 5.4, design D5): ready uploads
     // pass their capability keys; an attachment-only message (no text) is
     // sendable. While busy, the message queues with its keys (the module
-    // map — QueuedMessage carries text only) and dispatches in order.
+    // map — QueuedMessage carries text only) and dispatches in order. With
+    // a group open the send routes through the groups binding instead
+    // (add-agent-groups design D4) — group sends carry no client-tracked
+    // turn, so there is nothing to queue behind.
     send: async (text: string, attachmentKeys?: string[]): Promise<void> => {
       const trimmed = text.trim();
       const keys = attachmentKeys ?? [];
 
       if (!trimmed && keys.length === 0) return;
+
+      if (get().activeGroupID !== null) {
+        await dispatchGroup(trimmed, keys);
+
+        return;
+      }
 
       // No open session: create the active agent's session first (task 3.4)
       // so typing + Enter never silently no-ops. `newSession` selects the

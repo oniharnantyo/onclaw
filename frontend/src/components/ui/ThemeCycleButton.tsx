@@ -70,22 +70,25 @@ export function ThemeCycleButton({
         data-od-id={odId ?? testId}
         aria-label={text}
         className={cn(
-          "flex items-center rounded-[12px] text-muted transition-colors hover:bg-[color-mix(in_oklab,var(--fg)_7%,transparent)]",
+          "flex items-center transition-colors",
           showLabel
-            ? "h-[30px] w-[calc(100%-16px)] mx-2 gap-2 px-3 text-left hover:text-fg2"
+            ? // SideRow parity (rail footer alignment): identical row
+              // geometry, icon column, and idle/hover colors as the
+              // Settings row rendered directly below it.
+              "h-[30px] w-full gap-2 rounded-md px-2.5 text-left text-fg2 hover:bg-[color-mix(in_oklab,var(--fg)_6%,transparent)] hover:text-fg"
             : variant === "rail"
-              ? "h-11 w-11 justify-center hover:text-fg2"
-              : "h-9 w-9 justify-center rounded-md hover:text-fg"
+              ? "h-11 w-11 justify-center rounded-[12px] text-muted hover:bg-[color-mix(in_oklab,var(--fg)_7%,transparent)] hover:text-fg2"
+              : "h-9 w-9 justify-center rounded-md text-muted hover:bg-[color-mix(in_oklab,var(--fg)_7%,transparent)] hover:text-fg"
         )}
       >
         <Icon
           name={ICON_FOR[preference]}
-          size={variant === "rail" ? 19 : 17}
+          size={showLabel ? 16 : variant === "rail" ? 19 : 17}
           sw={1.7}
           className="shrink-0"
         />
         {showLabel && (
-          <span className="min-w-0 flex-1 truncate text-[13px] font-medium">
+          <span className="min-w-0 flex-1 truncate text-[13px]">
             Theme: {preference}
           </span>
         )}

@@ -165,4 +165,34 @@ describe("Combobox", () => {
 
     await unmount();
   });
+
+  it("labels the search input and gives the clear button a 24px hit area (tasks 3.5, 7.3)", async () => {
+    const { getByRole, getByTestId, getByLabelText, unmount } = await renderUI(
+      <Combobox options={OPTIONS} value="gpt-4o-mini" onChange={() => {}} />
+    );
+
+    await act(async () => {
+      fireEvent.click(getByRole("combobox"));
+    });
+
+    // The search input has an accessible name that survives typing.
+    const search = getByLabelText("Search") as HTMLInputElement;
+    expect(search.getAttribute("data-testid")).toBe("combobox-search-input");
+    await act(async () => {
+      fireEvent.change(search, { target: { value: "4o" } });
+    });
+    expect((getByLabelText("Search") as HTMLInputElement).value).toBe("4o");
+
+    // The clear button clears and keeps a 24px hit target (glyph unchanged).
+    const clear = getByTestId("combobox-clear");
+    expect(clear.className).toContain("h-6");
+    expect(clear.className).toContain("w-6");
+
+    await act(async () => {
+      fireEvent.click(clear);
+    });
+    expect((getByLabelText("Search") as HTMLInputElement).value).toBe("");
+
+    await unmount();
+  });
 });

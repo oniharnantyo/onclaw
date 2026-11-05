@@ -11,6 +11,7 @@
 import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { fireEvent, screen, waitFor } from "@testing-library/dom";
+import userEvent from "@testing-library/user-event";
 import {
   afterEach,
   beforeEach,
@@ -266,6 +267,75 @@ afterEach(() => {
   }
 
   document.body.innerHTML = "";
+});
+
+describe("AgentConfigModal tab strips", () => {
+  it("moves the config tab selection with the arrow keys and labels the panel by the active tab", async () => {
+    await renderModal(makeAgent());
+    const user = userEvent.setup();
+
+    const identity = screen.getByTestId("config-tab-identity");
+
+    // Roving tabindex: only the active tab is in the tab order.
+    expect(identity.getAttribute("aria-selected")).toBe("true");
+    expect(identity.getAttribute("tabindex")).toBe("0");
+    expect(
+      screen.getByTestId("config-tab-model").getAttribute("tabindex")
+    ).toBe("-1");
+
+    identity.focus();
+    await user.keyboard("{ArrowRight}");
+
+    const model = screen.getByTestId("config-tab-model");
+
+    expect(model.getAttribute("aria-selected")).toBe("true");
+    expect(model.getAttribute("tabindex")).toBe("0");
+    expect(identity.getAttribute("aria-selected")).toBe("false");
+    expect(identity.getAttribute("tabindex")).toBe("-1");
+    expect(document.activeElement).toBe(model);
+
+    // The active section is the panel labelled by the selected tab.
+    const panel = screen.getByTestId("config-section-model");
+
+    expect(panel.getAttribute("role")).toBe("tabpanel");
+    expect(panel.getAttribute("aria-labelledby")).toBe(model.id);
+
+    // The tabs live inside the tablist container.
+    const tablist = screen.getByRole("tablist", {
+      name: "Agent configuration",
+    });
+
+    expect(tablist.contains(model)).toBe(true);
+  });
+
+  it("moves the prompt-document rail selection with the arrow keys and labels the editor by it", async () => {
+    await renderModal(makeAgent());
+    const user = userEvent.setup();
+
+    const identityDoc = screen.getByTestId("prompt-file-identity");
+
+    expect(identityDoc.getAttribute("aria-selected")).toBe("true");
+
+    identityDoc.focus();
+    await user.keyboard("{ArrowRight}");
+
+    const soul = screen.getByTestId("prompt-file-soul");
+
+    expect(soul.getAttribute("aria-selected")).toBe("true");
+    expect(identityDoc.getAttribute("aria-selected")).toBe("false");
+    expect(document.activeElement).toBe(soul);
+
+    const panel = document.querySelector(
+      `[role="tabpanel"][aria-labelledby="${soul.id}"]`
+    );
+
+    expect(panel).toBeTruthy();
+
+    // The tabs live inside the tablist container.
+    const tablist = screen.getByRole("tablist", { name: "Prompt documents" });
+
+    expect(tablist.contains(soul)).toBe(true);
+  });
 });
 
 describe("AgentConfigModal Identity section", () => {

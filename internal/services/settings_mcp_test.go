@@ -579,7 +579,7 @@ func TestConnectIntegrationFamilyCreatesProductRows(t *testing.T) {
 	listed, err := svc.MCPServers(ctx)
 	require.NoError(t, err)
 	require.Len(t, listed, 2)
-	byService := make(map[string]store.MCPServer, len(listed))
+	byService := make(map[string]MCPServerView, len(listed))
 	for _, row := range listed {
 		byService[row.Service] = row
 	}

@@ -3,12 +3,15 @@
 
 // eslint-disable-next-line @typescript-eslint/ban-ts-comment
 // @ts-ignore: Unused imports
-import { Call as $Call, CancellablePromise as $CancellablePromise } from "@wailsio/runtime";
+import {
+  Call as $Call,
+  CancellablePromise as $CancellablePromise,
+} from "@wailsio/runtime";
 
 /**
  * SetLight forces the light ("aqua") or dark ("darkAqua") window appearance
  * so the native glass and traffic lights match the app theme.
  */
 export function SetLight(light: boolean): $CancellablePromise<void> {
-    return $Call.ByID(3546192680, light);
+  return $Call.ByID(3546192680, light);
 }

@@ -45,4 +45,11 @@ var (
 	// already-resolved decision, or a session with nothing pending. The
 	// pending state is left intact (spec chat-approvals: conflict error).
 	ErrApprovalNotPending = errors.New("no pending approval for this interrupt")
+	// ErrInputNotPending is returned by ResolveInput, BeginTakeover, and
+	// ResolveAttention when the named interrupt is not a live browser
+	// attention request — a stale id, an already-resolved receipt, or a
+	// pending request whose process (and in-memory value) is gone after a
+	// restart. The pending state is left intact; the card resolves expired
+	// client-side (design D3).
+	ErrInputNotPending = errors.New("no pending browser input for this interrupt")
 )

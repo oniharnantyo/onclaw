@@ -9,6 +9,8 @@ import { useEffect, useRef } from "react";
 import type { MouseEvent as ReactMouseEvent, ReactElement } from "react";
 import { X } from "lucide-react";
 
+import { useFocusTrap } from "../../../../components/ui/useFocusTrap";
+
 export interface LightboxProps {
   src: string;
   alt: string;
@@ -23,6 +25,11 @@ export function Lightbox({
   testidPrefix = "lightbox",
 }: LightboxProps): ReactElement {
   const closeButtonRef = useRef<HTMLButtonElement | null>(null);
+  const figureRef = useRef<HTMLElement | null>(null);
+
+  // Shared Tab trap (design D10a): Tab cycles inside the overlay instead of
+  // escaping to the transcript behind it.
+  useFocusTrap(figureRef);
 
   // The trigger to restore focus to, captured once at open.
   const restoreRef = useRef<HTMLElement | null>(
@@ -57,6 +64,7 @@ export function Lightbox({
       onClick={onClose}
     >
       <figure
+        ref={figureRef}
         className="max-h-full max-w-full rounded-md border border-line bg-surface p-2 shadow-[var(--elev-raised)]"
         onClick={(event: ReactMouseEvent<HTMLElement>): void =>
           event.stopPropagation()

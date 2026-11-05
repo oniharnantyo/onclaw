@@ -86,6 +86,15 @@ func (m *fakeAgentsManager) Cancel(context.Context, string) error { return panic
 func (m *fakeAgentsManager) ResolveApproval(context.Context, string, string, bool) error {
 	return panicUnexpected()
 }
+func (m *fakeAgentsManager) ResolveInput(context.Context, string, string, string, string, bool, string) error {
+	return panicUnexpected()
+}
+func (m *fakeAgentsManager) BeginTakeover(context.Context, string, string) error {
+	return panicUnexpected()
+}
+func (m *fakeAgentsManager) ResolveAttention(context.Context, string, string, string) error {
+	return panicUnexpected()
+}
 func (m *fakeAgentsManager) Busy(context.Context, string) bool { panicUnexpected(); return false }
 func (m *fakeAgentsManager) TurnState(context.Context, string) (bool, string) {
 	panicUnexpected()
@@ -94,6 +103,15 @@ func (m *fakeAgentsManager) TurnState(context.Context, string) (bool, string) {
 func (m *fakeAgentsManager) RunningSessions(context.Context) []string {
 	panicUnexpected()
 	return nil
+}
+
+// SubmitGroup and SummarizeText are no-op interface fillers: the schedule
+// adapter paths under test never group-dispatch or summarize.
+func (m *fakeAgentsManager) SubmitGroup(context.Context, agents.GroupTurnRequest) (*agents.Turn, error) {
+	return nil, nil
+}
+func (m *fakeAgentsManager) SummarizeText(context.Context, string, string, string) (string, error) {
+	return "", nil
 }
 
 func panicUnexpected() error {

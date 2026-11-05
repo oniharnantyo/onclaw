@@ -255,9 +255,12 @@ describe("components/ui/ThemeCycleButton", () => {
 
     const btn = getByTestId("rail-theme");
 
-    // Visible label row (Settings-row shape), tooltip suppressed
+    // Visible label row (Settings-row shape — full SideRow parity: same
+    // width, padding, and idle color as the row below it), tooltip suppressed
     expect(getByText("Theme: dark")).not.toBeNull();
-    expect(btn.className).toContain("w-[calc(100%-16px)]");
+    expect(btn.className).toContain("w-full");
+    expect(btn.className).toContain("px-2.5");
+    expect(btn.className).toContain("text-fg2");
     expect(btn.className).toContain("text-left");
 
     vi.useFakeTimers();

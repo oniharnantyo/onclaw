@@ -60,6 +60,7 @@ func (s *service) Append(ctx context.Context, sessionID string, events []Event) 
 			Error:              ev.Error,
 			Compaction:         ev.Compaction,
 			Approval:           ev.Approval,
+			Input:              ev.Input,
 			Plan:               ev.Plan,
 		})
 		if err != nil {
@@ -147,6 +148,7 @@ func decodeEvents(rows []store.SessionEvent) ([]Event, error) {
 			Error:              payload.Error,
 			Compaction:         payload.Compaction,
 			Approval:           payload.Approval,
+			Input:              payload.Input,
 			Plan:               payload.Plan,
 		})
 	}
@@ -170,12 +172,16 @@ type eventPayload struct {
 	// Artifacts carries the turn_completed artifacts list (add-turn-artifacts
 	// design D4), beside its truncation flag; a payload persisted before the
 	// fields existed decodes with the zero values.
-	Artifacts          []Artifact    `json:"artifacts,omitempty"`
-	ArtifactsTruncated bool          `json:"artifacts_truncated,omitempty"`
-	Error              string        `json:"error,omitempty"`
-	Compaction         *Compaction   `json:"compaction,omitempty"`
-	Approval           *Approval     `json:"approval,omitempty"`
-	Plan               *PlanSnapshot `json:"plan,omitempty"`
+	Artifacts          []Artifact  `json:"artifacts,omitempty"`
+	ArtifactsTruncated bool        `json:"artifacts_truncated,omitempty"`
+	Error              string      `json:"error,omitempty"`
+	Compaction         *Compaction `json:"compaction,omitempty"`
+	Approval           *Approval   `json:"approval,omitempty"`
+	// Input carries the browser-attention request/receipt payload
+	// (add-browser-login-handover design D3); a payload persisted before the
+	// field existed decodes with the zero value.
+	Input *Input        `json:"input,omitempty"`
+	Plan  *PlanSnapshot `json:"plan,omitempty"`
 }
 
 func knownKind(k Kind) bool {
@@ -183,7 +189,7 @@ func knownKind(k Kind) bool {
 	case KindUserMessage, KindTextDelta, KindReasoningDelta, KindAssistantMessage,
 		KindReasoning, KindToolActivity, KindTaskActivity, KindTurnCompleted, KindTurnError,
 		KindTurnCancelled, KindApprovalRequired, KindApprovalResolved, KindCompaction,
-		KindPlanActivity:
+		KindPlanActivity, KindInputRequired, KindInputResolved:
 		return true
 	default:
 		return false

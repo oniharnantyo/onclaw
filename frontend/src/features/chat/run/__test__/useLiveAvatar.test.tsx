@@ -37,9 +37,14 @@ vi.mock("../../tools/useReducedMotion", () => ({
 
 let latest: LiveAvatarProps | undefined;
 
+/** Counts probe renders: task 5.4's selector-stability assertion reads it
+ * around a store delta (a delta must not re-render the face). */
+let probeRenders = 0;
+
 /** The probe through which the hook's return value is observed: renderUI
  * renders over react-dom, so a component body is the read point. */
 function Probe(): ReactElement | null {
+  probeRenders += 1;
   latest = useLiveAvatar();
 
   return null;
@@ -49,6 +54,7 @@ async function renderProbe(): Promise<{
   rerender: (ui: React.ReactElement) => Promise<void>;
 }> {
   latest = undefined;
+  probeRenders = 0;
 
   return renderUI(<Probe />);
 }
@@ -86,6 +92,23 @@ function userEntry(turnID: string): Entry {
     id: `entry-${nextEntry}`,
     turnID,
     text: "hello",
+    at: "2026-01-01T00:00:00Z",
+  };
+}
+
+function assistantEntry(
+  turnID: string,
+  streaming: boolean,
+  text: string
+): Entry {
+  nextEntry += 1;
+
+  return {
+    kind: "assistant",
+    id: `entry-${nextEntry}`,
+    turnID,
+    text,
+    streaming,
     at: "2026-01-01T00:00:00Z",
   };
 }
@@ -387,6 +410,49 @@ describe("useLiveAvatar", () => {
 
     expect(handle.nod).not.toHaveBeenCalled();
     expect(handle.showFx).not.toHaveBeenCalled();
+  });
+
+  it("does not re-render on a streaming text delta (task 5.4 selector stability)", async () => {
+    await renderProbe();
+
+    await act(async () => {
+      useChatStore.setState({
+        activeTurnID: "t1",
+        entries: [userEntry("t1"), assistantEntry("t1", true, "a")],
+      });
+    });
+    expect(latest?.agentState).toBe("speaking");
+
+    const before = probeRenders;
+
+    // The delta replaces the tail entry and the entries array, but the
+    // active turn's phase is still "speaking": the scalar selector's
+    // equality gates the re-render.
+    await act(async () => {
+      useChatStore.setState({
+        entries: [
+          userEntry("t1"),
+          assistantEntry("t1", true, "a longer streamed answer"),
+        ],
+      });
+    });
+
+    expect(probeRenders).toBe(before);
+    expect(latest?.agentState).toBe("speaking");
+
+    // A real slice change (the entry stops streaming) crosses the edge and
+    // re-renders with the new level.
+    await act(async () => {
+      useChatStore.setState({
+        entries: [
+          userEntry("t1"),
+          assistantEntry("t1", false, "a longer streamed answer"),
+        ],
+      });
+    });
+
+    expect(probeRenders).toBe(before + 1);
+    expect(latest?.agentState).toBe("thinking");
   });
 
   it("keeps the same live object across renders and unrelated store changes", async () => {

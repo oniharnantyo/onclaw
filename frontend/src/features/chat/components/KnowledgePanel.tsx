@@ -301,6 +301,7 @@ export function KnowledgePanel({
           <input
             className="min-w-0 flex-1 rounded-md border border-line bg-transparent px-1.5 py-1 text-xs text-fg2 placeholder:text-muted focus:border-accent focus:outline-none"
             placeholder="Description (optional)"
+            aria-label="Document description"
             value={description}
             disabled={uploading}
             data-testid="knowledge-upload-description"

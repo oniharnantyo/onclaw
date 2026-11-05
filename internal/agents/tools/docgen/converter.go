@@ -11,10 +11,10 @@ import (
 )
 
 // missingChromeMessage mirrors the browser tool's launch-failure wording:
-// go-rod shares ~/.cache/rod between both tools and picoloom drives rod
-// directly, so the same remedy (setting CHROME_PATH) applies to a missing
-// browser binary.
-const missingChromeMessage = "start chromium (set CHROME_PATH to skip rod's lookup/download)"
+// the browser tool launches Chromium from its own launcher and picoloom
+// launches its own, so the same remedy (setting CHROME_PATH) applies to a
+// missing browser binary.
+const missingChromeMessage = "start chromium (set CHROME_PATH to a valid browser binary)"
 
 // Result reports what a conversion produced; the create_document tool
 // surfaces these fields on its result card.

@@ -211,6 +211,33 @@ afterEach(async (): Promise<void> => {
 });
 
 describe("SchedulesView", () => {
+  it("marks the list busy while schedules load and clears busy after (task 3.7)", async () => {
+    let resolveList: ((v: ScheduleView[]) => void) | null = null;
+    mockedClient.schedules.list.mockImplementationOnce(
+      () =>
+        new Promise<ScheduleView[]>((resolve: (v: ScheduleView[]) => void) => {
+          resolveList = resolve;
+        })
+    );
+
+    await renderView();
+
+    const loading = await waitFor(() =>
+      document.querySelector("[data-testid='schedules-loading']")
+    );
+
+    expect(loading!.getAttribute("aria-busy")).toBe("true");
+
+    await act(async () => {
+      resolveList!([makeSchedule()]);
+    });
+
+    expect(
+      document.querySelector("[data-testid='schedules-loading']")
+    ).toBeNull();
+    expect(screen.getByTestId("schedule-row-s1")).toBeTruthy();
+  });
+
   it("renders rows with name, agent, recurrence, next fire, and last-run label", async () => {
     await renderView();
 

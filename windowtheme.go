@@ -1,11 +1,12 @@
-//go:build !server
-
 // WindowThemeService syncs the native window appearance with the app theme
 // toggle. The MacBackdropLiquidGlass window renders its frost from
 // NSWindow.appearance — which follows the SYSTEM, not the app — so a light
 // app theme on a dark system greys the whole UI out. Forcing aqua/darkAqua
 // here makes the native glass track the toggle instead. AppKit calls must
-// run on the main thread, hence InvokeSync.
+// run on the main thread, hence InvokeSync. The type compiles on every host
+// (server included, where the stub appearance call and the never-set handle
+// make it inert) so the shared frontend's binding surface is complete under
+// both build tags.
 package main
 
 import (

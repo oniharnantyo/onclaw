@@ -26,7 +26,7 @@ import (
 // workspace-free too but needs a schedule service, so it is not in this
 // list — every manager these subtests build without WithScheduler withholds
 // it (withheld, not a failure).
-var workspaceFreeTools = []string{ToolCurrentTime, ToolHTTPGet, ToolWebFetch, ToolWebSearch, ToolBrowser}
+var workspaceFreeTools = []string{ToolCurrentTime, ToolHTTPGet, ToolWebFetch, ToolWebSearch}
 
 // workspaceFreeToolsPlusScheduler is the workspace-free offer of a runtime
 // wired with a schedule service.
@@ -47,7 +47,7 @@ var fullCatalogNames = []string{
 	ToolLs, ToolReadFile, ToolWriteFile, ToolEditFile, ToolGlob, ToolGrep,
 	ToolExecute, ToolDeleteFile,
 	ToolTaskCreate, ToolTaskGet, ToolTaskUpdate, ToolTaskList,
-	ToolWebFetch, ToolWebSearch, ToolBrowser,
+	ToolWebFetch, ToolWebSearch,
 	ToolScheduler,
 	ToolSaveDocument,
 	ToolCreateDocument, ToolEditDocument,
@@ -199,7 +199,7 @@ func TestResolveOfferedTools(t *testing.T) {
 		require.NoError(t, err)
 		names, err := surface.names(ctx)
 		require.NoError(t, err)
-		require.Equal(t, []string{ToolCurrentTime, ToolWebFetch, ToolWebSearch, ToolBrowser}, names)
+		require.Equal(t, []string{ToolCurrentTime, ToolWebFetch, ToolWebSearch}, names)
 	})
 
 	t.Run("globally disabled execute removes the shell", func(t *testing.T) {

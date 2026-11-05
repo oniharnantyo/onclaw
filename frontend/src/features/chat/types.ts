@@ -6,6 +6,10 @@ import type { ContextUsage } from "../../../bindings/github.com/oniharnantyo/bud
 import type { Event as SessionEvent } from "../../../bindings/github.com/oniharnantyo/buddies/internal/sessions/models";
 import type {
   Agent,
+  AgentGroup,
+  AgentGroupMember,
+  AgentGroupMessage,
+  AgentGroupTask,
   Session,
 } from "../../../bindings/github.com/oniharnantyo/buddies/internal/store/models";
 import type {
@@ -14,6 +18,29 @@ import type {
 } from "../../../bindings/github.com/oniharnantyo/buddies/internal/services/models";
 import type { KnowledgeDocument } from "../../lib/client";
 import type { Unsubscribe } from "../../lib/transport";
+
+/**
+ * Who authored a group-conversation entry (add-agent-groups design D7): the
+ * per-entry attribution the transcript renders instead of the session agent.
+ * A member row resolves its avatar + name from `agentID`; a coordinator row
+ * is a system line rendered without agent attribution. Ordinary-session
+ * entries carry no author and keep the session-agent attribution.
+ */
+export interface EntryAuthor {
+  kind: "member" | "coordinator";
+  /** The member agent's id (avatar + name resolve from it); absent on
+   * coordinator rows. */
+  agentID?: string;
+}
+
+/** The group-task linkage a transcript row may carry (add-agent-groups
+ * design D8): assignment and result rows (and member rows copied back while
+ * a task was in flight) link the work; the task's state renders beside the
+ * row and the task controls ride it. Absent on unlinked rows. */
+export interface EntryGroupTaskRef {
+  /** The linked group task's id (AgentGroupMessage.TaskID). */
+  taskID: string;
+}
 
 export interface UserEntry {
   kind: "user";
@@ -37,6 +64,10 @@ export interface AssistantEntry {
   /** True when the backend hit the artifact cap and the list is truncated
    * (add-turn-artifacts design D4); stamped beside artifacts. */
   artifactsTruncated?: boolean;
+  /** The entry's group-conversation author (add-agent-groups design D7);
+   * absent on ordinary-session entries, which attribute to the session
+   * agent. */
+  author?: EntryAuthor;
   at: string;
 }
 
@@ -91,6 +122,9 @@ export interface ErrorEntry {
   id: string;
   turnID?: string;
   message: string;
+  /** The entry's group-conversation author (add-agent-groups design D7) —
+   * a group error row is a coordinator line; absent on session entries. */
+  author?: EntryAuthor;
   at: string;
 }
 
@@ -240,6 +274,31 @@ export interface ChatStore {
   sessions: Session[];
   activeSessionID: string | null;
 
+  /**
+   * Agent groups (add-agent-groups tasks 5.1): the rail's groups section
+   * renders this list; opening one switches the conversation surface to the
+   * group transcript.
+   */
+  groups: AgentGroup[];
+  /** The open group's id; null while an agent session is the surface. */
+  activeGroupID: string | null;
+  /** The open group's roster in add order — the mention picker's source and
+   * the settings pane's member list. */
+  groupMembers: AgentGroupMember[];
+  /** The open group's raw transcript rows in transcript order; the rendered
+   * projection rides `entries` (the shared Entry mapping), so one renderer
+   * serves both surfaces. */
+  groupMessages: AgentGroupMessage[];
+  /** The open group's tasks — the transcript task rows resolve their state
+   * and controls from it. */
+  groupTasks: AgentGroupTask[];
+  /** Groups with a member turn in flight (any running task) — the rail's
+   * busy dots. */
+  busyGroups: Set<string>;
+  /** The member the group mention picker addressed (design D4); rides the
+   * next group send, then clears. */
+  groupRecipient: string | null;
+
   /** The active agent's provider models with their capability data
    * (task 2.2) — the composer's model/effort pickers render from it. */
   models: ModelCapability[];
@@ -287,6 +346,37 @@ export interface ChatStore {
    * send. */
   selectAgent: (agentID: string, sessionID?: string | null) => Promise<void>;
   selectSession: (sessionID: string) => Promise<void>;
+  /**
+   * Opens a group conversation (add-agent-groups design D9): loads the group,
+   * its roster, transcript page, and tasks, subscribes to its live events,
+   * and switches the surface — activeSessionID clears, so the composer
+   * targets the group. Any agent-session selection clears it back.
+   */
+  openGroup: (groupID: string) => Promise<void>;
+  /** Refetches the group list and the per-group busy states (design D9):
+   * fired at boot and on every groups:changed. */
+  refreshGroups: () => Promise<void>;
+  /**
+   * Creates a group with its initial roster (spec "Group entity and
+   * membership", scenario "Create a group with members"): the binding writes
+   * the row, then refreshGroups aligns the rail's list and per-group
+   * subscriptions and openGroup opens the created group's conversation —
+   * the new group opens as a conversation. Resolves the created row, or
+   * null when the create failed — the failure rides the store's `error`
+   * (the caller keeps its form and announces it).
+   */
+  createGroup: (
+    name: string,
+    title: string,
+    instructions: string,
+    memberAgentIDs: string[] | null
+  ) => Promise<AgentGroup | null>;
+  /** Refetches the open group's tasks (the live task-updated path and the
+   * task controls' post-mutation refresh). */
+  refreshGroupTasks: () => Promise<void>;
+  /** Records (or clears) the mention picker's explicit recipient for the
+   * next group send (design D4). */
+  setGroupRecipient: (agentID: string | null) => void;
   /**
    * Creates a session for `agentID` — the active agent when omitted (the
    * composer's send-path auto-create calls it bare) — and opens it through

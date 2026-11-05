@@ -297,7 +297,12 @@ describe("ChatView", () => {
 
     const transcript = screen.getByTestId("transcript");
     expect(transcript.textContent).toContain("first");
-    expect(transcript.textContent).toContain("Hello");
+
+    // The deltas ride the frame coalescer (task 5.1): the transcript
+    // catches up on the frame's single commit rather than per emit.
+    await waitFor(() => {
+      expect(screen.getByTestId("transcript").textContent).toContain("Hello");
+    });
   });
 
   it("queues sends while busy and delivers them one at a time in order", async () => {

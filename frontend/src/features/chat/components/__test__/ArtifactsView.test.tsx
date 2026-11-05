@@ -137,47 +137,47 @@ describe("ArtifactsView (add-turn-artifacts task 6.3, design D7)", () => {
   });
 });
 
-  it("renders a Save As affordance per chip that exports with the full path", async () => {
-    const onSaveAs = vi.fn();
+it("renders a Save As affordance per chip that exports with the full path", async () => {
+  const onSaveAs = vi.fn();
 
-    await renderUI(
-      <ArtifactsView
-        artifacts={[
-          artifact(
-            "sessions/0ae4aa0a3c954cbd9dfaf078ae573eae/artifacts/report.pdf",
-            2048
-          ),
-        ]}
-        onOpen={(): void => undefined}
-        onSaveAs={onSaveAs}
-      />
-    );
+  await renderUI(
+    <ArtifactsView
+      artifacts={[
+        artifact(
+          "sessions/0ae4aa0a3c954cbd9dfaf078ae573eae/artifacts/report.pdf",
+          2048
+        ),
+      ]}
+      onOpen={(): void => undefined}
+      onSaveAs={onSaveAs}
+    />
+  );
 
-    // The display name strips the per-session prefix exactly like the flat
-    // legacy one, and the affordance rides beside — never inside — the chip
-    // button.
-    expect(screen.getByRole("button", { name: "report.pdf" })).toBeTruthy();
+  // The display name strips the per-session prefix exactly like the flat
+  // legacy one, and the affordance rides beside — never inside — the chip
+  // button.
+  expect(screen.getByRole("button", { name: "report.pdf" })).toBeTruthy();
 
-    const save = screen.getByTestId("artifact-save-as");
+  const save = screen.getByTestId("artifact-save-as");
 
-    expect(save.getAttribute("aria-label")).toBe("Save report.pdf as");
+  expect(save.getAttribute("aria-label")).toBe("Save report.pdf as");
 
-    await act(async () => {
-      fireEvent.click(save);
-    });
-
-    expect(onSaveAs).toHaveBeenCalledExactlyOnceWith(
-      "sessions/0ae4aa0a3c954cbd9dfaf078ae573eae/artifacts/report.pdf"
-    );
+  await act(async () => {
+    fireEvent.click(save);
   });
 
-  it("renders no Save As affordance without the onSaveAs wiring", async () => {
-    await renderUI(
-      <ArtifactsView
-        artifacts={[artifact("artifacts/report.md", 12)]}
-        onOpen={(): void => undefined}
-      />
-    );
+  expect(onSaveAs).toHaveBeenCalledExactlyOnceWith(
+    "sessions/0ae4aa0a3c954cbd9dfaf078ae573eae/artifacts/report.pdf"
+  );
+});
 
-    expect(screen.queryByTestId("artifact-save-as")).toBeNull();
-  });
+it("renders no Save As affordance without the onSaveAs wiring", async () => {
+  await renderUI(
+    <ArtifactsView
+      artifacts={[artifact("artifacts/report.md", 12)]}
+      onOpen={(): void => undefined}
+    />
+  );
+
+  expect(screen.queryByTestId("artifact-save-as")).toBeNull();
+});

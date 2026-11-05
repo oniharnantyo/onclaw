@@ -6,6 +6,12 @@
  * with `headId` on the active variant. Pure derivation over the same entry
  * groups the message mapping uses — no store, React, or transport imports.
  *
+ * Conversion is per-entry memoized (task 5.2, design D4): a group whose
+ * entries are reference-equal to the previous build's hands back its
+ * previous message object, so a streaming delta re-converts only the tail
+ * group it changed and the library's per-message caches hit for every
+ * message that did not move.
+ *
  * Head resolution per anchor: an explicit override in `activeVariants`
  * (original turn id → slot index), else the anchor's own `activeVariant`
  * (the store-set state after `setActiveVariant`), else the newest slot —
@@ -13,7 +19,7 @@
  */
 import {
   ExportedMessageRepository,
-  type ThreadMessageLike,
+  type ThreadMessage,
 } from "@assistant-ui/react";
 
 import { asRichUser, type ChatEntry } from "../entries";
@@ -81,12 +87,74 @@ function variantAnchors(
   return anchors;
 }
 
-/** The branch repository for the entry array (design D3): every turn's
- * assistant message chains linearly except regenerated variants, which take
- * the ORIGINAL turn's parent so the alternatives are siblings; `headId`
- * sits on the newest anchor's active variant, or on the last message when
- * nothing has variants. */
-export function entriesToRepository(
+/** One group's normalized message beside the entry identities it was built
+ * from — the reuse record design D4 keys stability on. The message is the
+ * NORMALIZED form (what `fromBranchableArray` hands the library), so a memo
+ * hit hands the library the very object it already holds. */
+interface MessageMemo {
+  readonly entries: readonly ChatEntry[];
+  readonly message: ThreadMessage;
+}
+
+/** The previous build's memos, keyed by group kind + id. Replaced wholesale
+ * on every build (a group that left the transcript drops out) and verified
+ * element-wise against the current group's entries: only reference-equal
+ * inputs reuse a message object, so a rebuilt or reloaded transcript can
+ * never inherit a stale one. */
+let messageMemos = new Map<string, MessageMemo>();
+
+/** True when the cached group was built from exactly these entry objects. */
+function sameEntries(
+  cached: readonly ChatEntry[],
+  current: readonly ChatEntry[]
+): boolean {
+  if (cached.length !== current.length) return false;
+
+  for (let i = 0; i < cached.length; i += 1) {
+    if (cached[i] !== current[i]) return false;
+  }
+
+  return true;
+}
+
+/** The normalized message one group renders as, memoized across builds
+ * (design D4). A reference-equal group returns the previous build's object
+ * untouched; otherwise the group converts through the library's own
+ * `fromBranchableArray` (one item per call — it maps items independently,
+ * so a per-group call and a whole-array build normalize identically).
+ * Every current group is recorded into `next`, which replaces the module
+ * memo after the walk and drops whatever left the transcript. */
+function memoizedMessage(
+  group: EntryGroup,
+  next: Map<string, MessageMemo>
+): ThreadMessage {
+  const key = `${group.kind}:${group.id}`;
+  const memo = messageMemos.get(key);
+
+  if (memo !== undefined && sameEntries(memo.entries, group.entries)) {
+    next.set(key, memo);
+
+    return memo.message;
+  }
+
+  const normalized = ExportedMessageRepository.fromBranchableArray([
+    { message: groupMessage(group), parentId: null },
+  ]).messages[0].message;
+
+  next.set(key, { entries: group.entries, message: normalized });
+
+  return normalized;
+}
+
+/** The branch repository for the entry array (design D3, memoized per D4):
+ * every turn's assistant message chains linearly except regenerated
+ * variants, which take the ORIGINAL turn's parent so the alternatives are
+ * siblings; `headId` sits on the newest anchor's active variant, or on the
+ * last message when nothing has variants. A group whose entries are
+ * reference-equal to the previous build's reuses its message object — a
+ * delta converts only the group it changed, and the assembled repository
+ * matches `fromBranchableArray(items, { headId })` item for item. */
+export function buildRepository(
   entries: readonly ChatEntry[],
   activeVariants?: ActiveVariants
 ): ExportedMessageRepository {
@@ -101,9 +169,11 @@ export function entriesToRepository(
   }
 
   const items: {
-    message: ThreadMessageLike;
+    message: ThreadMessage;
     parentId: string | null;
   }[] = [];
+
+  const nextMemos = new Map<string, MessageMemo>();
 
   // Original turn id → the parent its message got (its siblings re-use it).
   const originalParent = new Map<string, string | null>();
@@ -112,7 +182,8 @@ export function entriesToRepository(
   let previousID: string | null = null;
 
   for (const group of groups) {
-    const message = groupMessage(group);
+    const message = memoizedMessage(group, nextMemos);
+
     let parentId = previousID;
 
     if (group.kind === "turn" && group.turnID !== undefined) {
@@ -141,6 +212,8 @@ export function entriesToRepository(
     previousID = message.id ?? null;
   }
 
+  messageMemos = nextMemos;
+
   // The head sits on the last anchor's active variant; without variants the
   // head is simply the newest message.
   let head: string | null = previousID;
@@ -155,5 +228,8 @@ export function entriesToRepository(
     if (id !== undefined) head = id;
   }
 
-  return ExportedMessageRepository.fromBranchableArray(items, { headId: head });
+  // The same shape fromBranchableArray builds (headId always set, items
+  // already normalized) — assembled here so the memoized items pass through
+  // unchanged instead of being re-normalized per build.
+  return { headId: head, messages: items };
 }

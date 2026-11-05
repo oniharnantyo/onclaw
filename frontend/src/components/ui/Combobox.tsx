@@ -340,8 +340,9 @@ export function Combobox({
               }}
               onKeyDown={handleKeyDown}
               placeholder={searchPlaceholder}
+              aria-label="Search"
               data-testid="combobox-search-input"
-              className="flex h-9 w-full items-center bg-transparent px-2 text-[13px] text-fg placeholder:text-muted focus:outline-none"
+              className="flex h-9 w-full items-center bg-transparent px-2 text-[13px] text-fg placeholder:text-muted focus:outline-none focus:border-accent"
             />
             {query && (
               <button
@@ -351,7 +352,8 @@ export function Combobox({
                   searchInputRef.current?.focus();
                 }}
                 aria-label="Clear search"
-                className="flex h-5 w-5 items-center justify-center rounded text-muted hover:text-fg"
+                data-testid="combobox-clear"
+                className="flex h-6 w-6 shrink-0 items-center justify-center rounded text-muted hover:text-fg"
               >
                 <Icon name="x" size={12} />
               </button>

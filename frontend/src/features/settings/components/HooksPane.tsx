@@ -393,7 +393,7 @@ export default function HooksPane(_props: {
       {/* Audit trail (task 4.7): every hook evaluation the dispatcher recorded,
           newest first, with the outcome that decided the turn's path. */}
       <section className="mt-6" data-testid="hooks-audit">
-        <h4 className="font-semibold">Recent executions</h4>
+        <h3 className="font-semibold">Recent executions</h3>
         {executions.length === 0 ? (
           <div className="mt-2">
             <EmptyState

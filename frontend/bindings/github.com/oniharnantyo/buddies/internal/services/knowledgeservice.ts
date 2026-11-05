@@ -11,7 +11,10 @@
 
 // eslint-disable-next-line @typescript-eslint/ban-ts-comment
 // @ts-ignore: Unused imports
-import { Call as $Call, CancellablePromise as $CancellablePromise } from "@wailsio/runtime";
+import {
+  Call as $Call,
+  CancellablePromise as $CancellablePromise,
+} from "@wailsio/runtime";
 
 // eslint-disable-next-line @typescript-eslint/ban-ts-comment
 // @ts-ignore: Unused imports
@@ -23,7 +26,7 @@ import * as $models from "./models.js";
  * PDFs as documents. An unknown id wraps store.ErrNotFound.
  */
 export function Content(id: string): $CancellablePromise<string> {
-    return $Call.ByID(2656796594, id);
+  return $Call.ByID(2656796594, id);
 }
 
 /**
@@ -31,7 +34,7 @@ export function Content(id: string): $CancellablePromise<string> {
  * wraps store.ErrNotFound.
  */
 export function Delete(id: string): $CancellablePromise<void> {
-    return $Call.ByID(1567801402, id);
+  return $Call.ByID(1567801402, id);
 }
 
 /**
@@ -39,16 +42,21 @@ export function Delete(id: string): $CancellablePromise<void> {
  * the corpus is empty and never contains the scope indexes (they are not
  * cataloged).
  */
-export function List(): $CancellablePromise<$models.KnowledgeDocument[] | null> {
-    return $Call.ByID(480183569);
+export function List(): $CancellablePromise<
+  $models.KnowledgeDocument[] | null
+> {
+  return $Call.ByID(480183569);
 }
 
 /**
  * SetDescription rewrites one document's description — the primary discovery
  * handle for PDFs under raw storage.
  */
-export function SetDescription(id: string, description: string): $CancellablePromise<$models.KnowledgeDocument> {
-    return $Call.ByID(739508647, id, description);
+export function SetDescription(
+  id: string,
+  description: string
+): $CancellablePromise<$models.KnowledgeDocument> {
+  return $Call.ByID(739508647, id, description);
 }
 
 /**
@@ -56,8 +64,12 @@ export function SetDescription(id: string, description: string): $CancellablePro
  * promotes (agentID is ignored); scope agent demotes to the agent resolved
  * from agentID. The file move and the catalog flip are one store operation.
  */
-export function SetScope(id: string, scope: string, agentID: string): $CancellablePromise<$models.KnowledgeDocument> {
-    return $Call.ByID(895790281, id, scope, agentID);
+export function SetScope(
+  id: string,
+  scope: string,
+  agentID: string
+): $CancellablePromise<$models.KnowledgeDocument> {
+  return $Call.ByID(895790281, id, scope, agentID);
 }
 
 /**
@@ -68,6 +80,21 @@ export function SetScope(id: string, scope: string, agentID: string): $Cancellab
  * oversize documents with the reason; duplicate names within one scope are
  * rejected, never overwritten.
  */
-export function Upload(filename: string, mime: string, data: string, scope: string, agentID: string, description: string): $CancellablePromise<$models.KnowledgeDocument> {
-    return $Call.ByID(2409340204, filename, mime, data, scope, agentID, description);
+export function Upload(
+  filename: string,
+  mime: string,
+  data: string,
+  scope: string,
+  agentID: string,
+  description: string
+): $CancellablePromise<$models.KnowledgeDocument> {
+  return $Call.ByID(
+    2409340204,
+    filename,
+    mime,
+    data,
+    scope,
+    agentID,
+    description
+  );
 }

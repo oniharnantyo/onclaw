@@ -273,11 +273,42 @@ describe("AgentsView", () => {
     await renderView();
     const item = screen.getByTestId("agent-item-a1");
     expect(item).toBeTruthy();
+    expect(item.getAttribute("aria-pressed")).toBe("true");
     expect(item.textContent).toContain("Scout");
     expect(screen.getByTestId("agent-item-model-a1").textContent).toBe(
       "gpt-test"
     );
     expect(avatarProps("a1").seed).toBe("a1");
+  });
+
+  it("marks the list busy while agents load and clears busy after (task 3.7)", async () => {
+    let resolveList: ((v: Agent[]) => void) | null = null;
+    mockedClient.agents.list.mockImplementationOnce(
+      () =>
+        new Promise<Agent[]>((resolve: (v: Agent[]) => void) => {
+          resolveList = resolve;
+        })
+    );
+
+    await renderView();
+
+    // While in flight: the loading container is busy, not labeled.
+    const loading = await waitFor(() =>
+      document.querySelector("[data-testid='agents-loading']")
+    );
+
+    expect(loading!.getAttribute("aria-busy")).toBe("true");
+
+    await act(async () => {
+      resolveList!([makeAgent()]);
+    });
+
+    // Settled: the skeleton (with its busy flag) is gone, rows are pressed
+    // buttons.
+    expect(document.querySelector("[data-testid='agents-loading']")).toBeNull();
+    expect(
+      screen.getByTestId("agent-item-a1").getAttribute("aria-pressed")
+    ).toBe("true");
   });
 
   it("never renders the raw agent ID on the list entry", async () => {

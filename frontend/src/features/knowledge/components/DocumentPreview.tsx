@@ -114,7 +114,7 @@ export function DocumentPreview({
   if (state.error !== null) {
     return (
       <p
-        className="text-sm text-danger"
+        className="text-sm text-dangertext"
         role="alert"
         data-testid="knowledge-preview-error"
       >

@@ -16,10 +16,11 @@
     --accent
   ); /* alias — light keeps brand accent for accent-colored text */
   --success: #17a34a;
+  --success-text: #15803d; /* lifted tier — 5.02:1 on #ffffff, 4.81:1 on #fafafa */
   --warn: #eab308;
-  --warn-text: #a16207; /* lifted tier — 4.92:1 on #ffffff, 4.72:1 on #fafafa */
+  --warn-text: #b45309; /* lifted tier — 5.02:1 on #ffffff, 4.81:1 on #fafafa */
   --danger: #dc2626;
-  --danger-text: var(--danger);
+  --danger-text: #b91c1c; /* lifted tier — 6.53:1 on #ffffff, 6.26:1 on #fafafa */
   /* buddies self-hosts the variable builds (@fontsource-variable) — same faces
      as onclaw-v2's static ones, variable names first. */
   --font-display: "Inter Variable", -apple-system, system-ui, sans-serif;
@@ -78,6 +79,7 @@
   --border: #2c2c2c;
   --border-soft: #232323; /* was alias — dark has a real soft tier */
   --accent-text: #6b93f2; /* lifted tier — 6.37:1 on #111111, ≈5.0:1 on 16% tints */
-  --warn-text: #fbbf24; /* lifted tier — 10.43:1 on #1a1a1a */
+  --success-text: #17a34a; /* lifted tier — 5.28:1 on #1a1a1a */
+  --warn-text: #eab308; /* lifted tier — 9.08:1 on #1a1a1a */
   --danger-text: #f87171; /* lifted tier — 6.29:1 on #1a1a1a */
 }

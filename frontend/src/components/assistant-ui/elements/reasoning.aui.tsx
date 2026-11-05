@@ -1,13 +1,12 @@
 "use client";
 
-import { forwardRef, memo, useCallback, useRef } from "react";
+import { forwardRef, lazy, memo, Suspense, useCallback, useRef } from "react";
 import {
   useScrollLock,
   useAuiState,
   type ReasoningMessagePartComponent,
   type ReasoningGroupComponent,
 } from "@assistant-ui/react";
-import { MarkdownText } from "@/components/assistant-ui/elements/markdown-text";
 import {
   ANIMATION_DURATION,
   ReasoningRoot as ReasoningRootBase,
@@ -18,6 +17,14 @@ import {
   reasoningVariants,
   type ReasoningRootProps,
 } from "./reasoning";
+
+// Dynamic so the heavy markdown element stays out of this element's static
+// import graph (fix-ui-audit-findings design D6b).
+const MarkdownText = lazy(async () => {
+  const mod = await import("@/components/assistant-ui/elements/markdown-text");
+
+  return { default: mod.MarkdownText };
+});
 
 export type { ReasoningRootProps } from "./reasoning";
 
@@ -62,7 +69,11 @@ const ReasoningRoot = forwardRef<
   );
 });
 
-const ReasoningImpl: ReasoningMessagePartComponent = () => <MarkdownText />;
+const ReasoningImpl: ReasoningMessagePartComponent = () => (
+  <Suspense fallback={null}>
+    <MarkdownText />
+  </Suspense>
+);
 
 const ReasoningGroupImpl: ReasoningGroupComponent = ({
   children,

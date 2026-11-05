@@ -56,27 +56,56 @@ function turnEntries(entries: readonly Entry[], turnID: string): Entry[] {
   return active;
 }
 
-/** Derives the avatar's level state in precedence order: dispatching (sent,
- * no event yet) → listening; no active turn → resting on the transcript tail
+/**
+ * The avatar's level as a SCALAR phase (task 5.4, design D5): the store
+ * selector returns this string, so a streaming text delta — which changes
+ * the entries array and the tail entry's identity but never the phase —
+ * leaves the subscriber untouched. `deriveAvatarState` is the object-forming
+ * companion for callers that want the level itself.
+ */
+export type AvatarPhase =
+  | "listening"
+  | "idle"
+  | "error"
+  | "question"
+  | "speaking"
+  | "tool_call"
+  | "thinking";
+
+/** Phase → level table. The objects are shared constants, so the same phase
+ * yields the same identity across renders (the avatar element's prop
+ * memoisation relies on it). */
+const PHASE_STATE: Record<AvatarPhase, AvatarState> = {
+  listening: { agentState: "listening", fx: null },
+  idle: { agentState: "idle", fx: null },
+  error: { agentState: "error", fx: null },
+  question: { agentState: "listening", fx: "question" },
+  speaking: { agentState: "speaking", fx: null },
+  tool_call: { agentState: "tool_call", fx: null },
+  thinking: { agentState: "thinking", fx: null },
+};
+
+/** Derives the avatar's phase in precedence order: dispatching (sent, no
+ * event yet) → listening; no active turn → resting on the transcript tail
  * (an error entry before the next user message holds the error face, else
  * idle); in flight → an unresolved approval anywhere in the turn, then the
  * active turn's tail (error / running tool or task / streaming speech /
  * streaming reasoning), else thinking between steps. */
-export function deriveAvatarState(input: AvatarStateInput): AvatarState {
+export function avatarPhase(input: AvatarStateInput): AvatarPhase {
   // 1. A sent message with no event yet: listening for the turn to start.
-  if (input.dispatching) return { agentState: "listening", fx: null };
+  if (input.dispatching) return "listening";
 
   // 2. Resting: the tail says which face the session ended on.
   if (input.activeTurnID === null) {
     for (let i = input.entries.length - 1; i >= 0; i -= 1) {
       const entry = input.entries[i];
 
-      if (entry.kind === "error") return { agentState: "error", fx: null };
+      if (entry.kind === "error") return "error";
 
       if (entry.kind === "user") break;
     }
 
-    return { agentState: "idle", fx: null };
+    return "idle";
   }
 
   // 3. In flight, over the active turn's entries only.
@@ -84,9 +113,7 @@ export function deriveAvatarState(input: AvatarStateInput): AvatarState {
 
   // 3a. A pending approval out-ranks everything: the turn is waiting on the
   // user, not working.
-  if (active.some(isPendingApproval)) {
-    return { agentState: "listening", fx: "question" };
-  }
+  if (active.some(isPendingApproval)) return "question";
 
   // 3b. The tail's last state wins. 3c. No match (no output yet, between
   // steps, a finished tool at the tail, a plan or compaction entry) falls
@@ -94,30 +121,38 @@ export function deriveAvatarState(input: AvatarStateInput): AvatarState {
   for (let i = active.length - 1; i >= 0; i -= 1) {
     const entry = active[i];
 
-    if (entry.kind === "error") return { agentState: "error", fx: null };
+    if (entry.kind === "error") return "error";
 
     if (
       entry.kind === "tool" &&
       entry.call?.status === ToolStatus.ToolStatusRunning
     ) {
-      return { agentState: "tool_call", fx: null };
+      return "tool_call";
     }
 
     if (
       entry.kind === "task" &&
       entry.task?.status === ToolStatus.ToolStatusRunning
     ) {
-      return { agentState: "tool_call", fx: null };
+      return "tool_call";
     }
 
-    if (entry.kind === "assistant" && entry.streaming) {
-      return { agentState: "speaking", fx: null };
-    }
+    if (entry.kind === "assistant" && entry.streaming) return "speaking";
 
-    if (entry.kind === "reasoning" && entry.streaming) {
-      return { agentState: "thinking", fx: null };
-    }
+    if (entry.kind === "reasoning" && entry.streaming) return "thinking";
   }
 
-  return { agentState: "thinking", fx: null };
+  return "thinking";
+}
+
+/** The level state for a derived phase (identity-stable per phase). */
+export function phaseToAvatarState(phase: AvatarPhase): AvatarState {
+  return PHASE_STATE[phase];
+}
+
+/** Derives the avatar's level state from the same three store inputs. Kept
+ * as the pure object-forming API; the live hook subscribes to the scalar
+ * phase instead. */
+export function deriveAvatarState(input: AvatarStateInput): AvatarState {
+  return phaseToAvatarState(avatarPhase(input));
 }

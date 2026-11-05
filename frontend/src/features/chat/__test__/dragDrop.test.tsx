@@ -24,12 +24,7 @@ import {
 } from "../composer/__test__/clientMock";
 
 import { act } from "react";
-import {
-  createEvent,
-  fireEvent,
-  screen,
-  waitFor,
-} from "@testing-library/dom";
+import { createEvent, fireEvent, screen, waitFor } from "@testing-library/dom";
 import { beforeEach, describe, expect, it, vi } from "vite-plus/test";
 
 import { seedStore } from "../composer/__test__/harness";
@@ -88,7 +83,7 @@ const mockedClient = client as ViewClient;
 // jsdom lacks — a null stub keeps their hover bookkeeping inert while the
 // dispatched drag events bubble past the React tree (their target lookup
 // returns null and they dropEffect "none", touching nothing we assert).
-if (typeof document.elementFromPoint !== "function") {
+if (!document.elementFromPoint) {
   document.elementFromPoint = (): Element | null => null;
 }
 
@@ -111,20 +106,37 @@ interface DragInit {
  * constructor exists there), and relatedTarget is defined onto it after the
  * fact for the leave-containment check. */
 function drag(node: Element, type: DragType, init: DragInit): void {
+  // jsdom has no DataTransfer constructor, so the stub carries exactly the
+  // members the composer's drop lane reads — `types` and `files` — and rides
+  // the event init below as an opaque payload; nothing re-reads it as a
+  // DataTransfer, so it needs no DataTransfer typing at all.
   const dataTransfer = {
     types: init.types,
     files: init.files ?? [],
-  } as unknown as DataTransfer;
+  };
 
+  // SAFETY: createEvent's typed index is a union of per-event creators; the
+  // relabel picks the one generic creator signature the dispatch below needs
+  // for the four drag types the suite names.
   const creator = createEvent[type] as (
     node: Node,
-    init: Record<string, unknown>
+    init: {
+      bubbles: boolean;
+      cancelable: boolean;
+      dataTransfer: { types: string[]; files: File[] };
+    }
   ) => Event;
 
-  const event = creator(node, { bubbles: true, cancelable: true, dataTransfer });
+  const event = creator(node, {
+    bubbles: true,
+    cancelable: true,
+    dataTransfer,
+  });
 
   if (init.relatedTarget !== undefined) {
-    Object.defineProperty(event, "relatedTarget", { value: init.relatedTarget });
+    Object.defineProperty(event, "relatedTarget", {
+      value: init.relatedTarget,
+    });
   }
 
   fireEvent(node, event);
@@ -200,7 +212,10 @@ describe("drag-and-drop attachments (add-chat-drag-drop-attachments D5)", () => 
       const byName = new Map(
         useAttachmentStore
           .getState()
-          .chips.map((c: AttachmentChip): [string, string] => [c.name, c.status])
+          .chips.map((c: AttachmentChip): [string, string] => [
+            c.name,
+            c.status,
+          ])
       );
 
       expect(byName.get("big.bin")).toBe("rejected");
@@ -212,9 +227,7 @@ describe("drag-and-drop attachments (add-chat-drag-drop-attachments D5)", () => 
     // went out on their own calls.
     const tray = screen.getByTestId("attachment-tray");
 
-    expect(
-      tray.querySelectorAll('[data-status="rejected"]')
-    ).toHaveLength(1);
+    expect(tray.querySelectorAll('[data-status="rejected"]')).toHaveLength(1);
     expect(tray.textContent).toContain("big.bin");
     expect(tray.textContent).toContain("Exceeds the 20 MB file limit");
     expect(mockedClient.chat.saveAttachment).toHaveBeenCalledTimes(2);
@@ -298,9 +311,7 @@ describe("drag-and-drop attachments (add-chat-drag-drop-attachments D5)", () => 
 
 async function renderChat(): Promise<void> {
   await renderUI(<ChatView />);
-  await waitFor(() =>
-    expect(screen.getByTestId("chat-composer")).toBeTruthy()
-  );
+  await waitFor(() => expect(screen.getByTestId("chat-composer")).toBeTruthy());
 }
 
 /** The chat column element the dropzone is slotted onto. */

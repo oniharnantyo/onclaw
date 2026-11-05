@@ -131,3 +131,38 @@ func TestGate_PlantaskAllGloballyDisabled(t *testing.T) {
 	}
 	require.ElementsMatch(t, plantaskToolNames, surface.plantaskDisabled)
 }
+
+// TestGate_NoBrowserCatalogEntry pins the catalog removal
+// (rebrand-browser-use-system-mcp task 4.1, spec agent-tools delta "Browser
+// tool in the catalog" REMOVED): no `browser` catalog entry exists, the gate
+// never offers a `browser` tool, and even an allowlist explicitly naming
+// `browser` — stale migrated data — invents nothing.
+func TestGate_NoBrowserCatalogEntry(t *testing.T) {
+	ctx := context.Background()
+	fs := fake.New()
+	m := newManager(fs, sessions.NewService(fs), &fakeRegistry{},
+		WithWorkspaces(workspaces.NewManager(t.TempDir())),
+		WithBrowserDir(t.TempDir()))
+
+	for _, meta := range CatalogTools() {
+		require.NotEqual(t, "browser", meta.Name, "the browser tool must not be in the catalog")
+	}
+	_, ok := CatalogToolByName("browser")
+	require.False(t, ok, "the browser tool must not be resolvable from the catalog")
+
+	// An unrestricted agent's turn carries no browser tool…
+	agent := store.Agent{Name: "agent", Slug: "agent"}
+	surface, err := m.resolveTurnTools(ctx, agent, "")
+	require.NoError(t, err)
+	names, err := surface.names(ctx)
+	require.NoError(t, err)
+	require.NotContains(t, names, "browser")
+
+	// …and neither does one whose stale allowlist still names it.
+	agent.Tools = []string{"browser"}
+	surface, err = m.resolveTurnTools(ctx, agent, "")
+	require.NoError(t, err)
+	names, err = surface.names(ctx)
+	require.NoError(t, err)
+	require.NotContains(t, names, "browser")
+}

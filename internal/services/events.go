@@ -1,6 +1,10 @@
 package services
 
-import "fmt"
+import (
+	"fmt"
+
+	"github.com/oniharnantyo/buddies/internal/store"
+)
 
 // Event names forwarded to the frontend. Constant names are registered with
 // the Wails binding generator (application.RegisterEvent in the desktop
@@ -37,6 +41,11 @@ const (
 	// (add-telegram-channel design D10): connected, degraded, error, or
 	// disabled. The payload is a ChannelStateEvent.
 	EventChannelState = "channels:state"
+	// EventGroupsChanged announces an agent-group roster- or list-level
+	// change — a group created, edited, or deleted, a membership or lead
+	// change (add-agent-groups design D9) — so the frontend refetches the
+	// group list instead of polling. The payload is a GroupsChangedEvent.
+	EventGroupsChanged = "groups:changed"
 )
 
 // GatewayStateEvent is the payload of EventGatewayState. State mirrors
@@ -114,4 +123,50 @@ type ChannelStateEvent struct {
 // session it displays.
 func SessionEventName(sessionID string) string {
 	return fmt.Sprintf("session:%s:event", sessionID)
+}
+
+// The group event kinds — the GroupEvent.Kind vocabulary (add-agent-groups
+// design D9), mirroring the groups package's GroupEventKind values as plain
+// strings so the binding surface stays free of that package's types.
+const (
+	// GroupEventKindMessageAppended marks one appended transcript row;
+	// MessageID and Seq name it and Message carries the row.
+	GroupEventKindMessageAppended = "message-appended"
+	// GroupEventKindTaskUpdated marks a task's state/owner/revision change;
+	// TaskID names it.
+	GroupEventKindTaskUpdated = "task-updated"
+)
+
+// GroupsChangedEvent is the payload of EventGroupsChanged. It carries no
+// fields: the change is list-wide from the surfaces' point of view, so they
+// simply refetch the group list (add-agent-groups design D9).
+type GroupsChangedEvent struct{}
+
+// GroupEvent is the payload of GroupEventName(groupID): one per-group live
+// update — an appended transcript row or a task state change
+// (add-agent-groups design D9). Kind discriminates; exactly the fields
+// matching Kind are set, mirroring groups.GroupEvent without the GroupID the
+// event name already carries.
+type GroupEvent struct {
+	// Kind is the update's kind — one of the GroupEventKind* values.
+	Kind string `json:"kind"`
+	// MessageID and Seq name the appended transcript row
+	// (GroupEventKindMessageAppended only).
+	MessageID string `json:"messageId,omitempty"`
+	Seq       int64  `json:"seq,omitempty"`
+	// Message carries the appended transcript row
+	// (GroupEventKindMessageAppended only), so an open transcript appends it
+	// without a refetch.
+	Message *store.AgentGroupMessage `json:"message,omitempty"`
+	// TaskID names the task whose state changed (GroupEventKindTaskUpdated
+	// only).
+	TaskID string `json:"taskId,omitempty"`
+}
+
+// GroupEventName returns the event name carrying one group's live transcript
+// and task events: "group:<id>:event", composed like SessionEventName. The
+// payload is a GroupEvent. The name is scoped per group (add-agent-groups
+// design D9) so the frontend subscribes only to the group it displays.
+func GroupEventName(groupID string) string {
+	return fmt.Sprintf("group:%s:event", groupID)
 }

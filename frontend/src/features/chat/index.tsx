@@ -33,7 +33,7 @@ import { client } from "../../lib/client";
 import type { SchedulesChangedEvent } from "../../lib/events";
 import { useNavStore } from "../../stores/nav";
 import type { ChatStore } from "./types";
-import { connectRunningSessions, useChatStore } from "./store";
+import { connectGroups, connectRunningSessions, useChatStore } from "./store";
 import { ChatRuntimeProvider } from "./runtime/ChatRuntimeProvider";
 import { ChatHeader } from "./components/ChatHeader";
 import { RightBar } from "./components/RightBar";
@@ -122,6 +122,11 @@ export default function ChatView(): ReactElement {
   // wiring rides the feature root: the store module stays free of
   // import-time side effects.
   useEffect((): (() => void) => connectRunningSessions(), []);
+
+  // The groups surfaces ride their own wiring (add-agent-groups design D9):
+  // groups:changed refetches the list, and each group's event channel feeds
+  // the rail's busy dots plus the open group's transcript and task rows.
+  useEffect((): (() => void) => connectGroups(), []);
 
   if (agents.length === 0) {
     return (

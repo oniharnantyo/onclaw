@@ -24,6 +24,16 @@ export const ChannelsState = "channels:state";
 export const GatewayState = "gateway:state";
 
 /**
+ * Name of the custom event "group:<id>:event".
+ */
+export const GroupIdEvent = "group:\u003Cid\u003E:event";
+
+/**
+ * Name of the custom event "groups:changed".
+ */
+export const GroupsChanged = "groups:changed";
+
+/**
  * Name of the custom event "knowledge:changed".
  */
 export const KnowledgeChanged = "knowledge:changed";
@@ -42,4 +52,3 @@ export const SchedulesChanged = "schedules:changed";
  * Name of the custom event "turns:changed".
  */
 export const TurnsChanged = "turns:changed";
-

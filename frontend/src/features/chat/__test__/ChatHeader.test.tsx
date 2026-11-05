@@ -82,6 +82,8 @@ describe("ChatHeader", () => {
     expect(screen.getByTestId("chat-header-session-title").textContent).toBe(
       "Weekly notes"
     );
+    // The title is the view's top-level heading.
+    expect(screen.getByTestId("chat-header-session-title").tagName).toBe("H1");
     // Title bar only: no status vocabulary, no model chip.
     expect(screen.queryByTestId("chat-header-status")).toBeNull();
     expect(screen.queryByTestId("chat-header-model")).toBeNull();

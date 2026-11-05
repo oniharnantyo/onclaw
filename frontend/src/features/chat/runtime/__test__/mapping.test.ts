@@ -821,3 +821,240 @@ describe("trailing data-artifacts part (add-turn-artifacts tasks 6.2, design D7)
     ]);
   });
 });
+
+describe("browser-attention input parts (add-browser-login-handover 3.3, design D6)", () => {
+  const SECRET_REQUIRED: SessionEvent = ev(Kind.KindInputRequired, {
+    turn_id: "t1",
+    input: {
+      interrupt_id: "int-1",
+      prompt: "Sign in at https://example.com",
+      method: "password",
+      origin: "https://example.com",
+      attention_kind: "secret",
+      username: "ada@example.com",
+    },
+  });
+
+  const TAKEOVER_REQUIRED: SessionEvent = ev(Kind.KindInputRequired, {
+    turn_id: "t1",
+    input: {
+      interrupt_id: "int-2",
+      prompt: "Sign-in is blocked",
+      attention_kind: "takeover",
+    },
+  });
+
+  function inputEntries(...events: SessionEvent[]): {
+    messages: ThreadMessageLike[];
+    entries: Entry[];
+  } {
+    const entries = fold(...events);
+
+    return { messages: entriesToMessages(entries), entries };
+  }
+
+  it("maps a pending secret request to a tool-call part with display text", () => {
+    const { messages, entries } = inputEntries(
+      ev(Kind.KindUserMessage, { text: "go", turn_id: "t1", id: "e1" }),
+      SECRET_REQUIRED
+    );
+
+    const [, turn] = messages;
+    const part = (turn?.content ?? [])[0] as Record<string, unknown>;
+    const approval = part.approval as Record<string, unknown>;
+
+    expect(part.type).toBe("tool-call");
+    expect(approval.id).toBe("int-1");
+    expect(approval.prompt).toBe("Sign in at https://example.com");
+    expect(approval.display).toBe("text");
+    expect(approval.attention).toBe("secret");
+    expect(approval.method).toBe("password");
+    expect(approval.origin).toBe("https://example.com");
+    expect(approval.username).toBe("ada@example.com");
+    // The entry carries the payload; the part id is the entry id.
+    expect(asApprovalSafe(entries, "secret").interruptID).toBe("int-1");
+  });
+
+  it("maps a pending takeover request to display decision", () => {
+    const { messages } = inputEntries(
+      ev(Kind.KindUserMessage, { text: "go", turn_id: "t1", id: "e1" }),
+      TAKEOVER_REQUIRED
+    );
+
+    const part = ((messages[1]?.content ?? [])[0] ?? {}) as Record<
+      string,
+      unknown
+    >;
+
+    const approval = part.approval as Record<string, unknown>;
+
+    expect(approval.display).toBe("decision");
+    expect(approval.attention).toBe("takeover");
+    expect(approval.id).toBe("int-2");
+  });
+
+  it("records the resolution receipt on the same part (completed + saved login)", () => {
+    const { messages } = inputEntries(
+      ev(Kind.KindUserMessage, { text: "go", turn_id: "t1", id: "e1" }),
+      SECRET_REQUIRED,
+      ev(Kind.KindInputResolved, {
+        turn_id: "t1",
+        input: {
+          interrupt_id: "int-1",
+          outcome: "completed",
+          length: 7,
+          saved_login_id: "login-9",
+        },
+      })
+    );
+
+    const part = ((messages[1]?.content ?? [])[0] ?? {}) as Record<
+      string,
+      unknown
+    >;
+
+    const approval = part.approval as Record<string, unknown>;
+    const receipt = approval.receipt as Record<string, unknown>;
+
+    expect(receipt.outcome).toBe("completed");
+    expect(receipt.length).toBe(7);
+    expect(receipt.savedLoginId).toBe("login-9");
+  });
+
+  it("marks cancelled and expired resolutions on the approval seam", () => {
+    const cancelled = inputEntries(
+      ev(Kind.KindUserMessage, { text: "go", turn_id: "t1", id: "e1" }),
+      SECRET_REQUIRED,
+      ev(Kind.KindInputResolved, {
+        turn_id: "t1",
+        input: { interrupt_id: "int-1", outcome: "cancelled" },
+      })
+    );
+
+    const approval = (
+      ((cancelled.messages[1]?.content ?? [])[0] ?? {}) as Record<
+        string,
+        unknown
+      >
+    ).approval as Record<string, unknown>;
+
+    expect(approval.resolution).toBe("cancelled");
+
+    const expired = inputEntries(
+      ev(Kind.KindUserMessage, { text: "go", turn_id: "t1", id: "e1" }),
+      TAKEOVER_REQUIRED,
+      ev(Kind.KindInputResolved, {
+        turn_id: "t1",
+        input: { interrupt_id: "int-2", outcome: "expired" },
+      })
+    );
+
+    const expiredApproval = (
+      ((expired.messages[1]?.content ?? [])[0] ?? {}) as Record<string, unknown>
+    ).approval as Record<string, unknown>;
+
+    expect(expiredApproval.resolution).toBe("expired");
+  });
+
+  it("holds the turn in requires-action while the request is pending", () => {
+    const { messages } = inputEntries(
+      ev(Kind.KindUserMessage, { text: "go", turn_id: "t1", id: "e1" }),
+      SECRET_REQUIRED
+    );
+
+    expect(messages[1]?.status).toEqual({
+      type: "requires-action",
+      reason: "interrupt",
+    });
+  });
+
+  it("structurally cannot leak a value: the part has no value-shaped key", () => {
+    const { messages } = inputEntries(
+      ev(Kind.KindUserMessage, { text: "go", turn_id: "t1", id: "e1" }),
+      SECRET_REQUIRED,
+      ev(Kind.KindInputResolved, {
+        turn_id: "t1",
+        input: {
+          interrupt_id: "int-1",
+          outcome: "completed",
+          length: 7,
+          saved_login_id: "login-9",
+        },
+      })
+    );
+
+    const part = ((messages[1]?.content ?? [])[0] ?? {}) as Record<
+      string,
+      unknown
+    >;
+
+    // Spec chat-approvals: the part and the input_resolved event record a
+    // receipt only — never the value. There is no value field to render (the
+    // mapping never receives one; the value rides client.resolveInput's
+    // argument only, from the card's local state).
+    const keys = new Set(Object.keys(part));
+
+    for (const nested of ["approval", "args", "result"] as const) {
+      if (part[nested] !== undefined && part[nested] !== null) {
+        for (const key of Object.keys(part[nested] as object)) {
+          keys.add(`${nested}.${key}`);
+        }
+      }
+    }
+
+    for (const key of keys) {
+      expect(key.toLowerCase()).not.toContain("value");
+      expect(key.toLowerCase()).not.toContain("secret_text");
+    }
+
+    expect(JSON.stringify(part)).not.toContain("hunter2");
+  });
+
+  it("the text gate: display text is declared only on input parts, and the secret card delivers through resolveInput", () => {
+    // Spec chat-approvals: "The runtime SHALL accept a text response only
+    // when a request declares it (display: text)." The gate is the host
+    // mapping — display "text" is set ONLY here, in inputPart (the branch
+    // above proves it: display derives from the entry's attention kind) —
+    // and the SecretGate card submits via client.resolveInput directly,
+    // bypassing the assistant-ui approval-response machinery. The shell
+    // approval parts keep no display, so they can never carry text.
+    const { messages } = inputEntries(
+      ev(Kind.KindUserMessage, { text: "go", turn_id: "t1", id: "e1" }),
+      SECRET_REQUIRED
+    );
+
+    const part = ((messages[1]?.content ?? [])[0] ?? {}) as Record<
+      string,
+      unknown
+    >;
+
+    const approval = part.approval as Record<string, unknown>;
+
+    // Declared, and only by the input mapping.
+    expect(approval.display).toBe("text");
+    // The delivery channel is NOT the approval response: the part carries no
+    // respondToApproval-shaped text contract — the card calls
+    // client.chat.resolveInput(sessionID, interruptID, text, saveLogin).
+    expect(approval).not.toHaveProperty("text");
+  });
+});
+
+/** Reads the folded entry list's input entry (the widened kind rides the
+ * string-comparison seam). */
+function asApprovalSafe(
+  entries: Entry[],
+  _tag: string
+): { interruptID: string } {
+  const found = entries.find((entry: Entry): boolean => {
+    const kind: string = entry.kind;
+
+    return kind === "input";
+  });
+
+  if (found === undefined) throw new Error("no input entry folded");
+
+  // SAFETY: applyEvent mints kind "input" with the InputEntry fields.
+  const wide = found as object;
+
+  return wide as { interruptID: string };
+}

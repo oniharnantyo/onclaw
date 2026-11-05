@@ -18,6 +18,10 @@ import type { ReactElement } from "react";
 import { ToolFallback } from "@/components/assistant-ui/elements/tool-fallback.aui";
 
 import { BrowserTool } from "./BrowserTool";
+import { unwrapMCPResultText } from "../parse";
+
+export { BrowserTool };
+
 import { CreateDocumentTool } from "./CreateDocumentTool";
 import { prettyOrVerbatim } from "./fallbackBody";
 import { ExecuteTool } from "./ExecuteTool";
@@ -58,7 +62,7 @@ function FallbackTool(props: ToolCallMessagePartProps): ReactElement {
       argsText={prettyOrVerbatim(props.argsText)}
       result={
         isTextResult(props.result)
-          ? prettyOrVerbatim(props.result)
+          ? prettyOrVerbatim(unwrapMCPResultText(props.result))
           : props.result
       }
     />
@@ -78,7 +82,6 @@ export const toolRenderers = {
   ls: LsTool,
   web_search: WebSearchTool,
   web_fetch: WebFetchTool,
-  browser: BrowserTool,
   todo_write: TodoWriteTool,
   todo_read: TodoReadTool,
   task_create: TaskCreateTool,
@@ -99,3 +102,25 @@ export const toolRenderers = {
   create_document: CreateDocumentTool,
   fallback: FallbackTool,
 } satisfies ToolRendererMap;
+
+/** The MCP namespace prefix the Browser Use system server surfaces its
+ * discrete tools under (design D6): `mcp__browser-use__navigate`, … A
+ * collision-suffixed server name can vary the tail, so the match is on the
+ * PREFIX, never exact equality. */
+export const BROWSER_USE_PREFIX = "mcp__browser-use__";
+
+/**
+ * Resolves one tool name to its renderer: the exact map entry when the name
+ * is keyed, the browser card for any `mcp__browser-use__*` name, and the
+ * fallback otherwise. Historical transcripts still carrying the retired
+ * built-in `browser` name fall through to the fallback card.
+ */
+export function resolveToolRenderer(toolName: string): ToolRenderer {
+  const exact = toolRenderers[toolName];
+
+  if (exact !== undefined) return exact;
+
+  if (toolName.startsWith(BROWSER_USE_PREFIX)) return BrowserTool;
+
+  return toolRenderers.fallback;
+}

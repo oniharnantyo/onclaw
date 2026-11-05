@@ -8,17 +8,26 @@
  * and the ring's percentage label rides the lifted tier text variants
  * (design D6).
  */
-import { act } from "react";
+import { act, Profiler } from "react";
 import { fireEvent, screen, waitFor } from "@testing-library/dom";
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { beforeEach, describe, expect, it, vi } from "vite-plus/test";
 
+import {
+  Kind,
+  type Event as SessionEvent,
+} from "../../../../../bindings/github.com/oniharnantyo/buddies/internal/sessions/models";
+
 // The client mock factory is imported FIRST on purpose: the hoisted
 // `vi.mock` below runs the moment the chat store pulls the client module in,
 // so the factory's module must already be evaluated by then.
 import { makeClient } from "./clientMock";
+import { applyEvent } from "../../entries";
+import { renderUI } from "../../__test__/test-utils";
 import { useChatStore } from "../../store";
+import type { ExtendedChatStore } from "../../store";
+import { ContextMeter } from "../ComposerContext";
 import { renderComposer, seedStore } from "./harness";
 
 vi.mock("../../../../lib/client", () => ({ client: makeClient() }));
@@ -275,7 +284,80 @@ describe("the context meter (task 5.4)", () => {
       }
     }
   });
+
+  it("a streaming delta does not re-render the closed meter (task 5.4 selector stability)", async () => {
+    useChatStore.setState({ usage: usage(), entries: [] });
+
+    let commits = 0;
+
+    const onRender = (): void => {
+      commits += 1;
+    };
+
+    const { unmount } = await renderUI(
+      <Profiler id="context-meter" onRender={onRender}>
+        <ContextMeter />
+      </Profiler>
+    );
+
+    expect(screen.getByTestId("context-meter")).toBeTruthy();
+
+    const mounted = commits;
+
+    // The always-mounted meter reads no entries slice; the streaming array
+    // changes without committing its subtree.
+    await act(async () => {
+      useChatStore.setState((state: ExtendedChatStore) => ({
+        entries: applyEvent(state.entries, delta("streaming answer")),
+      }));
+    });
+
+    expect(commits).toBe(mounted);
+
+    await unmount();
+  });
+
+  it("the open popover re-renders when a displayed estimate changes (task 5.4)", async () => {
+    useChatStore.setState({ usage: usage(), entries: [] });
+
+    const { unmount } = await renderUI(<ContextMeter />);
+
+    await openPopover();
+
+    const before = screen.getByTestId(
+      "context-segment-conversation"
+    ).textContent;
+
+    expect(before).toContain("0");
+
+    await act(async () => {
+      useChatStore.setState((state: ExtendedChatStore) => ({
+        entries: applyEvent(state.entries, delta("abcd")),
+      }));
+    });
+
+    const after = screen.getByTestId(
+      "context-segment-conversation"
+    ).textContent;
+
+    // 8 tokens per message + 1 token for "abcd": the scalar estimate
+    // moved, so the open popover repainted.
+    expect(after).toContain("9");
+    expect(after).not.toBe(before);
+
+    await unmount();
+  });
 });
+
+/** One incremental assistant text event. */
+function delta(text: string): SessionEvent {
+  return {
+    kind: Kind.KindTextDelta,
+    occurred_at: "2026-01-01T00:00:00Z",
+    turn_id: "t1",
+    text,
+  };
+}
 
 describe("the warn text tier's token contract", () => {
   // jsdom never compiles Tailwind, so the class-string assertions above can

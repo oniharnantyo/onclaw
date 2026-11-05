@@ -149,30 +149,32 @@ const CASES: {
     outcome: "Got the time",
   },
   {
-    name: "browser",
-    args: { action: "navigate", url: "https://example.com" },
+    // The Browser Use MCP tools key the sentence on the NAME's action
+    // suffix (rebrand-browser-use-system-mcp design D5), not args.action.
+    name: "mcp__browser-use__navigate",
+    args: { url: "https://example.com" },
     result: '{"url":"https://example.com","title":"Example"}',
     intent: "Opening 'https://example.com'",
     outcome: "Opened 'example.com'",
   },
   {
-    name: "browser",
-    args: { action: "snapshot" },
+    name: "mcp__browser-use__snapshot",
+    args: {},
     result:
       '{"url":"https://example.com","title":"Example","elements":[{"ref":"e1","role":"button","name":"Go"}]}',
     intent: "Capturing the page",
     outcome: "Captured 1 elements",
   },
   {
-    name: "browser",
-    args: { action: "screenshot" },
+    name: "mcp__browser-use__screenshot",
+    args: {},
     result: '{"path":".browsers/screenshots/1.png","width":800,"height":600}',
     intent: "Taking a screenshot",
     outcome: "Screenshot saved `.browsers/screenshots/1.png`",
   },
   {
-    name: "browser",
-    args: { action: "click", ref: "e1" },
+    name: "mcp__browser-use__click",
+    args: { ref: "e1" },
     result: '{"ok":true,"url":"https://example.com","title":"Example"}',
     intent: "Performing 'click'",
     outcome: "Performed 'click'",
@@ -229,6 +231,18 @@ describe("toolSentence table (all fifteen builtins, both forms)", () => {
       toolSentence({
         name: "mcp__github__search",
         args: { q: "x" },
+        result: "{}",
+        state: DONE,
+        isError: false,
+      })
+    ).toBeNull();
+  });
+
+  it("the retired built-in browser name mints no sentence — historical transcripts fall back", () => {
+    expect(
+      toolSentence({
+        name: "browser",
+        args: { action: "navigate", url: "https://example.com" },
         result: "{}",
         state: DONE,
         isError: false,

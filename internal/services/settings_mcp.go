@@ -11,12 +11,33 @@ import (
 	"github.com/oniharnantyo/buddies/internal/store"
 )
 
+// ErrSystemMCPServer is returned for every mutation addressed at the
+// system-provided server id (browser-use, rebrand-browser-use-system-mcp
+// task 3.3, spec agent-mcp "System-provided server"): the row is synthesized
+// by the app and supervised by the MCP client manager, so it cannot be
+// created, edited, deleted, or probed here.
+var ErrSystemMCPServer = errors.New("browser-use is the system-provided MCP server and cannot be created, edited, deleted, or probed here")
+
+// rejectSystemMCPServer fails the call when the id names the system-provided
+// server (spec agent-mcp "System-provided server": non-deletable,
+// non-editable by construction). The wrapping error carries
+// ErrSystemMCPServer.
+func rejectSystemMCPServer(action, id string) error {
+	if id == mcp.SystemServerID {
+		return fmt.Errorf("%s mcp server: %w", action, ErrSystemMCPServer)
+	}
+	return nil
+}
+
 // CreateMCPServer stores a new MCP server definition, assigning its ID and
 // timestamps. A duplicate server name is an error. The returned definition is
 // redacted (add-integrations design D4): an integration credential entered
 // through the sheet is stored but never returned — only its key-set state and
 // last-four hint.
 func (s *SettingsService) CreateMCPServer(ctx context.Context, server store.MCPServer) (store.MCPServer, error) {
+	if err := rejectSystemMCPServer("create", server.ID); err != nil {
+		return store.MCPServer{}, err
+	}
 	if err := s.store.MCPServers().Create(ctx, &server); err != nil {
 		return store.MCPServer{}, fmt.Errorf("create mcp server: %w", err)
 	}
@@ -36,17 +57,51 @@ func (s *SettingsService) MCPServer(ctx context.Context, id string) (store.MCPSe
 	return *server, nil
 }
 
+// MCPServerView is one MCP pane row: a stored server definition, or the
+// synthesized system-provided entry (rebrand-browser-use-system-mcp, spec
+// agent-mcp "System-provided server"). The MCPServer fields are the row's
+// stored view exactly as before; System distinguishes the app-provided
+// server, which has no store row behind it and no edit/remove affordances.
+type MCPServerView struct {
+	store.MCPServer
+	// System marks the app-provided browser-use server: always enabled,
+	// non-deletable, non-editable, its status fed by live supervision state.
+	System bool `json:"system"`
+}
+
 // MCPServers returns all MCP servers, oldest first, with integration
-// credentials redacted (design D4). The result is never nil.
-func (s *SettingsService) MCPServers(ctx context.Context) ([]store.MCPServer, error) {
+// credentials redacted (design D4), followed by the synthesized system row
+// when the runtime supervises one (rebrand-browser-use-system-mcp task 3.3):
+// id browser-use, always enabled, its connection status and discovered-tool
+// count read from live supervision state rather than any store row. The
+// result is never nil.
+func (s *SettingsService) MCPServers(ctx context.Context) ([]MCPServerView, error) {
 	servers, err := s.store.MCPServers().List(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("list mcp servers: %w", err)
 	}
+	views := make([]MCPServerView, 0, len(servers)+1)
 	for i := range servers {
 		redactIntegrationCredential(&servers[i])
+		views = append(views, MCPServerView{MCPServer: servers[i]})
 	}
-	return servers, nil
+	if s.systemServerState != nil {
+		if state, ok := s.systemServerState(); ok {
+			views = append(views, MCPServerView{
+				MCPServer: store.MCPServer{
+					ID:          mcp.SystemServerID,
+					Name:        mcp.SystemMCPServerName,
+					Transport:   mcp.TransportStdio,
+					Enabled:     true,
+					Status:      state.Status,
+					StatusError: state.StatusError,
+					ToolCount:   state.ToolCount,
+				},
+				System: true,
+			})
+		}
+	}
+	return views, nil
 }
 
 // UpdateMCPServer rewrites an existing MCP server definition, addressed by
@@ -59,6 +114,9 @@ func (s *SettingsService) MCPServers(ctx context.Context) ([]store.MCPServer, er
 // next use (design D7); invalidation never fails the write. The returned
 // definition is redacted.
 func (s *SettingsService) UpdateMCPServer(ctx context.Context, server store.MCPServer) (store.MCPServer, error) {
+	if err := rejectSystemMCPServer("update", server.ID); err != nil {
+		return store.MCPServer{}, err
+	}
 	if server.Auth.IntegrationCredential == "" {
 		stored, err := s.store.MCPServers().ByID(ctx, server.ID)
 		if err != nil {
@@ -79,6 +137,9 @@ func (s *SettingsService) UpdateMCPServer(ctx context.Context, server store.MCPS
 // connection, reaping any stdio child (design D7); invalidation never fails
 // the write.
 func (s *SettingsService) DeleteMCPServer(ctx context.Context, id string) error {
+	if err := rejectSystemMCPServer("delete", id); err != nil {
+		return err
+	}
 	if err := s.store.MCPServers().Delete(ctx, id); err != nil {
 		return fmt.Errorf("delete mcp server: %w", err)
 	}
@@ -97,8 +158,13 @@ func (s *SettingsService) DeleteMCPServer(ctx context.Context, id string) error 
 // with the Authorize-call-to-action for the row's auth mode. A probe never
 // mutates the definition — the row is read first and only the
 // status/status_error/tool_count columns are rewritten. The dial is bounded
-// at the manager's connect timeout; store.ErrNotFound when absent.
+// at the manager's connect timeout; store.ErrNotFound when absent. The
+// system-provided server is rejected: its row is fed by live supervision
+// state, so there is nothing to probe on demand.
 func (s *SettingsService) ProbeMCPServer(ctx context.Context, id string) (store.MCPServer, error) {
+	if err := rejectSystemMCPServer("probe", id); err != nil {
+		return store.MCPServer{}, err
+	}
 	stored, err := s.store.MCPServers().ByID(ctx, id)
 	if err != nil {
 		return store.MCPServer{}, fmt.Errorf("probe mcp server: %w", err)

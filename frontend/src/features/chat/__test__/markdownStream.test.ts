@@ -6,9 +6,17 @@
  * render of a streamed message equals a one-pass render because the
  * completed text never sees this module's edits.
  */
-import { describe, expect, it } from "vite-plus/test";
+import { beforeEach, describe, expect, it } from "vite-plus/test";
 
-import { stabilizeMarkdown } from "../lib/markdownStream";
+import {
+  resetStabilizeMarkdownCache,
+  stabilizeMarkdown,
+  stabilizeMarkdownFull,
+} from "../lib/markdownStream";
+
+beforeEach(() => {
+  resetStabilizeMarkdownCache();
+});
 
 describe("stabilizeMarkdown (task 9.2)", () => {
   it("passes a source with nothing dangling through byte-identical", () => {
@@ -128,5 +136,108 @@ describe("stabilizeMarkdown (task 9.2)", () => {
     const once = stabilizeMarkdown(partial);
 
     expect(stabilizeMarkdown(once)).toBe(once);
+  });
+});
+
+describe("stabilizeMarkdown incremental parity (task 5.3)", () => {
+  /** Text whose constructs straddle every boundary the incremental pass
+   * could be tempted to finalize: unclosed/odd fences, code spans and
+   * emphasis opened on one line and closed on another, backslash escapes,
+   * HTML blocks, and list continuation. */
+  const corpus: string[] = [
+    '# Plan\n\nSome *emphasis*, `inline code`, and **bold**.\n\n```go\nfmt.Println("hi")\n```\n\ndone.',
+    "before\n\n```go\nx := 1\n",
+    "**bold prose\n\n```py\nunclosed *emphasis* and `code",
+    "some `text\n\n```go\nx := 1\n```\n\nafter",
+    "`a\n**b\n`\nrest of the prose",
+    "pre \\*not emphasis and \\`not code\n\nnext `open",
+    "<div>\nraw html block\n\n</div>\n\n*open emphasis",
+    "- item one\n  continued `code span\n- item two\n\n*ital",
+    "````md\ninner ``` fence\n````\nafter *dangling",
+    "***bold italic*** and *open",
+    "2 * 3 * 4 = 6\n*odd",
+    "**bold\nacross\nlines\n\n*other",
+    "~~~\ncontent\n~~~\n\ntext with `span`\n\n```ts\nconst x = 1\n// **note**\n```\n",
+    "plain text only",
+    "",
+  ];
+
+  it("matches the full scan at every prefix of a growing text", () => {
+    for (const sample of corpus) {
+      resetStabilizeMarkdownCache();
+
+      // Grow the text one character at a time — the streaming shape — and
+      // compare every prefix against a fresh full scan.
+      for (let i = 0; i <= sample.length; i += 1) {
+        const prefix = sample.slice(0, i);
+
+        expect(stabilizeMarkdown(prefix)).toBe(stabilizeMarkdownFull(prefix));
+      }
+    }
+  });
+
+  it("matches the full scan when the text grows by whole tokens", () => {
+    const sample = corpus[0] ?? "";
+    const tokens = sample.match(/\s+|\w+|[^\s\w]/g) ?? [];
+
+    resetStabilizeMarkdownCache();
+
+    let grown = "";
+
+    for (const token of tokens) {
+      grown += token;
+
+      expect(stabilizeMarkdown(grown)).toBe(stabilizeMarkdownFull(grown));
+    }
+  });
+
+  it("falls back to the full scan for an unrelated or shrinking input", () => {
+    stabilizeMarkdown("first message with `code");
+
+    const unrelated = "**second\n\n```py\nx";
+
+    expect(stabilizeMarkdown(unrelated)).toBe(stabilizeMarkdownFull(unrelated));
+
+    expect(stabilizeMarkdown("shorter")).toBe(stabilizeMarkdownFull("shorter"));
+  });
+
+  it("matches the full scan over a seeded random markdown corpus", () => {
+    // Deterministic LCG: the alphabet mixes fences, emphasis, code runs,
+    // escapes, newlines, and block look-alikes so the boundary rule is
+    // exercised against the full scan on construct-heavy shapes.
+    const alphabet = "`*~ abc\n[]()-#<>\\";
+    let seed = 0x5eed;
+
+    const next = (): number => {
+      seed = (seed * 1664525 + 1013904223) >>> 0;
+
+      return seed;
+    };
+
+    for (let sampleIndex = 0; sampleIndex < 200; sampleIndex += 1) {
+      const length = next() % 60;
+      let sample = "";
+
+      for (let i = 0; i < length; i += 1) {
+        sample += alphabet[next() % alphabet.length] ?? "";
+      }
+
+      resetStabilizeMarkdownCache();
+
+      for (let i = 0; i <= sample.length; i += 1) {
+        const prefix = sample.slice(0, i);
+
+        expect(stabilizeMarkdown(prefix)).toBe(stabilizeMarkdownFull(prefix));
+      }
+    }
+  });
+
+  it("returns the same bytes for an unchanged re-render", () => {
+    const text = "stream `open";
+
+    const first = stabilizeMarkdown(text);
+
+    expect(stabilizeMarkdown(text)).toBe(first);
+    expect(first).toBe(stabilizeMarkdownFull(text));
   });
 });

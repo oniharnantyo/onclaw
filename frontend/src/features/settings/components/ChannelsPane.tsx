@@ -311,7 +311,7 @@ function TelegramBody({
       {/* Pending pairings (design D4): unknown senders offered for
           approval, display name plus their numeric Telegram id. */}
       <section className="mt-6" data-testid="channels-pairings">
-        <h4 className="font-semibold">Pending pairings</h4>
+        <h3 className="font-semibold">Pending pairings</h3>
         {!loaded ? null : pairings.length === 0 ? (
           <div className="mt-2">
             <EmptyState
@@ -369,7 +369,7 @@ function TelegramBody({
       {/* Per-chat rows (design D4/D13): kind badge, pinned-agent select,
           one home radio, and the free-response gate for groups only. */}
       <section className="mt-6" data-testid="channels-chats">
-        <h4 className="font-semibold">Chats</h4>
+        <h3 className="font-semibold">Chats</h3>
         {!loaded ? null : chats.length === 0 ? (
           <div className="mt-2">
             <EmptyState

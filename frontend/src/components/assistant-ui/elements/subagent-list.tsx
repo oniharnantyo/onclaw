@@ -22,7 +22,7 @@ function StateIcon({ state }: { state: SubagentState }) {
     return (
       <CheckIcon
         aria-hidden
-        className="text-emerald-600 dark:text-emerald-400 size-3.5 stroke-[2.5]"
+        className="text-successtext size-3.5 stroke-[2.5]"
       />
     );
   }

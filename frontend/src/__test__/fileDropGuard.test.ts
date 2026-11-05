@@ -12,18 +12,30 @@ import { subscribeFileDropGuard } from "../fileDropGuard";
 // comment) — so the repair on dragover is provable as an override.
 function dispatchDrag(
   type: "dragover" | "drop",
-  dataTransfer?: DataTransfer,
+  dataTransfer?: DataTransfer
 ): DragEvent {
+  // SAFETY: createEvent returns the generic Event type and jsdom's DragEvent
+  // has no usable constructor; the guard reads only defaultPrevented and
+  // dataTransfer off this event, never the DragEvent-specific members.
   const event = createEvent(type, window, { cancelable: true }) as DragEvent;
+
   if (dataTransfer) {
     Object.defineProperty(event, "dataTransfer", { value: dataTransfer });
   }
+
   window.dispatchEvent(event);
+
   return event;
 }
 
 function stubDataTransfer(types: string[]): DataTransfer {
-  return { types, dropEffect: "none" } as unknown as DataTransfer;
+  const stub: Partial<DataTransfer> = { types, dropEffect: "none" };
+
+  // SAFETY: jsdom has no DataTransfer constructor (module comment); the stub
+  // carries exactly the two members subscribeFileDropGuard touches — `types`
+  // (read) and `dropEffect` (written) — and the tests assert on this very
+  // object, so no other DataTransfer member is ever exercised.
+  return stub as DataTransfer;
 }
 
 describe("fileDropGuard", () => {

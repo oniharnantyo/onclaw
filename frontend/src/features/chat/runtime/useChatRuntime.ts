@@ -25,7 +25,7 @@ import { client } from "../../../lib/client";
 import { useAttachmentStore, type AttachmentChip } from "../attachments";
 import { asRichUser } from "../entries";
 import { useChatStore, type ExtendedChatStore } from "../store";
-import { entriesToRepository } from "./branches";
+import { buildRepository } from "./branches";
 
 /** The attachment lane a mime sorts into — the same lanes the transcript's
  * message attachments show. */
@@ -198,7 +198,7 @@ export function useChatRuntime(): AssistantRuntime {
   const oldestSeq = useChatStore((s: ExtendedChatStore) => s.oldestSeq);
 
   const repository = useMemo(
-    (): ExportedMessageRepository => entriesToRepository(entries),
+    (): ExportedMessageRepository => buildRepository(entries),
     [entries]
   );
 

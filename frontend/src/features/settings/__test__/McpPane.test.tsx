@@ -6,6 +6,7 @@ import type { Client } from "../../../lib/client";
 import type { MCPOAuthCompletedEvent } from "../../../lib/events";
 
 import McpPane from "../components/McpPane";
+import { useNavStore } from "../../../stores/nav";
 import type { SettingsPaneConfig } from "../types";
 import { renderUI } from "./test-utils";
 
@@ -680,5 +681,111 @@ describe("McpPane", () => {
 
     await unmount();
     expect(unsubscribeOAuth).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe("McpPane system row (rebrand-browser-use-system-mcp 6.1)", () => {
+  /** The synthesized system row the backend listing carries (design D6). */
+  function makeSystemServer(patch: Partial<MCPServer> = {}): MCPServer {
+    return makeServer({
+      ID: "browser-use",
+      Name: "Browser Use",
+      Transport: "stdio",
+      Command: "/opt/buddies/buddies",
+      Args: ["browser-mcp"],
+      Status: "connected",
+      ToolCount: 11,
+      ...patch,
+    });
+  }
+
+  beforeEach(() => {
+    // The fixtures are module-scoped arrays shared with the pane describe;
+    // reset them here too so the system row is not doubled.
+    servers.length = 0;
+    oauthHandlers.length = 0;
+    vi.clearAllMocks();
+    useNavStore.setState({
+      settingsPaneLabel: "MCP",
+      settingsPaneRequest: null,
+      menu: "settings",
+    });
+  });
+
+  it("renders the system row with a System badge and the connected tool count", async () => {
+    servers.push(makeSystemServer());
+
+    const { findByTestId } = await renderUI(<McpPane pane={pane} />);
+
+    expect(await findByTestId("mcp-browser-use")).toBeTruthy();
+    expect((await findByTestId("mcp-system-browser-use")).textContent).toBe(
+      "system"
+    );
+    expect((await findByTestId("mcp-status-browser-use")).textContent).toBe(
+      "connected · 11 tools"
+    );
+  });
+
+  it("offers no toggle, edit, or remove affordances on the system row", async () => {
+    servers.push(makeSystemServer());
+
+    const { findByTestId, queryByTestId } = await renderUI(
+      <McpPane pane={pane} />
+    );
+
+    await findByTestId("mcp-browser-use");
+
+    expect(queryByTestId("mcp-edit-browser-use")).toBeNull();
+    expect(queryByTestId("mcp-remove-browser-use")).toBeNull();
+    expect(queryByTestId("mcp-toggle-browser-use")).toBeNull();
+  });
+
+  it("keeps refresh available on the system row", async () => {
+    servers.push(makeSystemServer({ Status: "", ToolCount: 0 }));
+
+    const user = userEvent.setup();
+    const { findByTestId } = await renderUI(<McpPane pane={pane} />);
+
+    await user.click(await findByTestId("mcp-refresh-browser-use"));
+
+    expect(mockedClient.settings.probeMCPServer).toHaveBeenCalledWith(
+      "browser-use"
+    );
+    expect((await findByTestId("mcp-status-browser-use")).textContent).toBe(
+      "connected · 3 tools"
+    );
+  });
+
+  it("the open-settings action asks the nav store for the Browser Use pane", async () => {
+    servers.push(makeSystemServer());
+
+    const user = userEvent.setup();
+    const { findByTestId } = await renderUI(<McpPane pane={pane} />);
+
+    await user.click(await findByTestId("mcp-open-settings-browser-use"));
+
+    expect(useNavStore.getState().settingsPaneRequest?.pane).toBe("browseruse");
+    expect(useNavStore.getState().menu).toBe("settings");
+  });
+
+  it("a failed system row still shows its reason and no mutation affordances", async () => {
+    servers.push(
+      makeSystemServer({
+        Status: "error",
+        StatusError: "browser-use: lock held by another buddies instance",
+      })
+    );
+
+    const { findByTestId, queryByTestId } = await renderUI(
+      <McpPane pane={pane} />
+    );
+
+    expect((await findByTestId("mcp-status-browser-use")).textContent).toBe(
+      "failed"
+    );
+    expect((await findByTestId("mcp-reason-browser-use")).textContent).toBe(
+      "browser-use: lock held by another buddies instance"
+    );
+    expect(queryByTestId("mcp-remove-browser-use")).toBeNull();
   });
 });

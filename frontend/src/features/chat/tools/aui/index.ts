@@ -5,6 +5,8 @@
  * the transcript (wave 2A): keep both.
  */
 export {
+  BROWSER_USE_PREFIX,
+  resolveToolRenderer,
   toolRenderers,
   type ToolRenderer,
   type ToolRendererMap,

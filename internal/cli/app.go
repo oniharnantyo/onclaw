@@ -11,9 +11,11 @@ import (
 	"github.com/oniharnantyo/buddies/internal/agents/mcp"
 	"github.com/oniharnantyo/buddies/internal/agents/tools/documents"
 	"github.com/oniharnantyo/buddies/internal/attachments"
+	"github.com/oniharnantyo/buddies/internal/browseruse"
 	"github.com/oniharnantyo/buddies/internal/channels/telegram"
 	"github.com/oniharnantyo/buddies/internal/config"
 	"github.com/oniharnantyo/buddies/internal/gateway"
+	"github.com/oniharnantyo/buddies/internal/groups"
 	"github.com/oniharnantyo/buddies/internal/knowledge"
 	"github.com/oniharnantyo/buddies/internal/memory"
 	"github.com/oniharnantyo/buddies/internal/promptgen"
@@ -23,6 +25,7 @@ import (
 	"github.com/oniharnantyo/buddies/internal/skills"
 	"github.com/oniharnantyo/buddies/internal/store"
 	"github.com/oniharnantyo/buddies/internal/store/sqlite"
+	"github.com/oniharnantyo/buddies/internal/vault"
 	"github.com/oniharnantyo/buddies/internal/workspaces"
 )
 
@@ -68,11 +71,33 @@ type ServiceSet struct {
 	AppInfo   *services.AppInfo
 	Agents    *services.AgentsService
 	Chat      *services.ChatService
+	Groups    *services.GroupsService
 	Settings  *services.SettingsService
 	Gateway   *services.GatewayService
 	Schedule  *services.ScheduleService
 	Knowledge *services.KnowledgeService
 	Channels  *services.ChannelService
+}
+
+// AssembleOption customizes assembly. The production entrypoints (the root
+// command and serve) assemble with no options — the full system, the Browser
+// Use system server included.
+type AssembleOption func(*assembleOptions)
+
+// assembleOptions is the mutable option state behind AssembleOption.
+type assembleOptions struct {
+	// systemBrowserUse spawns and supervises the Browser Use system server
+	// (rebrand-browser-use-system-mcp design D6/D7).
+	systemBrowserUse bool
+}
+
+// WithoutSystemBrowserUse assembles without spawning the Browser Use system
+// server. Tests pass it: the supervisor launches the app's own binary as the
+// stdio child, and under go test that image is the test binary — re-running
+// the suite — not the browser-mcp subcommand. The live browser smoke runs in
+// server mode against the real binary instead.
+func WithoutSystemBrowserUse() AssembleOption {
+	return func(o *assembleOptions) { o.systemBrowserUse = false }
 }
 
 // Assemble builds the full application over the data layout resolved from
@@ -82,7 +107,7 @@ type ServiceSet struct {
 // opener launches the services' system-browser flows; both must be non-nil
 // (services.Noop and services.NoBrowser for hosts without those
 // capabilities).
-func Assemble(ctx context.Context, emitter services.Emitter, opener services.URLOpener) (*App, error) {
+func Assemble(ctx context.Context, emitter services.Emitter, opener services.URLOpener, opts ...AssembleOption) (*App, error) {
 	layout, err := config.Resolve()
 	if err != nil {
 		return nil, fmt.Errorf("assemble: %w", err)
@@ -94,6 +119,11 @@ func Assemble(ctx context.Context, emitter services.Emitter, opener services.URL
 	st, err := sqlite.Open(ctx, layout.DBPath)
 	if err != nil {
 		return nil, fmt.Errorf("assemble: %w", err)
+	}
+
+	assembled := assembleOptions{systemBrowserUse: true}
+	for _, opt := range opts {
+		opt(&assembled)
 	}
 
 	gw := gateway.NewManager()
@@ -110,21 +140,20 @@ func Assemble(ctx context.Context, emitter services.Emitter, opener services.URL
 	// save_document tool and /knowledge mount, the bound Knowledge service,
 	// and the agents service's delete cleanup.
 	knowStore := knowledge.NewStore(layout.Knowledge, st.Documents())
-	agentsSvc := services.NewAgentsService(st, promptGen, wsMgr, knowStore, layout.Skills)
-
-	// Sweep crash-orphaned prompt generations before services accept calls
-	// (design D4): rows still in generating are moved to failed with the
-	// canonical interrupted reason. Cosmetic to startup — a sweep failure
-	// only leaves retryable rows stuck — so it is logged, not fatal.
-	if err := agentsSvc.SweepInterruptedGenerations(ctx); err != nil {
-		slog.Warn("assemble: prompt generation sweep failed", "error", err)
-	}
 
 	// The MCP connection cache backs both the runtime's per-turn tool
 	// surface (WithMCPManager) and the settings service's invalidate-on-write
 	// seam: an edited, disabled, or removed definition drops its cached
-	// connection immediately (design D7).
-	mcpMgr := mcp.NewMCPManager()
+	// connection immediately (design D7). With WithSystemBrowserUse it also
+	// spawns and supervises the Browser Use system server
+	// (rebrand-browser-use-system-mcp design D6/D7): the app's own binary as
+	// a stdio child rooted at the layout's browser directory, its config
+	// re-read at every spawn boundary (design D8).
+	var mcpOpts []mcp.ManagerOption
+	if assembled.systemBrowserUse {
+		mcpOpts = append(mcpOpts, mcp.WithSystemBrowserUse(layout.Browser, browserUseSystemConfig(st)))
+	}
+	mcpMgr := mcp.NewMCPManager(mcpOpts...)
 	// The hook dispatcher gates and observes every turn (spec agent-hooks):
 	// resolution reads both assignment tiers fresh per turn, and both
 	// handler types are enabled (design D9).
@@ -137,16 +166,21 @@ func Assemble(ctx context.Context, emitter services.Emitter, opener services.URL
 	runs := &scheduleRuns{}
 	sched := scheduler.New(st, runs, gw)
 
+	// The two-phase group-turn wiring (add-agent-groups tasks 4.3): the ref
+	// exists before the runtime so the manager can be built with
+	// WithGroupTurns, and the groups service binds itself as the turn source
+	// in its constructor below.
+	ref := agents.NewGroupTurnRef()
 	runtime := agents.NewManager(st,
 		agents.WithPromptDocs(agents.NewWorkspacePromptDocs(wsMgr)),
 		agents.WithWorkspaces(wsMgr),
 		agents.WithSkills(layout.Skills),
 		agents.WithAttachments(layout.Attachments),
 		agents.WithKnowledge(layout.Knowledge),
-		agents.WithBrowserDir(layout.Browser),
 		agents.WithMCPManager(mcpMgr),
 		agents.WithHooks(hooksDispatcher),
 		agents.WithScheduler(sched),
+		agents.WithGroupTurns(ref),
 		// Turn transitions announce app-wide (add-grouped-session-rail
 		// design D2): the runtime core is where UI dispatch, scheduler fire,
 		// and gateway trigger converge.
@@ -158,6 +192,35 @@ func Assemble(ctx context.Context, emitter services.Emitter, opener services.URL
 	// The minute-aligned tick loop starts on the gateway's first Running
 	// transition (design D2); both hosts start the gateway after Assemble.
 	sched.Attach(gw)
+
+	// The groups service (add-agent-groups design D2-D8): the shared
+	// transcript, routing, task lifecycle, and recovery over the store and
+	// the runtime. Its constructor binds the runtime's group turn source
+	// through ref; live updates forward onto the host emitter (design D9).
+	groupSvc := groups.New(groups.Deps{
+		Store:    st,
+		Sessions: sessionSvc,
+		Manager:  runtime,
+		Ref:      ref,
+		Events:   services.NewGroupsEvents(emitter),
+	})
+	// Restart recovery (design D8): re-drain persisted dispatches in a
+	// non-fatal startup goroutine — mirroring the prompt-generation sweep's
+	// posture, a failure is logged and never crashes the app.
+	go func() {
+		if err := groupSvc.Drain(ctx); err != nil {
+			slog.Warn("assemble: group dispatch drain failed", "error", err)
+		}
+	}()
+
+	agentsSvc := services.NewAgentsService(st, promptGen, wsMgr, knowStore, layout.Skills, groupSvc)
+	// Sweep crash-orphaned prompt generations before services accept calls
+	// (design D4): rows still in generating are moved to failed with the
+	// canonical interrupted reason. Cosmetic to startup — a sweep failure
+	// only leaves retryable rows stuck — so it is logged, not fatal.
+	if err := agentsSvc.SweepInterruptedGenerations(ctx); err != nil {
+		slog.Warn("assemble: prompt generation sweep failed", "error", err)
+	}
 
 	// The memory consolidation sweep ticks hourly per agent while the
 	// gateway is Running (add-agent-memory design D7), skipping ticks while
@@ -209,11 +272,24 @@ func Assemble(ctx context.Context, emitter services.Emitter, opener services.URL
 		slog.Warn("assemble: skill directory scan failed", "error", err)
 	}
 
+	// The vault backs the Saved-logins methods and the resolve-input
+	// save-to-vault path (add-browser-login-handover design D5). Its key
+	// material mints lazily — only on the first save or reveal — so a
+	// headless host with no keyring still boots (the keyfile fallback takes
+	// over at first use).
+	vaultSvc := vault.NewService(st.VaultItems(), vault.NewKeyProvider(layout.Root))
+
 	settingsSvc := services.NewSettingsService(st,
 		services.WithMCPInvalidate(mcpMgr.Invalidate),
+		// The Browser Use pane's System row reads the supervised server's
+		// live state, and the profile-delete flow tears the supervised child
+		// down before removing a profile directory
+		// (rebrand-browser-use-system-mcp, spec settings "Browser Use pane").
+		services.WithSystemServerState(mcpMgr.SystemServerState),
+		services.WithSystemServerRestart(mcpMgr.RestartSystemServer),
 		// The browser profile management roots at the layout's browser
-		// directory (spec add-browser-tool D10) — the same root the
-		// runtime's browser tool was given above.
+		// directory (spec browser-use "Persistent browser profiles") — the
+		// same root the system server above was given.
 		services.WithBrowserDir(layout.Browser),
 		// Template-document preset uploads land in the store aggregate's
 		// on-disk template store (add-document-editing design D6); unwired,
@@ -223,6 +299,9 @@ func Assemble(ctx context.Context, emitter services.Emitter, opener services.URL
 		// bus (design D2) and opens its authorization page through the
 		// host's browser seam (design D8).
 		services.WithEmitter(emitter),
+		// The Browser Use pane's Saved logins section reads and writes the
+		// vault (add-browser-login-handover design D5).
+		services.WithVault(vaultSvc),
 		services.WithURLOpener(opener))
 	// Seed canonical provider models if missing (design D3)
 	if err := settingsSvc.SeedCanonicalModels(ctx); err != nil {
@@ -282,22 +361,49 @@ func Assemble(ctx context.Context, emitter services.Emitter, opener services.URL
 			AppInfo: services.NewAppInfo(),
 			Agents:  agentsSvc,
 			Chat: services.NewChatService(runtime, sessionSvc, emitter, st, attStore, wsMgr,
-				// The browser-screenshot read serves from the layout's
-				// browser directory (design D6) — the same root the
-				// runtime's browser tool was given above.
-				services.WithChatBrowserDir(layout.Browser),
 				// The generated-document Save As export opens the host's
 				// native save dialog (add-artifact-save-as design D2); the
 				// build-tag seam defaults the server build to the
 				// unavailable null object, so both hosts share this wiring.
-				services.WithSaveDialog(services.NewHostSaveDialog())),
+				services.WithSaveDialog(services.NewHostSaveDialog()),
+				// The resolve-input save-to-vault path writes the vault
+				// (add-browser-login-handover design D5).
+				services.WithChatVault(vaultSvc)),
 			Settings:  settingsSvc,
+			Groups:    services.NewGroupsService(groupSvc),
 			Gateway:   services.NewGatewayService(gw, emitter),
 			Schedule:  services.NewScheduleService(sched, emitter),
 			Knowledge: services.NewKnowledgeService(knowStore, st.Agents(), emitter),
 			Channels:  channelsSvc,
 		},
 	}, nil
+}
+
+// browserUseSystemConfig resolves the Browser Use system server's spawn-time
+// flag snapshot (rebrand-browser-use-system-mcp design D8): the persisted
+// tool_settings document under the browser key — the same row the settings
+// pane writes — decoded through the server package's single decode site. A
+// missing row decodes to the defaults; the provider is called fresh at every
+// spawn boundary and supervision tick, so a settings save applies at the
+// next idle-boundary respawn without any push notification.
+func browserUseSystemConfig(st store.Store) func(ctx context.Context) (mcp.SystemServerConfig, error) {
+	return func(ctx context.Context) (mcp.SystemServerConfig, error) {
+		raw, _, err := st.ToolSettings().Get(ctx, services.BrowserSettingsKey)
+		if err != nil {
+			return mcp.SystemServerConfig{}, fmt.Errorf("resolve browser-use config: %w", err)
+		}
+		cfg, err := browseruse.DecodeStoredConfig(raw)
+		if err != nil {
+			return mcp.SystemServerConfig{}, err
+		}
+		return mcp.SystemServerConfig{
+			DefaultProfile:       cfg.DefaultProfile,
+			Headless:             cfg.Headless,
+			IdleTimeoutSeconds:   cfg.IdleTimeoutSeconds,
+			ActionTimeoutSeconds: cfg.ActionTimeoutSeconds,
+			AllowPrivate:         cfg.AllowPrivate,
+		}, nil
+	}
 }
 
 // telegramRuntime adapts the agent runtime onto the Telegram channel's

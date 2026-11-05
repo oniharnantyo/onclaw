@@ -10,6 +10,10 @@ import type {
   ScheduleView,
 } from "../../../bindings/github.com/oniharnantyo/buddies/internal/scheduler/models";
 import type {
+  AgentGroup,
+  AgentGroupMember,
+  AgentGroupMessage,
+  AgentGroupTask,
   GatewaySettings,
   Hook,
   HookExecution,
@@ -17,6 +21,8 @@ import type {
   Session,
   Skill,
 } from "../../../bindings/github.com/oniharnantyo/buddies/internal/store/models";
+import type { SendRequest as GroupSendRequest } from "../../../bindings/github.com/oniharnantyo/buddies/internal/groups/models";
+import type { GroupEvent } from "../../../bindings/github.com/oniharnantyo/buddies/internal/services/models";
 import type {
   AgentHookAssignment,
   BrowserConfig,
@@ -41,6 +47,7 @@ import {
   MCP_OAUTH_COMPLETED_EVENT,
   SCHEDULES_CHANGED_EVENT,
   SETTINGS_OPEN_EVENT,
+  groupEventName,
   sessionEventName,
   type MCPOAuthCompletedEvent,
 } from "../events";
@@ -199,6 +206,72 @@ function makeGeneratedDocument(): GeneratedDocumentContent {
   return { name: "report.pdf", sizeBytes: 9, data: "cG5mLWJ5dGVz" };
 }
 
+/** The read shape the backend returns for one agent group (add-agent-groups
+ * D1). */
+function makeGroup(): AgentGroup {
+  return {
+    ID: "g1",
+    Name: "research",
+    Title: "Research",
+    Instructions: "study things",
+    LeadAgentID: "a1",
+    Archived: false,
+    Revision: 1,
+    CreatedAt: "2026-01-01T00:00:00Z",
+    UpdatedAt: "2026-01-01T00:00:00Z",
+  };
+}
+
+/** One roster row (add-agent-groups D1). */
+function makeGroupMember(): AgentGroupMember {
+  return { GroupID: "g1", AgentID: "a1", AddedAt: "2026-01-01T00:00:00Z" };
+}
+
+/** One transcript row (add-agent-groups D1). */
+function makeGroupMessage(): AgentGroupMessage {
+  return {
+    GroupID: "g1",
+    MessageID: "m1",
+    Seq: 1,
+    Kind: "message",
+    AuthorKind: "user",
+    AuthorAgentID: null,
+    TaskID: null,
+    Payload: JSON.stringify({ text: "hello" }),
+    OccurredAt: "2026-01-01T00:00:00Z",
+  };
+}
+
+/** One task row (add-agent-groups D1/D8). */
+function makeGroupTask(): AgentGroupTask {
+  return {
+    TaskID: "t1",
+    GroupID: "g1",
+    ParentTaskID: null,
+    RootTaskID: "t1",
+    OwnerAgentID: "a1",
+    RequestMessageID: "m1",
+    Instruction: "summarize",
+    ExpectedResult: "",
+    State: "queued",
+    StopReason: null,
+    Revision: 1,
+    AssignmentCount: 0,
+    Error: null,
+  };
+}
+
+/** A write-input group send (add-agent-groups D4). */
+function makeGroupSendRequest(): GroupSendRequest {
+  return {
+    GroupID: "g1",
+    Text: "@Scout summarize",
+    Attachments: null,
+    RecipientAgentID: "a1",
+    ReplyToMessageID: "",
+  };
+}
+
 /** Guard for mock-transport members the cases under test never reach. */
 function unreachable(what: string): never {
   throw new Error(`${what} is not stubbed in this mock transport`);
@@ -220,6 +293,10 @@ interface MockTransport {
     RunningSessions: MockFn;
     SetSessionOverrides: MockFn;
     ResolveApproval: MockFn;
+    ResolveInput: MockFn;
+    CancelInput: MockFn;
+    BeginBrowserTakeover: MockFn;
+    ResolveTakeover: MockFn;
     Subscribe: MockFn;
     Transcript: MockFn;
     TranscriptPage: MockFn;
@@ -256,6 +333,24 @@ interface MockTransport {
     SetScope: MockFn;
     SetDescription: MockFn;
     Content: MockFn;
+  };
+  groups: {
+    ListGroups: MockFn;
+    Group: MockFn;
+    CreateGroup: MockFn;
+    UpdateGroup: MockFn;
+    DeleteGroup: MockFn;
+    Members: MockFn;
+    AddMember: MockFn;
+    RemoveMember: MockFn;
+    SetLead: MockFn;
+    TranscriptPage: MockFn;
+    Tasks: MockFn;
+    Send: MockFn;
+    StopTask: MockFn;
+    ContinueTask: MockFn;
+    ReassignTask: MockFn;
+    CancelTask: MockFn;
   };
   unsubscribe: Unsubscribe;
 }
@@ -306,6 +401,34 @@ function makeTransport(): MockTransport {
       async (sessionID: string, interruptID: string, approved: boolean) => {
         calls.push(
           `chat.ResolveApproval:${sessionID}:${interruptID}:${approved}`
+        );
+      }
+    ),
+    ResolveInput: vi.fn(
+      async (
+        sessionID: string,
+        interruptID: string,
+        text: string,
+        identifier: string,
+        saveLogin: boolean
+      ) => {
+        calls.push(
+          `chat.ResolveInput:${sessionID}:${interruptID}:${identifier}:${saveLogin}`
+        );
+      }
+    ),
+    CancelInput: vi.fn(async (sessionID: string, interruptID: string) => {
+      calls.push(`chat.CancelInput:${sessionID}:${interruptID}`);
+    }),
+    BeginBrowserTakeover: vi.fn(
+      async (sessionID: string, interruptID: string) => {
+        calls.push(`chat.BeginBrowserTakeover:${sessionID}:${interruptID}`);
+      }
+    ),
+    ResolveTakeover: vi.fn(
+      async (sessionID: string, interruptID: string, outcome: string) => {
+        calls.push(
+          `chat.ResolveTakeover:${sessionID}:${interruptID}:${outcome}`
         );
       }
     ),
@@ -370,7 +493,7 @@ function makeTransport(): MockTransport {
       last_input: 0,
       last_output: 0,
     })),
-    BrowserScreenshot: vi.fn(async (name: string) => ({
+    BrowserScreenshot: vi.fn(async (sessionID: string, name: string) => ({
       name,
       width: 1,
       height: 1,
@@ -446,6 +569,31 @@ function makeTransport(): MockTransport {
       unreachable("settings.CreateBrowserProfile"),
     DeleteBrowserProfile: (_name: string): Promise<void> =>
       unreachable("settings.DeleteBrowserProfile"),
+    ImportBrowserProfile: (
+      _sourcePath: string,
+      _name: string
+    ): Promise<string> => unreachable("settings.ImportBrowserProfile"),
+    ImportChromeProfile: (_dirName: string): Promise<string> =>
+      unreachable("settings.ImportChromeProfile"),
+    DetectChromeProfiles: (): Promise<
+      | import("../../../bindings/github.com/oniharnantyo/buddies/internal/services/models").ChromeProfileCandidate[]
+      | null
+    > => unreachable("settings.DetectChromeProfiles"),
+    VaultLogins: (): Promise<
+      | import("../../../bindings/github.com/oniharnantyo/buddies/internal/services/models").VaultLogin[]
+      | null
+    > => unreachable("settings.VaultLogins"),
+    SaveVaultLogin: (
+      _name: string,
+      _origin: string,
+      _username: string,
+      _password: string,
+      _addedBy: string
+    ): Promise<void> => unreachable("settings.SaveVaultLogin"),
+    RemoveVaultLogin: (_id: string): Promise<void> =>
+      unreachable("settings.RemoveVaultLogin"),
+    RevealVaultLogin: (_id: string): Promise<string> =>
+      unreachable("settings.RevealVaultLogin"),
     ListDocumentPresets: (
       _format: string
     ): Promise<DocumentPresetEntry[] | null> =>
@@ -590,6 +738,46 @@ function makeTransport(): MockTransport {
     calls.push("off");
   };
 
+  // SAFETY: the groups surface is fully stubbed with recording mocks; the
+  // cases below drive every method, so no unreachable members exist here.
+  const groups = {
+    ListGroups: vi.fn(async (): Promise<AgentGroup[] | null> => [makeGroup()]),
+    Group: vi.fn(async (_groupID: string): Promise<AgentGroup> => makeGroup()),
+    CreateGroup: vi.fn(async (): Promise<AgentGroup> => makeGroup()),
+    UpdateGroup: vi.fn(async (): Promise<AgentGroup> => makeGroup()),
+    DeleteGroup: vi.fn(async (_groupID: string): Promise<void> => undefined),
+    Members: vi.fn(async (): Promise<AgentGroupMember[] | null> => [
+      makeGroupMember(),
+    ]),
+    AddMember: vi.fn(
+      async (_groupID: string, _agentID: string): Promise<void> => undefined
+    ),
+    RemoveMember: vi.fn(
+      async (_groupID: string, _agentID: string): Promise<void> => undefined
+    ),
+    SetLead: vi.fn(
+      async (_groupID: string, _agentID: string): Promise<void> => undefined
+    ),
+    TranscriptPage: vi.fn(async (): Promise<AgentGroupMessage[] | null> => [
+      makeGroupMessage(),
+    ]),
+    Tasks: vi.fn(async (): Promise<AgentGroupTask[] | null> => [
+      makeGroupTask(),
+    ]),
+    Send: vi.fn(async (_req: GroupSendRequest): Promise<void> => undefined),
+    StopTask: vi.fn(
+      async (_taskID: string, _reason: string): Promise<void> => undefined
+    ),
+    ContinueTask: vi.fn(
+      async (_taskID: string, _message: string): Promise<void> => undefined
+    ),
+    ReassignTask: vi.fn(
+      async (_taskID: string, _newOwnerAgentID: string): Promise<void> =>
+        undefined
+    ),
+    CancelTask: vi.fn(async (_taskID: string): Promise<void> => undefined),
+  };
+
   const transport: Transport = {
     appInfo,
     // SAFETY: the client wrapper under test never calls agent methods in
@@ -600,6 +788,7 @@ function makeTransport(): MockTransport {
     gateway,
     schedules,
     knowledge,
+    groups,
     // SAFETY: no case drives the Channels pane's backend surface; the empty
     // stub satisfies the transport contract like agents above.
     channels: {} as Transport["channels"],
@@ -644,6 +833,7 @@ function makeTransport(): MockTransport {
     gateway,
     schedules,
     knowledge,
+    groups,
     unsubscribe,
   };
 }
@@ -1268,6 +1458,130 @@ describe("client wrapper", () => {
 
       off();
       expect(t.active(SETTINGS_OPEN_EVENT)).toBe(0);
+    });
+  });
+
+  describe("groups surface (add-agent-groups task 4.2)", () => {
+    it("routes the group reads and returns the store rows", async () => {
+      const group = makeGroup();
+
+      await expect(client.groups.list()).resolves.toEqual([group]);
+      expect(t.groups.ListGroups).toHaveBeenCalledOnce();
+
+      await expect(client.groups.get("g1")).resolves.toEqual(group);
+      expect(t.groups.Group).toHaveBeenCalledWith("g1");
+
+      await expect(client.groups.members("g1")).resolves.toEqual([
+        makeGroupMember(),
+      ]);
+      expect(t.groups.Members).toHaveBeenCalledWith("g1");
+
+      await expect(client.groups.transcriptPage("g1", 0, 60)).resolves.toEqual([
+        makeGroupMessage(),
+      ]);
+      expect(t.groups.TranscriptPage).toHaveBeenCalledWith("g1", 0, 60);
+
+      await expect(client.groups.tasks("g1")).resolves.toEqual([
+        makeGroupTask(),
+      ]);
+      expect(t.groups.Tasks).toHaveBeenCalledWith("g1");
+    });
+
+    it("routes the group writes verbatim", async () => {
+      await client.groups.create("research", "Research", "study things", [
+        "a1",
+      ]);
+      expect(t.groups.CreateGroup).toHaveBeenCalledWith(
+        "research",
+        "Research",
+        "study things",
+        ["a1"]
+      );
+
+      await client.groups.update("g1", "research2", "T2", "I2");
+      expect(t.groups.UpdateGroup).toHaveBeenCalledWith(
+        "g1",
+        "research2",
+        "T2",
+        "I2"
+      );
+
+      await client.groups.delete("g1");
+      expect(t.groups.DeleteGroup).toHaveBeenCalledWith("g1");
+
+      await client.groups.addMember("g1", "a1");
+      expect(t.groups.AddMember).toHaveBeenCalledWith("g1", "a1");
+
+      await client.groups.removeMember("g1", "a1");
+      expect(t.groups.RemoveMember).toHaveBeenCalledWith("g1", "a1");
+
+      await client.groups.setLead("g1", "a1");
+      expect(t.groups.SetLead).toHaveBeenCalledWith("g1", "a1");
+    });
+
+    it("routes the send binding with the request shape", async () => {
+      const req = makeGroupSendRequest();
+
+      await client.groups.send(req);
+      expect(t.groups.Send).toHaveBeenCalledWith(req);
+    });
+
+    it("routes the task lifecycle controls verbatim (design D8)", async () => {
+      await client.groups.stopTask("t1", "held by user");
+      expect(t.groups.StopTask).toHaveBeenCalledWith("t1", "held by user");
+
+      await client.groups.continueTask("t1", "Continue");
+      expect(t.groups.ContinueTask).toHaveBeenCalledWith("t1", "Continue");
+
+      await client.groups.reassignTask("t1", "a2");
+      expect(t.groups.ReassignTask).toHaveBeenCalledWith("t1", "a2");
+
+      await client.groups.cancelTask("t1");
+      expect(t.groups.CancelTask).toHaveBeenCalledWith("t1");
+    });
+
+    it("listens on one group's event channel and passes the typed payload", () => {
+      const got: string[] = [];
+
+      const off = client.groups.onGroupEvent(
+        "g1",
+        (event: GroupEvent): void => {
+          got.push(event.kind);
+        }
+      );
+
+      expect(t.calls).toContain(`onEvent:${groupEventName("g1")}`);
+
+      t.emit(groupEventName("g1"), {
+        kind: "message-appended",
+        messageId: "m1",
+        seq: 1,
+        message: makeGroupMessage(),
+      });
+      t.emit(groupEventName("g1"), { kind: "task-updated", taskId: "t1" });
+      expect(got).toEqual(["message-appended", "task-updated"]);
+
+      // The channel is scoped per group.
+      expect(t.active(groupEventName("g2"))).toBe(0);
+
+      off();
+      expect(t.active(groupEventName("g1"))).toBe(0);
+    });
+
+    it("listens on groups:changed and ignores its empty payload", () => {
+      let changed = 0;
+
+      const off = client.events.onGroupsChanged((): void => {
+        changed += 1;
+      });
+
+      expect(t.calls).toContain("onEvent:groups:changed");
+
+      t.emit("groups:changed");
+      expect(changed).toBe(1);
+
+      off();
+      expect(t.active("groups:changed")).toBe(0);
     });
   });
 });

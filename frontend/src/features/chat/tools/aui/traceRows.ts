@@ -30,9 +30,15 @@ import { isString, parseArgs, str, type Json } from "../parse";
 import { countLines } from "../toolDisplay";
 import { buildDiffLines, countDiffLines, type DiffCounts } from "./diffRows";
 
+/** The MCP namespace prefix the Browser Use system server's tools surface
+ * under (design D6); matched as a prefix, never exact equality. */
+const BROWSER_USE_PREFIX = "mcp__browser-use__";
+
 /** The short verb a trace row leads with. Unknown tools keep the raw name —
  * the fold invents nothing a card would not say. */
 export function toolVerb(toolName: string): string {
+  if (toolName.startsWith(BROWSER_USE_PREFIX)) return "Browse";
+
   const VERBS = {
     read_file: "Read",
     write_file: "Write",
@@ -69,6 +75,8 @@ export function toolVerb(toolName: string): string {
 
 /** The lucide glyph a trace row shows for one tool. */
 export function toolIcon(toolName: string): LucideIcon {
+  if (toolName.startsWith(BROWSER_USE_PREFIX)) return GlobeIcon;
+
   const ICONS = {
     read_file: FileTextIcon,
     write_file: FilePlusIcon,
@@ -114,6 +122,19 @@ export function toolChip(toolName: string, argsText: string): string {
     if (toolName === "task") return firstLineChip(argsText);
 
     return "";
+  }
+
+  // The Browser Use tools chip the page they address (navigate/wait url,
+  // press_key's key, type's text, click's ref) — first scalar that names a
+  // target wins.
+  if (toolName.startsWith(BROWSER_USE_PREFIX)) {
+    return (
+      str(args, "url") ||
+      str(args, "key") ||
+      str(args, "text") ||
+      str(args, "ref") ||
+      str(args, "query")
+    );
   }
 
   switch (toolName) {

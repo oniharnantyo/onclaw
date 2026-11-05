@@ -25,10 +25,13 @@ import type {
   ChannelInput,
   ChannelStateEvent,
   ChannelView,
+  ChromeProfileCandidate,
   CreateAgentInput,
   DocumentPresetEntry,
   GatewayStateEvent,
   GeneratedDocumentContent,
+  GroupEvent,
+  GroupsChangedEvent,
   IntegrationConnectInput,
   KnowledgeDocument,
   Metadata,
@@ -40,6 +43,7 @@ import type {
   ProviderView,
   ToolEntry,
   TurnStateResult,
+  VaultLogin,
   VerifyResult,
   WebSearchConfig,
   WebSearchProviderInfo,
@@ -47,8 +51,13 @@ import type {
   WorkspaceFileBinaryContent,
   WorkspaceSkill,
 } from "../../bindings/github.com/oniharnantyo/buddies/internal/services/models";
+import type { SendRequest as GroupSendRequest } from "../../bindings/github.com/oniharnantyo/buddies/internal/groups/models";
 import type {
   Agent,
+  AgentGroup,
+  AgentGroupMember,
+  AgentGroupMessage,
+  AgentGroupTask,
   ChannelPairing,
   GatewaySettings,
   Hook,
@@ -66,11 +75,13 @@ import {
   CHANNELS_CHANGED_EVENT,
   CHANNELS_STATE_EVENT,
   GATEWAY_STATE_EVENT,
+  GROUPS_CHANGED_EVENT,
   KNOWLEDGE_CHANGED_EVENT,
   MCP_OAUTH_COMPLETED_EVENT,
   SCHEDULES_CHANGED_EVENT,
   SETTINGS_OPEN_EVENT,
   TURNS_CHANGED_EVENT,
+  groupEventName,
   sessionEventName,
   type KnowledgeChangedEvent,
   type MCPOAuthCompletedEvent,
@@ -173,6 +184,14 @@ export type ChannelsChangedHandler = (event: ChannelChangedEvent) => void;
 /** Handler receiving one channel connection-state update (design D10). */
 export type ChannelsStateHandler = (event: ChannelStateEvent) => void;
 
+/** Handler receiving one agent-group roster/list change (add-agent-groups
+ * design D9). */
+export type GroupsChangedHandler = (event: GroupsChangedEvent) => void;
+
+/** Handler receiving one group's live transcript/task update (add-agent-groups
+ * design D9). */
+export type GroupEventHandler = (event: GroupEvent) => void;
+
 export interface Client {
   appInfo: {
     /** Application name and version. */
@@ -271,6 +290,33 @@ export interface Client {
       interruptID: string,
       approved: boolean
     ): Promise<void>;
+    /**
+     * Submits the user-typed secret for the session's pending browser
+     * attention request; the value rides this call only, never the event
+     * log (add-browser-login-handover design D3).
+     */
+    resolveInput(
+      sessionID: string,
+      interruptID: string,
+      text: string,
+      identifier: string,
+      saveLogin: boolean
+    ): Promise<void>;
+    /**
+     * Ends the session's pending browser secret request with the user's
+     * cancel — the secret card's Cancel button. The parked submit_secret
+     * call unblocks on the cancelled result and the receipt renders
+     * "Cancelled".
+     */
+    cancelInput(sessionID: string, interruptID: string): Promise<void>;
+    /** Approves the session's pending browser takeover (headed relaunch). */
+    beginBrowserTakeover(sessionID: string, interruptID: string): Promise<void>;
+    /** Ends the session's pending browser takeover (completed/cancelled). */
+    resolveTakeover(
+      sessionID: string,
+      interruptID: string,
+      outcome: string
+    ): Promise<void>;
     transcript(sessionID: string): Promise<SessionEvent[]>;
     /**
      * One transcript window (design D6): the newest `limit` events strictly
@@ -307,10 +353,13 @@ export interface Client {
      * Serves one browser screenshot's bytes by the file name the browser
      * tool wrote (design D6, task 1.3): base64 PNG plus the dimensions the
      * tool reported. The backend validates the name shape and resolves it
-     * solely inside the screenshots directory; a refused or missing file
-     * rejects.
+     * solely inside the calling session's workspace screenshots directory; a
+     * refused or missing file rejects.
      */
-    browserScreenshot(name: string): Promise<BrowserScreenshotContent>;
+    browserScreenshot(
+      sessionID: string,
+      name: string
+    ): Promise<BrowserScreenshotContent>;
     /**
      * Serves one generated document's bytes by the file name the
      * create_document tool reported (add-create-document D7): base64 plus
@@ -460,6 +509,36 @@ export interface Client {
      * deleted one.
      */
     deleteBrowserProfile(name: string): Promise<void>;
+    /**
+     * Copies an existing Chrome/Chromium user-data directory into the
+     * browser profiles registry; on a name collision the backend appends a
+     * suffix and returns the profile's final registry name.
+     */
+    importBrowserProfile(sourcePath: string, name: string): Promise<string>;
+    /**
+     * Imports one detected Chrome profile in one click; the source resolves
+     * from the directory name against this machine's Chrome installation.
+     */
+    importChromeProfile(dirName: string): Promise<string>;
+    /** Lists this machine's Google Chrome profiles for one-click import. */
+    detectChromeProfiles(): Promise<ChromeProfileCandidate[]>;
+    /** Saved logins, redacted — the password never crosses the bridge. */
+    vaultLogins(): Promise<VaultLogin[]>;
+    /**
+     * Stores (or updates, for a known origin+username pair) one login's
+     * password in the OS-sealed vault.
+     */
+    saveVaultLogin(
+      name: string,
+      origin: string,
+      username: string,
+      password: string,
+      addedBy: string
+    ): Promise<void>;
+    /** Removes one saved login; an unknown id is an error. */
+    removeVaultLogin(id: string): Promise<void>;
+    /** Reveals one saved login's password (settings-only affordance). */
+    revealVaultLogin(id: string): Promise<string>;
     /** The format's document presets, ordered by name (add-create-document D4). */
     documentPresets(format: string): Promise<DocumentPresetEntry[]>;
     /**
@@ -564,6 +643,72 @@ export interface Client {
     resume(): Promise<void>;
     /** Subscribes to gateway state changes (`gateway:state`). */
     subscribe(handler: GatewayStateHandler): Unsubscribe;
+  };
+  groups: {
+    /** Every group, ordered by creation time (the rail's groups section). */
+    list(): Promise<AgentGroup[]>;
+    /** One group; an unknown id rejects. */
+    get(groupID: string): Promise<AgentGroup>;
+    /**
+     * Creates a group with its roster; the first member becomes the lead
+     * (design D5). A roster agent that does not exist rejects.
+     */
+    create(
+      name: string,
+      title: string,
+      instructions: string,
+      memberAgentIDs: string[] | null
+    ): Promise<AgentGroup>;
+    /** Rewrites the group's editable fields (name, title, instructions). */
+    update(
+      groupID: string,
+      name: string,
+      title: string,
+      instructions: string
+    ): Promise<AgentGroup>;
+    /** Removes the group and — through the store's cascades — its roster,
+     * transcript, cursors, tasks, and summary. */
+    delete(groupID: string): Promise<void>;
+    /** The group's roster in add order. */
+    members(groupID: string): Promise<AgentGroupMember[]>;
+    /** Adds one agent to the roster; a duplicate add rejects. */
+    addMember(groupID: string, agentID: string): Promise<void>;
+    /** Drops one roster row; a removed lead falls to the first remaining
+     * member (design D5). */
+    removeMember(groupID: string, agentID: string): Promise<void>;
+    /** Assigns the lead to a roster member (design D5). */
+    setLead(groupID: string, agentID: string): Promise<void>;
+    /**
+     * One transcript window (the session windowing contract): the newest
+     * `limit` rows strictly below `beforeSeq` — or the newest page when 0 —
+     * in transcript order.
+     */
+    transcriptPage(
+      groupID: string,
+      beforeSeq: number,
+      limit: number
+    ): Promise<AgentGroupMessage[]>;
+    /** The group's tasks, ordered by task id. */
+    tasks(groupID: string): Promise<AgentGroupTask[]>;
+    /**
+     * Submits one user message into the group (design D4): the text with
+     * optional attachment metadata, an optional explicit recipient from the
+     * mention picker, and an optional reply target.
+     */
+    send(req: GroupSendRequest): Promise<void>;
+    /** Pauses the task and its descendants with a visible reason (design D8). */
+    stopTask(taskID: string, reason: string): Promise<void>;
+    /** Re-dispatches a paused task with the continue message as follow-up. */
+    continueTask(taskID: string, message: string): Promise<void>;
+    /** Moves an open task to another roster member and re-dispatches it. */
+    reassignTask(taskID: string, newOwnerAgentID: string): Promise<void>;
+    /** Ends every open task of the task's root chain (design D8). */
+    cancelTask(taskID: string): Promise<void>;
+    /**
+     * Subscribes to one group's live transcript/task updates
+     * (`group:<id>:event`, add-agent-groups design D9).
+     */
+    onGroupEvent(groupID: string, handler: GroupEventHandler): Unsubscribe;
   };
   schedules: {
     /** Every schedule's view, in the store's name order. */
@@ -699,6 +844,12 @@ export interface Client {
      * detail when the state is error.
      */
     onChannelsState(handler: ChannelsStateHandler): Unsubscribe;
+    /**
+     * Subscribes to agent-group roster/list changes (`groups:changed`,
+     * add-agent-groups design D9): emitted for every group mutation, so the
+     * surfaces re-list.
+     */
+    onGroupsChanged(handler: GroupsChangedHandler): Unsubscribe;
   };
   windowTheme: {
     /** Forces the native window appearance to match the app theme. */
@@ -769,6 +920,51 @@ export function createClient(transport: Transport = wailsTransport): Client {
         approved: boolean
       ): Promise<void> =>
         transport.chat.ResolveApproval(sessionID, interruptID, approved),
+      /**
+       * Submits the user-typed secret for the session's pending browser
+       * attention request (add-browser-login-handover design D3). The value
+       * rides this call only — never the event log; saveLogin vaults the
+       * login before the turn resumes (a failed save does not stop it).
+       */
+      resolveInput: (
+        sessionID: string,
+        interruptID: string,
+        text: string,
+        identifier: string,
+        saveLogin: boolean
+      ): Promise<void> =>
+        transport.chat.ResolveInput(
+          sessionID,
+          interruptID,
+          text,
+          identifier,
+          saveLogin
+        ),
+      /**
+       * Ends the session's pending browser secret request with the user's
+       * cancel (the secret card's Cancel button): the parked submit_secret
+       * call unblocks on the cancelled result — the turn continues — and the
+       * receipt records the cancelled outcome only.
+       */
+      cancelInput: (sessionID: string, interruptID: string): Promise<void> =>
+        transport.chat.CancelInput(sessionID, interruptID),
+      /**
+       * Approves the session's pending browser takeover: the profile's
+       * browser relaunches headed and focused and the agent's tools hold
+       * (design D8). The card flips active when this resolves.
+       */
+      beginBrowserTakeover: (
+        sessionID: string,
+        interruptID: string
+      ): Promise<void> =>
+        transport.chat.BeginBrowserTakeover(sessionID, interruptID),
+      /** Ends the session's pending browser takeover (completed/cancelled). */
+      resolveTakeover: (
+        sessionID: string,
+        interruptID: string,
+        outcome: string
+      ): Promise<void> =>
+        transport.chat.ResolveTakeover(sessionID, interruptID, outcome),
       transcript: async (sessionID: string): Promise<SessionEvent[]> =>
         unwrap(await transport.chat.Transcript(sessionID)),
       transcriptPage: async (
@@ -791,9 +987,10 @@ export function createClient(transport: Transport = wailsTransport): Client {
       attachmentContent: (key: string): Promise<AttachmentContent> =>
         transport.chat.AttachmentContent(key),
       browserScreenshot: async (
+        sessionID: string,
         name: string
       ): Promise<BrowserScreenshotContent> =>
-        unwrap(await transport.chat.BrowserScreenshot(name)),
+        unwrap(await transport.chat.BrowserScreenshot(sessionID, name)),
       generatedDocument: async (
         agentID: string,
         sessionID: string,
@@ -957,6 +1154,49 @@ export function createClient(transport: Transport = wailsTransport): Client {
         transport.settings.CreateBrowserProfile(name),
       deleteBrowserProfile: (name: string): Promise<void> =>
         transport.settings.DeleteBrowserProfile(name),
+      // Copies an existing Chrome/Chromium user-data directory into the
+      // browser profiles dir (rebrand-browser-use-system-mcp design D9).
+      // A name collision is not an error: the backend appends a suffix and
+      // returns the profile's final name.
+      importBrowserProfile: (
+        sourcePath: string,
+        name: string
+      ): Promise<string> =>
+        transport.settings.ImportBrowserProfile(sourcePath, name),
+      importChromeProfile: (dirName: string): Promise<string> =>
+        transport.settings.ImportChromeProfile(dirName),
+      // The bridge maps an empty Go slice to null; the import list iterates
+      // the result, so normalize it once here.
+      detectChromeProfiles: async (): Promise<ChromeProfileCandidate[]> => {
+        const candidates = unwrap(
+          await transport.settings.DetectChromeProfiles()
+        );
+
+        return Array.isArray(candidates) ? candidates : [];
+      },
+      vaultLogins: async (): Promise<VaultLogin[]> => {
+        const logins = unwrap(await transport.settings.VaultLogins());
+
+        return Array.isArray(logins) ? logins : [];
+      },
+      saveVaultLogin: (
+        name: string,
+        origin: string,
+        username: string,
+        password: string,
+        addedBy: string
+      ): Promise<void> =>
+        transport.settings.SaveVaultLogin(
+          name,
+          origin,
+          username,
+          password,
+          addedBy
+        ),
+      removeVaultLogin: (id: string): Promise<void> =>
+        transport.settings.RemoveVaultLogin(id),
+      revealVaultLogin: (id: string): Promise<string> =>
+        transport.settings.RevealVaultLogin(id),
       // The bridge maps an empty Go slice to null; the preset list iterates
       // the result, so normalize it once here.
       documentPresets: async (
@@ -1056,6 +1296,67 @@ export function createClient(transport: Transport = wailsTransport): Client {
           // SAFETY: GATEWAY_STATE_EVENT only carries GatewayStateEvents.
           handler(data as GatewayStateEvent);
         }),
+    },
+    groups: {
+      list: async (): Promise<AgentGroup[]> =>
+        unwrap(await transport.groups.ListGroups()),
+      get: (groupID: string): Promise<AgentGroup> =>
+        transport.groups.Group(groupID),
+      create: (
+        name: string,
+        title: string,
+        instructions: string,
+        memberAgentIDs: string[] | null
+      ): Promise<AgentGroup> =>
+        transport.groups.CreateGroup(name, title, instructions, memberAgentIDs),
+      update: (
+        groupID: string,
+        name: string,
+        title: string,
+        instructions: string
+      ): Promise<AgentGroup> =>
+        transport.groups.UpdateGroup(groupID, name, title, instructions),
+      delete: (groupID: string): Promise<void> =>
+        transport.groups.DeleteGroup(groupID),
+      members: async (groupID: string): Promise<AgentGroupMember[]> =>
+        unwrap(await transport.groups.Members(groupID)),
+      addMember: (groupID: string, agentID: string): Promise<void> =>
+        transport.groups.AddMember(groupID, agentID),
+      removeMember: (groupID: string, agentID: string): Promise<void> =>
+        transport.groups.RemoveMember(groupID, agentID),
+      setLead: (groupID: string, agentID: string): Promise<void> =>
+        transport.groups.SetLead(groupID, agentID),
+      transcriptPage: async (
+        groupID: string,
+        beforeSeq: number,
+        limit: number
+      ): Promise<AgentGroupMessage[]> =>
+        unwrap(
+          await transport.groups.TranscriptPage(groupID, beforeSeq, limit)
+        ),
+      tasks: async (groupID: string): Promise<AgentGroupTask[]> =>
+        unwrap(await transport.groups.Tasks(groupID)),
+      send: (req: GroupSendRequest): Promise<void> =>
+        transport.groups.Send(req),
+      stopTask: (taskID: string, reason: string): Promise<void> =>
+        transport.groups.StopTask(taskID, reason),
+      continueTask: (taskID: string, message: string): Promise<void> =>
+        transport.groups.ContinueTask(taskID, message),
+      reassignTask: (taskID: string, newOwnerAgentID: string): Promise<void> =>
+        transport.groups.ReassignTask(taskID, newOwnerAgentID),
+      cancelTask: (taskID: string): Promise<void> =>
+        transport.groups.CancelTask(taskID),
+      onGroupEvent: (
+        groupID: string,
+        handler: GroupEventHandler
+      ): Unsubscribe =>
+        transport.onEvent(
+          groupEventName(groupID),
+          (data: EventPayload): void => {
+            // SAFETY: the group:<id>:event channel only carries GroupEvents.
+            handler(data as GroupEvent);
+          }
+        ),
     },
     schedules: {
       list: async (): Promise<ScheduleView[]> =>
@@ -1184,6 +1485,12 @@ export function createClient(transport: Transport = wailsTransport): Client {
         transport.onEvent(CHANNELS_STATE_EVENT, (data: EventPayload): void => {
           // SAFETY: CHANNELS_STATE_EVENT only carries ChannelStateEvents.
           handler(data as ChannelStateEvent);
+        }),
+      onGroupsChanged: (handler: GroupsChangedHandler): Unsubscribe =>
+        transport.onEvent(GROUPS_CHANGED_EVENT, (): void => {
+          // SAFETY: GROUPS_CHANGED_EVENT carries an empty payload; the event
+          // object itself is the whole notification.
+          handler({} as GroupsChangedEvent);
         }),
     },
     windowTheme: {

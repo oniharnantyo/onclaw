@@ -49,6 +49,16 @@ type Store struct {
 	memoryNotes     map[memoryNoteKey]store.MemoryNoteState
 	memoryStaging   map[memoryStagingKey]store.MemoryStaging
 	memorySweeps    map[string]store.MemorySweep // key: agent id
+	agentGroups     map[string]store.AgentGroup  // key: group id
+	// agentGroupMembers and agentGroupContexts share the (groupID,
+	// agentID) pair key; the messages are keyed by group and kept in Seq
+	// order.
+	agentGroupMembers   map[agentGroupPair]store.AgentGroupMember
+	agentGroupMessages  map[string][]store.AgentGroupMessage // key: groupID, kept in Seq order
+	agentGroupContexts  map[agentGroupPair]store.AgentGroupContext
+	agentGroupTasks     map[string]store.AgentGroupTask    // key: task id
+	agentGroupSummaries map[string]store.AgentGroupSummary // key: group id
+	vaultItems          map[string]store.VaultItem         // key: item id
 	// templateDir is the lazily created directory the filesystem-backed
 	// template store roots at (see documenttemplates.go); empty until a
 	// template is first stored or looked up through the aggregate.
@@ -58,33 +68,40 @@ type Store struct {
 // New returns an empty in-memory store.
 func New() *Store {
 	return &Store{
-		agents:          make(map[string]store.Agent),
-		sessions:        make(map[string]store.Session),
-		providers:       make(map[string]store.Provider),
-		mcpServers:      make(map[string]store.MCPServer),
-		mcpOAuthTokens:  make(map[string]store.MCPOAuthToken),
-		schedules:       make(map[string]store.Schedule),
-		channels:        make(map[string]store.Channel),
-		channelUsers:    make(map[int64]store.ChannelUser),
-		channelChats:    make(map[int64]store.ChannelChat),
-		channelPairings: make(map[int64]store.ChannelPairing),
-		channelReceipts: make(map[channelReceiptKey]store.ChannelUpdateReceipt),
-		hooks:           make(map[string]store.Hook),
-		sessionEvents:   make(map[string][]store.SessionEvent),
-		checkpoints:     make(map[string][]byte),
-		skills:          make(map[string]store.Skill),
-		toolStates:      make(map[string]store.ToolState),
-		agentHooks:      make(map[agentHookKey]int),
-		toolSettings:    make(map[string]string),
-		attachments:     make(map[string]store.Attachment),
-		documents:       make(map[string]store.Document),
-		documentPresets: make(map[string]store.DocumentPreset),
-		providerModels:  make(map[int64]store.ProviderModel),
-		nextModelID:     1,
-		memoryTraces:    make(map[string]store.MemoryTrace),
-		memoryNotes:     make(map[memoryNoteKey]store.MemoryNoteState),
-		memoryStaging:   make(map[memoryStagingKey]store.MemoryStaging),
-		memorySweeps:    make(map[string]store.MemorySweep),
+		agents:              make(map[string]store.Agent),
+		sessions:            make(map[string]store.Session),
+		providers:           make(map[string]store.Provider),
+		mcpServers:          make(map[string]store.MCPServer),
+		mcpOAuthTokens:      make(map[string]store.MCPOAuthToken),
+		schedules:           make(map[string]store.Schedule),
+		channels:            make(map[string]store.Channel),
+		channelUsers:        make(map[int64]store.ChannelUser),
+		channelChats:        make(map[int64]store.ChannelChat),
+		channelPairings:     make(map[int64]store.ChannelPairing),
+		channelReceipts:     make(map[channelReceiptKey]store.ChannelUpdateReceipt),
+		hooks:               make(map[string]store.Hook),
+		sessionEvents:       make(map[string][]store.SessionEvent),
+		checkpoints:         make(map[string][]byte),
+		skills:              make(map[string]store.Skill),
+		toolStates:          make(map[string]store.ToolState),
+		agentHooks:          make(map[agentHookKey]int),
+		toolSettings:        make(map[string]string),
+		attachments:         make(map[string]store.Attachment),
+		documents:           make(map[string]store.Document),
+		documentPresets:     make(map[string]store.DocumentPreset),
+		providerModels:      make(map[int64]store.ProviderModel),
+		nextModelID:         1,
+		memoryTraces:        make(map[string]store.MemoryTrace),
+		memoryNotes:         make(map[memoryNoteKey]store.MemoryNoteState),
+		memoryStaging:       make(map[memoryStagingKey]store.MemoryStaging),
+		memorySweeps:        make(map[string]store.MemorySweep),
+		agentGroups:         make(map[string]store.AgentGroup),
+		agentGroupMembers:   make(map[agentGroupPair]store.AgentGroupMember),
+		agentGroupMessages:  make(map[string][]store.AgentGroupMessage),
+		agentGroupContexts:  make(map[agentGroupPair]store.AgentGroupContext),
+		agentGroupTasks:     make(map[string]store.AgentGroupTask),
+		agentGroupSummaries: make(map[string]store.AgentGroupSummary),
+		vaultItems:          make(map[string]store.VaultItem),
 	}
 }
 
@@ -109,6 +126,8 @@ func (s *Store) Documents() store.DocumentStore              { return &documentS
 func (s *Store) DocumentPresets() store.DocumentPresetStore  { return &documentPresetStore{s} }
 func (s *Store) ProviderModels() store.ProviderModelStore    { return &providerModelStore{s} }
 func (s *Store) Memory() store.MemoryStore                   { return &memoryStore{s} }
+func (s *Store) Groups() store.AgentGroupStore               { return &agentGroupStore{s} }
+func (s *Store) VaultItems() store.VaultItemStore            { return &vaultItemStore{s} }
 
 func (s *Store) Create(ctx context.Context, model *store.ProviderModel) error {
 	return (&providerModelStore{s}).Create(ctx, model)

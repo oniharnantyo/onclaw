@@ -154,7 +154,7 @@ export function CodeBlock({
           type="button"
           aria-pressed={wrapped}
           title="Toggle line wrap"
-          className="rounded px-1.5 py-0.5 text-[10px] text-muted hover:bg-[color-mix(in_oklab,var(--fg)_8%,transparent)] hover:text-fg"
+          className="inline-flex h-6 min-w-6 items-center justify-center rounded px-1.5 text-[10px] text-muted hover:bg-[color-mix(in_oklab,var(--fg)_8%,transparent)] hover:text-fg"
           data-testid={`${testidPrefix}-wrap`}
           onClick={() => setWrapped((w: boolean): boolean => !w)}
         >
@@ -163,7 +163,7 @@ export function CodeBlock({
         <button
           type="button"
           title="Copy to clipboard"
-          className="rounded px-1.5 py-0.5 text-[10px] text-muted hover:bg-[color-mix(in_oklab,var(--fg)_8%,transparent)] hover:text-fg"
+          className="inline-flex h-6 min-w-6 items-center justify-center rounded px-1.5 text-[10px] text-muted hover:bg-[color-mix(in_oklab,var(--fg)_8%,transparent)] hover:text-fg"
           data-testid={`${testidPrefix}-copy`}
           onClick={copy}
         >

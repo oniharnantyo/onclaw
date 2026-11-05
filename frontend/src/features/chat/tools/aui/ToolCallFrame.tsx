@@ -28,6 +28,9 @@ import type { ToolCallTiming } from "@assistant-ui/react";
 
 import { Icon } from "../../../../components/ui/Icon";
 import { cn } from "../../../../lib/cn";
+import { SecretGate } from "@/components/assistant-ui/elements/secret-gate";
+import { TakeoverCard } from "@/components/assistant-ui/elements/takeover-card";
+import type { InputApproval } from "../../runtime/mapping";
 import {
   CollapsibleContent,
   CollapsibleRoot,
@@ -135,7 +138,11 @@ function Sentence({
 }
 
 /** The card shell every renderer mounts: header chrome, collapse
- * persistence, raw toggle, boundary, and the approval detour. */
+ * persistence, raw toggle, boundary, and the approval detour — routed by the
+ * approval's display (add-browser-login-handover, design D6): "text" is the
+ * masked secret card, a "decision" request carrying the attention marker is
+ * the takeover card, and everything else is the shell-command approval
+ * gate. */
 export function ToolCard({
   part,
   children,
@@ -143,7 +150,22 @@ export function ToolCard({
   part: ToolCallMessagePartProps;
   children?: ReactElement;
 }): ReactElement {
-  if (part.approval !== undefined) return <ApprovalGate part={part} />;
+  const approval = part.approval;
+
+  if (approval !== undefined) {
+    // SAFETY: the widened approval (attention/method/digits/…) rides only
+    // parts the mapping minted from input entries (InputApproval in
+    // runtime/mapping.ts); the runtime-approved shape is the base of it.
+    const input = approval as unknown as InputApproval;
+
+    if (input.display === "text") return <SecretGate approval={input} />;
+
+    if (input.attention === "takeover") {
+      return <TakeoverCard approval={input} />;
+    }
+
+    return <ApprovalGate part={part} />;
+  }
 
   return <ToolCallFrame part={part}>{children}</ToolCallFrame>;
 }

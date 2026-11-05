@@ -9,7 +9,7 @@
 import { Component } from "react";
 import type { ErrorInfo, ReactElement, ReactNode } from "react";
 
-import { isString, parseJSONResult } from "../parse";
+import { isString, parseJSONResult, unwrapMCPResultText } from "../parse";
 import { ClampedText } from "../primitives/ClampedText";
 
 /** Pretty-prints structured JSON; returns the text untouched otherwise. */
@@ -49,7 +49,10 @@ export function FallbackBody({
   testidPrefix = "fallback",
 }: FallbackBodyProps): ReactElement {
   const args = prettyOrVerbatim(argsText);
-  const result = prettyOrVerbatim(resultText);
+  // One envelope level is peeled here (display time): historically recorded
+  // MCP results carry `{"content":[{"type":"text",…}]}`; pre-unwrapped
+  // results pass through unchanged.
+  const result = prettyOrVerbatim(unwrapMCPResultText(resultText));
 
   return (
     <div className="space-y-2 px-3 pb-2" data-testid={testidPrefix}>

@@ -10,28 +10,31 @@
 
 // eslint-disable-next-line @typescript-eslint/ban-ts-comment
 // @ts-ignore: Unused imports
-import { Call as $Call, CancellablePromise as $CancellablePromise } from "@wailsio/runtime";
+import {
+  Call as $Call,
+  CancellablePromise as $CancellablePromise,
+} from "@wailsio/runtime";
 
 /**
  * Pause transitions the gateway from running to paused: triggers would be
  * held until resumed.
  */
 export function Pause(): $CancellablePromise<void> {
-    return $Call.ByID(365810575);
+  return $Call.ByID(365810575);
 }
 
 /**
  * Resume transitions the gateway from paused back to running.
  */
 export function Resume(): $CancellablePromise<void> {
-    return $Call.ByID(1315507316);
+  return $Call.ByID(1315507316);
 }
 
 /**
  * Start transitions the gateway from stopped to running.
  */
 export function Start(): $CancellablePromise<void> {
-    return $Call.ByID(4288657925);
+  return $Call.ByID(4288657925);
 }
 
 /**
@@ -39,5 +42,5 @@ export function Start(): $CancellablePromise<void> {
  * "paused".
  */
 export function State(): $CancellablePromise<string> {
-    return $Call.ByID(3937313664);
+  return $Call.ByID(3937313664);
 }

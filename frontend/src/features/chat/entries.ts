@@ -36,6 +36,10 @@
  * - approval_required / approval_resolved (task 4.5, design D4) fold into
  *   approval entries: the required event mints the pending card, the resolved
  *   event marks the matching card with its outcome.
+ * - input_required / input_resolved (add-browser-login-handover, design D3)
+ *   fold into input entries the same way: the required event mints the parked
+ *   browser-attention card, the resolved event records the receipt — the
+ *   typed value rides no event, only client.resolveInput's argument.
  * - user_message payloads carry attachment metadata (task 5.5, design D5):
  *   the minted user entry keeps it for the transcript renderer.
  */
@@ -115,14 +119,58 @@ export interface ApprovalEntry {
   at: string;
 }
 
+/**
+ * The browser-attention entry (add-browser-login-handover tasks 3.3/4.1,
+ * design D3): a turn parked on a secret or takeover request — minted by
+ * input_required, marked by input_resolved. The struct is receipt-safe by
+ * construction: there is NO field a secret's value could occupy — the value
+ * lives in the card's local state only and rides client.resolveInput's text
+ * argument; the resolution records a receipt (outcome, redacted length,
+ * optional saved-login id) and nothing else.
+ */
+export interface InputEntry {
+  kind: "input";
+  id: string;
+  turnID?: string;
+  interruptID: string;
+  /** The card text — composed by the runtime from the origin, never a value. */
+  prompt: string;
+  /** secret | takeover (input payload attention_kind). */
+  attention?: "secret" | "takeover";
+  /** password | otp | authenticator (secrets only). */
+  method?: string;
+  /** The OTP length the card renders digit boxes for. */
+  digits?: number;
+  /** The HTTPS origin of the sign-in page. */
+  origin?: string;
+  /** The account name the agent passed (secrets, optional). */
+  username?: string;
+  /** The card also collects a username-or-email identifier (the agent
+   * declared an identifierTarget; secrets only). */
+  identifier?: boolean;
+  /** False while the request is pending; the card's inputs live only on
+   * the pending card. */
+  resolved: boolean;
+  /** completed / cancelled / expired / failed (input_resolved payload). */
+  outcome?: string;
+  /** The REDACTED length of the submitted value — the receipt's only trace
+   * of what the user typed. */
+  length?: number;
+  /** The vault login id the value was saved under, when save-to-vault ran. */
+  savedLoginId?: string;
+  at: string;
+}
+
 /** The transcript entry union this feature's reducer mints: the shared Entry
  * union plus the kinds this wave adds through the structural seam. */
-export type ChatEntry = Entry | ApprovalEntry;
+export type ChatEntry = Entry | ApprovalEntry | InputEntry;
 
 /** Bridges one of this module's widened records onto the shared Entry seam.
  * The widened kinds are minted only by applyEvent and always carry the
  * `kind` of the Entry member they stand for. */
-export function asEntry(entry: RichUserEntry | ApprovalEntry): Entry {
+export function asEntry(
+  entry: RichUserEntry | ApprovalEntry | InputEntry
+): Entry {
   // SAFETY: the widened records are minted only here and always carry the
   // `kind` of the Entry member they stand for, so the runtime shape is that
   // member's.
@@ -165,6 +213,17 @@ export function asRichUser(entry: Entry): RichUserEntry {
   return wide as RichUserEntry;
 }
 
+/** Reads an entry as the input entry this module minted. */
+export function asInput(entry: Entry): InputEntry {
+  // SAFETY: only applyEvent mints kind "input" and always sets the
+  // InputEntry fields alongside it.
+  const wide = entry as object;
+
+  // SAFETY: as above — the minted record is exactly this module's
+  // InputEntry shape.
+  return wide as InputEntry;
+}
+
 let nextEntryID = 0;
 
 /** Mint a transcript-internal entry id (stable React key, never persisted). */
@@ -183,9 +242,13 @@ export function hasPendingApproval(entries: Entry[]): boolean {
     // widened read keeps the literal-union comparison legal.
     const kind: string = entry.kind;
 
-    if (kind !== "approval") return false;
+    if (kind === "approval") return !asApproval(entry).resolved;
 
-    return !asApproval(entry).resolved;
+    // A pending browser-attention request parks the turn the same way an
+    // approval does (add-browser-login-handover, design D3).
+    if (kind === "input") return !asInput(entry).resolved;
+
+    return false;
   });
 }
 
@@ -496,6 +559,46 @@ export function visibleEntries(entries: Entry[]): Entry[] {
   });
 }
 
+/**
+ * Fold-time expiry normalization (add-browser-login-handover, spec
+ * "Expired pending request"): an input entry still pending when its session
+ * is NOT parked on the request — a transcript that ends in a bare
+ * input_required after a restart, or a live turn that ended without a
+ * receipt — renders as expired. This folds the receipt client-side only;
+ * the transcript log stays append-only-from-turns (no event is written),
+ * and the backend refuses a stale ResolveInput with ErrInputNotPending, so
+ * the agent may re-request. Callers decide when the session counts as not
+ * busy (the replay fold in selectSession and the busy→false transition in
+ * setBusy); the helper itself only normalizes the entries.
+ */
+export function expireUnresolvedInputs(entries: Entry[]): Entry[] {
+  let changed = false;
+
+  const next = entries.map((en: Entry): Entry => {
+    // SAFETY: only applyEvent mints kind "input" (InputEntry); the widened
+    // read keeps the literal-union comparison legal.
+    const kind: string = en.kind;
+
+    if (kind !== "input") return en;
+
+    const input = asInput(en);
+
+    if (input.resolved) return en;
+
+    changed = true;
+
+    const expired: InputEntry = {
+      ...input,
+      resolved: true,
+      outcome: "expired",
+    };
+
+    return asEntry(expired);
+  });
+
+  return changed ? next : entries;
+}
+
 /** Fold one event into the entry list, returning the new list. */
 export function applyEvent(entries: Entry[], e: SessionEvent): Entry[] {
   switch (e.kind) {
@@ -761,6 +864,90 @@ export function applyEvent(entries: Entry[], e: SessionEvent): Entry[] {
       return [
         ...entries.slice(0, idx),
         asEntry(marked),
+        ...entries.slice(idx + 1),
+      ];
+    }
+
+    // Browser attention (add-browser-login-handover tasks 3.3/4.1, design
+    // D3): the required event mints the pending card entry, the resolved
+    // event marks the matching card with its receipt — outcome, redacted
+    // length, optional saved-login id; the value never rides either event.
+    case Kind.KindInputRequired: {
+      if (!e.input?.interrupt_id) return entries;
+
+      const payload = e.input;
+
+      // SAFETY: the minted record carries the InputEntry fields; kind
+      // "input" rides the Entry seam through asEntry.
+      const minted: InputEntry = {
+        kind: "input",
+        id: entryID(),
+        turnID: e.turn_id,
+        interruptID: payload.interrupt_id,
+        prompt: payload.prompt ?? "",
+        attention:
+          payload.attention_kind === "takeover" ? "takeover" : "secret",
+        method: payload.method,
+        digits: payload.digits,
+        origin: payload.origin,
+        username: payload.username,
+        identifier: payload.identifier === true,
+        resolved: false,
+        at: e.occurred_at,
+      };
+
+      return [...entries, asEntry(minted)];
+    }
+
+    case Kind.KindInputResolved: {
+      if (!e.input?.interrupt_id) return entries;
+
+      const receipt = e.input;
+
+      const idx = entries.findIndex((en: Entry): boolean => {
+        // SAFETY: the input kind rides the Entry seam (InputEntry); the
+        // widened read keeps the literal union comparison legal.
+        const kind: string = en.kind;
+
+        return (
+          kind === "input" && asInput(en).interruptID === receipt.interrupt_id
+        );
+      });
+
+      if (idx === -1) {
+        // SAFETY: as KindInputRequired above — the resolved marker mints the
+        // same InputEntry record with its receipt (degraded windowing case).
+        const minted: InputEntry = {
+          kind: "input",
+          id: entryID(),
+          turnID: e.turn_id,
+          interruptID: receipt.interrupt_id,
+          prompt: receipt.prompt ?? "",
+          attention:
+            receipt.attention_kind === "takeover" ? "takeover" : "secret",
+          resolved: true,
+          outcome: receipt.outcome,
+          length: receipt.length,
+          savedLoginId: receipt.saved_login_id,
+          at: e.occurred_at,
+        };
+
+        return [...entries, asEntry(minted)];
+      }
+
+      const marked = asInput(entries[idx]);
+
+      const resolvedEntry: InputEntry = {
+        ...marked,
+        resolved: true,
+        outcome: receipt.outcome,
+        length: receipt.length,
+        savedLoginId: receipt.saved_login_id,
+      };
+
+      return [
+        ...entries.slice(0, idx),
+        asEntry(resolvedEntry),
         ...entries.slice(idx + 1),
       ];
     }

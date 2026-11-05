@@ -13,6 +13,7 @@ import (
 	"regexp"
 
 	"github.com/oniharnantyo/buddies/internal/store"
+	"github.com/oniharnantyo/buddies/internal/workspaces"
 )
 
 // The browser-screenshot bound read (design D6, spec chat-tool-cards
@@ -32,15 +33,6 @@ var screenshotNameShape = regexp.MustCompile(`^\d+\.png$`)
 // ChatOption configures the chat service.
 type ChatOption func(*ChatService)
 
-// WithChatBrowserDir supplies the chat service's browser tool home directory:
-// the screenshot read serves from <browserDir>/screenshots, the same root the
-// runtime's browser tool was given (spec add-browser-tool D10). Named apart
-// from the settings service's WithBrowserDir option, which scopes to
-// SettingsService.
-func WithChatBrowserDir(dir string) ChatOption {
-	return func(s *ChatService) { s.browserDir = dir }
-}
-
 // BrowserScreenshotContent is one screenshot's served content: the name it
 // was addressed by, its pixel dimensions (for shift-free rendering), and the
 // base64-encoded PNG bytes. The on-disk path never crosses the boundary.
@@ -52,23 +44,39 @@ type BrowserScreenshotContent struct {
 	Data string `json:"data"`
 }
 
-// BrowserScreenshot reads one screenshot the browser tool captured: name
-// must be the exact basename the tool writes ("<unixmilli>.png"), resolved
-// strictly as <browserDir>/screenshots/<name>. A name with directory
-// components or outside the shape is refused before any filesystem call; a
-// well-shaped name with no file behind it is a not-found error. No other
-// path is ever touched.
-func (s *ChatService) BrowserScreenshot(_ context.Context, name string) (BrowserScreenshotContent, error) {
-	if s.browserDir == "" {
-		return BrowserScreenshotContent{}, errors.New("browser screenshot: no browser directory configured")
-	}
+// BrowserScreenshot reads one screenshot the browser tool captured into the
+// calling session's workspace: name must be the exact basename the tool
+// writes ("<unixmilli>.png"), resolved strictly as
+// <workspaces>/<agent slug>/sessions/<sessionID>/browser/<name> — the same
+// directory the child writes through the parent's per-call _meta, inside the
+// workspace jail (add-browser-login-handover follow-up: the model reads its
+// own capture back with read_file). A name with directory components or
+// outside the shape is refused before any filesystem call; a well-shaped
+// name with no file behind it is a not-found error. No other path is ever
+// touched.
+func (s *ChatService) BrowserScreenshot(ctx context.Context, sessionID, name string) (BrowserScreenshotContent, error) {
 	// Refusal before the filesystem: the shape rule and the basename rule
-	// together mean the join below can only ever land inside the screenshots
-	// directory (spec: refused names touch no path).
+	// together mean the join below can only ever land inside the session's
+	// screenshots directory (spec: refused names touch no path).
 	if !screenshotNameShape.MatchString(name) || filepath.Base(name) != name {
 		return BrowserScreenshotContent{}, fmt.Errorf("browser screenshot: refused name %q", name)
 	}
-	data, err := os.ReadFile(filepath.Join(s.browserDir, "screenshots", name))
+	if sessionID == "" || s.workspaces == nil {
+		return BrowserScreenshotContent{}, errors.New("browser screenshot: no session workspace to resolve")
+	}
+	sess, err := s.sessions.Session(ctx, sessionID)
+	if err != nil {
+		return BrowserScreenshotContent{}, fmt.Errorf("browser screenshot %s: resolve session: %w", name, err)
+	}
+	agent, err := s.store.Agents().ByID(ctx, sess.AgentID)
+	if err != nil {
+		return BrowserScreenshotContent{}, fmt.Errorf("browser screenshot %s: resolve agent: %w", name, err)
+	}
+	sessionDir, err := s.workspaces.SessionDir(agent.Slug, sessionID)
+	if err != nil {
+		return BrowserScreenshotContent{}, fmt.Errorf("browser screenshot %s: resolve session directory: %w", name, err)
+	}
+	data, err := os.ReadFile(filepath.Join(sessionDir, workspaces.DirBrowser, name))
 	if err != nil {
 		if errors.Is(err, fs.ErrNotExist) {
 			return BrowserScreenshotContent{}, fmt.Errorf("browser screenshot %s: %w", name, store.ErrNotFound)

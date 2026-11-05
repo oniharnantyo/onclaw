@@ -10,6 +10,7 @@
 import { Events } from "@wailsio/runtime";
 
 import type * as agentsModels from "../../bindings/github.com/oniharnantyo/buddies/internal/agents/models";
+import type * as groupsModels from "../../bindings/github.com/oniharnantyo/buddies/internal/groups/models";
 import type * as schedulerModels from "../../bindings/github.com/oniharnantyo/buddies/internal/scheduler/models";
 import type * as sessionModels from "../../bindings/github.com/oniharnantyo/buddies/internal/sessions/models";
 import type * as serviceModels from "../../bindings/github.com/oniharnantyo/buddies/internal/services/models";
@@ -19,6 +20,7 @@ import * as appInfoBindings from "../../bindings/github.com/oniharnantyo/buddies
 import * as chatBindings from "../../bindings/github.com/oniharnantyo/buddies/internal/services/chatservice";
 import * as channelBindings from "../../bindings/github.com/oniharnantyo/buddies/internal/services/channelservice";
 import * as gatewayBindings from "../../bindings/github.com/oniharnantyo/buddies/internal/services/gatewayservice";
+import * as groupsBindings from "../../bindings/github.com/oniharnantyo/buddies/internal/services/groupsservice";
 import * as knowledgeBindings from "../../bindings/github.com/oniharnantyo/buddies/internal/services/knowledgeservice";
 import * as scheduleBindings from "../../bindings/github.com/oniharnantyo/buddies/internal/services/scheduleservice";
 import * as settingsBindings from "../../bindings/github.com/oniharnantyo/buddies/internal/services/settingsservice";
@@ -32,16 +34,19 @@ export type Unsubscribe = () => void;
  * carries SessionEvents, the gateway channel carries GatewayStateEvents, the
  * MCP OAuth channel carries MCPOAuthCompletedEvents, the schedules channel
  * carries SchedulesChangedEvents, the turns channel carries
- * TurnsChangedEvents, and the channels channels carry the channel change and
- * state events. The runtime hands all of them to `onEvent`, so this is
- * the single documented place where the domains meet before the client
- * narrows them.
+ * TurnsChangedEvents, the channels channels carry the channel change and
+ * state events, and the groups channels carry the group event and
+ * groups-changed payloads. The runtime hands all of them to `onEvent`, so
+ * this is the single documented place where the domains meet before the
+ * client narrows them.
  */
 export type EventPayload =
   | sessionModels.Event
   | serviceModels.ChannelChangedEvent
   | serviceModels.ChannelStateEvent
   | serviceModels.GatewayStateEvent
+  | serviceModels.GroupEvent
+  | serviceModels.GroupsChangedEvent
   | serviceModels.KnowledgeChangedEvent
   | serviceModels.MCPOAuthCompletedEvent
   | serviceModels.SchedulesChangedEvent
@@ -113,6 +118,33 @@ export interface Transport {
       interruptID: string,
       approved: boolean
     ): Promise<void>;
+    /**
+     * Submits the user-typed secret for the session's pending browser
+     * attention request (add-browser-login-handover design D3); the value
+     * rides this call only, never the event log.
+     */
+    ResolveInput(
+      sessionID: string,
+      interruptID: string,
+      text: string,
+      identifier: string,
+      saveLogin: boolean
+    ): Promise<void>;
+    /**
+     * Ends the session's pending browser secret request with the user's
+     * cancel — the secret card's Cancel button. The parked submit_secret
+     * call unblocks on the cancelled result and the receipt renders
+     * "Cancelled".
+     */
+    CancelInput(sessionID: string, interruptID: string): Promise<void>;
+    /** Approves the session's pending browser takeover (headed relaunch). */
+    BeginBrowserTakeover(sessionID: string, interruptID: string): Promise<void>;
+    /** Ends the session's pending browser takeover (completed/cancelled). */
+    ResolveTakeover(
+      sessionID: string,
+      interruptID: string,
+      outcome: string
+    ): Promise<void>;
     Subscribe(sessionID: string): Promise<void>;
     Transcript(sessionID: string): Promise<sessionModels.Event[] | null>;
     /**
@@ -141,9 +173,11 @@ export interface Transport {
      * Serves one browser screenshot's bytes by the file name the browser
      * tool wrote (design D6): base64 PNG plus the dimensions the tool
      * reported. The backend validates the name shape and resolves it solely
-     * inside the screenshots directory; a refused or missing file rejects.
+     * inside the calling session's workspace screenshots directory; a
+     * refused or missing file rejects.
      */
     BrowserScreenshot(
+      sessionID: string,
       name: string
     ): Promise<serviceModels.BrowserScreenshotContent>;
     /**
@@ -245,6 +279,32 @@ export interface Transport {
     BrowserProfiles(): Promise<serviceModels.BrowserProfile[] | null>;
     CreateBrowserProfile(name: string): Promise<void>;
     DeleteBrowserProfile(name: string): Promise<void>;
+    /** Imports a profile directory; returns the final (possibly suffixed) name. */
+    ImportBrowserProfile(sourcePath: string, name: string): Promise<string>;
+    /**
+     * Imports one detected Chrome profile in one click; the source resolves
+     * from the directory name against this machine's Chrome installation
+     * and the registry name derives backend-side (collision-suffixed).
+     */
+    ImportChromeProfile(dirName: string): Promise<string>;
+    /** Lists this machine's Google Chrome profiles for one-click import. */
+    DetectChromeProfiles(): Promise<
+      serviceModels.ChromeProfileCandidate[] | null
+    >;
+    /** Saved logins, redacted — the password never crosses the bridge. */
+    VaultLogins(): Promise<serviceModels.VaultLogin[] | null>;
+    /** Stores (or updates, per origin+username pair) one login's password. */
+    SaveVaultLogin(
+      name: string,
+      origin: string,
+      username: string,
+      password: string,
+      addedBy: string
+    ): Promise<void>;
+    /** Removes one saved login; an unknown id is an error. */
+    RemoveVaultLogin(id: string): Promise<void>;
+    /** Reveals one saved login's password (settings-only affordance). */
+    RevealVaultLogin(id: string): Promise<string>;
     /** The format's document presets, ordered by name (add-create-document D4). */
     ListDocumentPresets(
       format: string
@@ -365,6 +425,41 @@ export interface Transport {
     RunNow(id: string): Promise<schedulerModels.ScheduleView>;
     Preview(expr: string): Promise<schedulerModels.Preview>;
   };
+  /** The groups surface (add-agent-groups tasks 4.2): the generated
+   * GroupsService binding's methods, structurally mirrored like every other
+   * service section. */
+  groups: {
+    ListGroups(): Promise<storeModels.AgentGroup[] | null>;
+    Group(groupID: string): Promise<storeModels.AgentGroup>;
+    CreateGroup(
+      name: string,
+      title: string,
+      instructions: string,
+      memberAgentIDs: string[] | null
+    ): Promise<storeModels.AgentGroup>;
+    UpdateGroup(
+      groupID: string,
+      name: string,
+      title: string,
+      instructions: string
+    ): Promise<storeModels.AgentGroup>;
+    DeleteGroup(groupID: string): Promise<void>;
+    Members(groupID: string): Promise<storeModels.AgentGroupMember[] | null>;
+    AddMember(groupID: string, agentID: string): Promise<void>;
+    RemoveMember(groupID: string, agentID: string): Promise<void>;
+    SetLead(groupID: string, agentID: string): Promise<void>;
+    TranscriptPage(
+      groupID: string,
+      beforeSeq: number,
+      limit: number
+    ): Promise<storeModels.AgentGroupMessage[] | null>;
+    Tasks(groupID: string): Promise<storeModels.AgentGroupTask[] | null>;
+    Send(req: groupsModels.SendRequest): Promise<void>;
+    StopTask(taskID: string, reason: string): Promise<void>;
+    ContinueTask(taskID: string, message: string): Promise<void>;
+    ReassignTask(taskID: string, newOwnerAgentID: string): Promise<void>;
+    CancelTask(taskID: string): Promise<void>;
+  };
   /** The Channels pane's backend surface (add-telegram-channel task 1.4). */
   channels: {
     GetChannel(id: string): Promise<serviceModels.ChannelView>;
@@ -456,6 +551,7 @@ export function createWailsTransport(): Transport {
     },
     settings: settingsBindings,
     gateway: gatewayBindings,
+    groups: groupsBindings,
     knowledge: knowledgeBindings,
     schedules: scheduleBindings,
     channels: channelBindings,

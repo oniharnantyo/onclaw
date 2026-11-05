@@ -64,6 +64,18 @@ const (
 	// outcome (approved, denied, or cancelled) for the named interrupt. A
 	// cancelled outcome accompanies a discarded run's KindTurnCancelled.
 	KindApprovalResolved Kind = "approval_resolved"
+	// KindInputRequired marks a turn parked on a browser attention request —
+	// a secret the agent needs submitted, or a browser takeover (persisted,
+	// design D3 of add-browser-login-handover). Like KindApprovalRequired the
+	// turn has NO terminal event while the request is pending: pending state
+	// derives from the log (a KindInputRequired with no matching
+	// KindInputResolved). The payload is a receipt-safe card description —
+	// it NEVER carries the secret's value.
+	KindInputRequired Kind = "input_required"
+	// KindInputResolved records one browser attention resolution (persisted):
+	// a receipt only — outcome, the redacted input length, and the optional
+	// saved-login id. The value itself never enters any event (design D3).
+	KindInputResolved Kind = "input_resolved"
 	// KindCompaction marks a compaction of the session's working context
 	// (persisted). The stored transcript is never truncated by compaction.
 	KindCompaction Kind = "compaction"
@@ -84,6 +96,37 @@ const (
 	// ApprovalCancelled marks a discarded run: the turn was cancelled while
 	// the approval was pending.
 	ApprovalCancelled = "cancelled"
+)
+
+// Attention kinds — what a KindInputRequired event parks the turn on
+// (design D6 of add-browser-login-handover). The kind picks the attention
+// card's renderer: a masked secret input, or the takeover decision card.
+const (
+	// AttentionSecret marks a browser secret submission (the agent called
+	// submit_secret): the card collects the value through a masked input.
+	AttentionSecret = "secret"
+	// AttentionTakeover marks a browser handover request (the agent called
+	// request_takeover): the card presents Approve/Cancel, then Done/Cancel.
+	AttentionTakeover = "takeover"
+)
+
+// Input outcomes — the receipt recorded on a KindInputResolved event. A
+// pending request that outlives the process folds expired on the next load
+// (the frontend transcript fold normalizes a still-pending card once the
+// session is no longer busy — expireUnresolvedInputs in
+// frontend/src/features/chat/entries.ts); the runtime itself records only
+// the outcomes below.
+const (
+	// InputCompleted marks a delivered secret or a takeover the user finished.
+	InputCompleted = "completed"
+	// InputCancelled marks a takeover (or pending request) the user cancelled.
+	InputCancelled = "cancelled"
+	// InputExpired marks a request whose process (and pending-value map) is
+	// gone; folded client-side (the transcript fold's expiry normalization),
+	// never appended by the runtime.
+	InputExpired = "expired"
+	// InputFailed marks a delivery the child browser engine refused.
+	InputFailed = "failed"
 )
 
 // ToolStatus is the execution state of a ToolActivity. Exactly one of the
@@ -288,6 +331,11 @@ type Event struct {
 	// Approval carries the approval payload: the pending dangerous-command
 	// request (KindApprovalRequired) or the decision (KindApprovalResolved).
 	Approval *Approval `json:"approval,omitempty"`
+	// Input carries the browser-attention payload: the pending secret/takeover
+	// request (KindInputRequired) or the resolution receipt
+	// (KindInputResolved). The value a user types NEVER rides this payload —
+	// the resolved receipt records its length only (design D3).
+	Input *Input `json:"input,omitempty"`
 	// Plan carries the task-plan snapshot (KindPlanActivity).
 	Plan *PlanSnapshot `json:"plan,omitempty"`
 }
@@ -327,6 +375,56 @@ type Approval struct {
 	// Outcome is the decision (KindApprovalResolved only): approved, denied,
 	// or cancelled.
 	Outcome string `json:"outcome,omitempty"`
+}
+
+// Input is the payload of the browser-attention events: the secret or
+// takeover request a turn parked on (KindInputRequired) and the resolution
+// receipt recorded for it (KindInputResolved). Exactly the fields matching
+// the kind (and the attention kind) are set. The struct is receipt-safe by
+// construction: there is no field a secret's value could occupy (design D3 —
+// the value lives only in the parent's in-memory pending map and the child's
+// fill frame).
+type Input struct {
+	// InterruptID is the runtime-assigned identity of the attention request —
+	// the ResolveInput/BeginTakeover/ResolveAttention target key.
+	InterruptID string `json:"interrupt_id"`
+	// Prompt is the card text shown to the user (KindInputRequired only).
+	// Composed by the runtime from the request's origin — it never carries
+	// any value.
+	Prompt string `json:"prompt,omitempty"`
+	// Method is the secret's submission method — password, otp, or
+	// authenticator, as the agent requested (KindInputRequired only).
+	Method string `json:"method,omitempty"`
+	// Digits is the OTP length the card renders digit boxes for
+	// (KindInputRequired only, method-dependent).
+	Digits int `json:"digits,omitempty"`
+	// Origin is the HTTPS origin of the sign-in page (KindInputRequired
+	// only).
+	Origin string `json:"origin,omitempty"`
+	// AttentionKind selects the card: AttentionSecret or AttentionTakeover
+	// (KindInputRequired only).
+	AttentionKind string `json:"attention_kind,omitempty"`
+	// Username is the account name the agent passed for the sign-in
+	// (KindInputRequired only, optional).
+	Username string `json:"username,omitempty"`
+	// Identifier marks that the card also collects a username-or-email
+	// identifier beside the secret — the agent declared an identifierTarget
+	// (KindInputRequired only). The typed identifier itself never enters the
+	// event; it rides the delivery like the value.
+	Identifier bool `json:"identifier,omitempty"`
+	// LoginID is a saved-vault login id the agent referenced
+	// (KindInputRequired only, optional).
+	LoginID string `json:"login_id,omitempty"`
+	// Outcome is the resolution (KindInputResolved only): completed,
+	// cancelled, expired, or failed.
+	Outcome string `json:"outcome,omitempty"`
+	// Length is the REDACTED length of the submitted value — the receipt's
+	// only trace of what the user typed (KindInputResolved only; a completed
+	// secret delivery never records the value itself).
+	Length int `json:"length,omitempty"`
+	// SavedLoginID is the vault login id the value was saved under, when the
+	// user checked save-to-vault (KindInputResolved only, optional).
+	SavedLoginID string `json:"saved_login_id,omitempty"`
 }
 
 // CheckpointVersionAgenticV1 marks a checkpoint payload formatted for the

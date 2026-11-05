@@ -23,6 +23,7 @@
   --color-accenton: var(--accent-on);
   --color-accenttext: var(--accent-text);
   --color-success: var(--success);
+  --color-successtext: var(--success-text);
   --color-warn: var(--warn);
   --color-warntext: var(--warn-text);
   --color-danger: var(--danger);

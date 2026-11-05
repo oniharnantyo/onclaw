@@ -2,6 +2,7 @@ package mcp
 
 import (
 	"context"
+	"fmt"
 	"log/slog"
 	"sync"
 	"time"
@@ -77,6 +78,14 @@ type MCPManager struct {
 	stop     chan struct{} // closed by Close to stop the janitor
 	stopped  sync.WaitGroup
 
+	// system supervises the app-provided browser-use server (design D6/D7);
+	// nil unless WithSystemBrowserUse configured it. The supervisor shares
+	// this manager's mutex and stop channel.
+	system *systemSupervisor
+	// manualSupervision keeps the supervisor's loop goroutine from starting,
+	// so tests drive ticks by hand. In-package test seam only.
+	manualSupervision bool
+
 	// connector dials ref's connection; production wires the mcp-go factory
 	// (connect). A seam so unit tests can stub the transport layer.
 	connector func(ctx context.Context, ref Ref) (*connection, error)
@@ -124,7 +133,17 @@ func withConnector(fn func(ctx context.Context, ref Ref) (*connection, error)) M
 	}
 }
 
-// NewMCPManager builds the manager and starts its idle janitor.
+// withManualSupervision keeps the system supervisor's loop goroutine from
+// starting so tests drive ticks by hand (in-package test seam only).
+func withManualSupervision() ManagerOption {
+	return func(m *MCPManager) {
+		m.manualSupervision = true
+	}
+}
+
+// NewMCPManager builds the manager and starts its idle janitor. With
+// WithSystemBrowserUse it also starts the system server's supervisor, which
+// spawns the child at init.
 func NewMCPManager(opts ...ManagerOption) *MCPManager {
 	m := &MCPManager{
 		idleTTL:        DefaultIdleTTL,
@@ -142,6 +161,9 @@ func NewMCPManager(opts ...ManagerOption) *MCPManager {
 	}
 	m.stopped.Add(1)
 	go m.janitor()
+	if m.system != nil && !m.manualSupervision {
+		m.system.start()
+	}
 	return m
 }
 
@@ -170,6 +192,10 @@ func (m *MCPManager) janitor() {
 }
 
 // sweepIdle closes and drops entries whose last access exceeds the idle TTL.
+// The supervised system server's entry is exempt: the supervisor keeps that
+// child warm by design (spawned at init so the first browser action pays no
+// spawn cost), and reaping it would kill the child just to have the
+// supervisor respawn it.
 func (m *MCPManager) sweepIdle() {
 	m.mu.Lock()
 	if m.idleTTL <= 0 {
@@ -179,6 +205,9 @@ func (m *MCPManager) sweepIdle() {
 	now := time.Now()
 	var expired []key
 	for k, e := range m.entries {
+		if m.supervised(k.serverID) {
+			continue
+		}
 		if now.Sub(e.lastUsed) > m.idleTTL {
 			expired = append(expired, k)
 		}
@@ -198,9 +227,26 @@ func (m *MCPManager) sweepIdle() {
 // Tools implements ToolSource: cache hit returns the cached tools and touches
 // the entry's idle clock; miss connects (bounded by the connect timeout),
 // handshakes, and lists tools once per key — concurrent first Gets share one
-// attempt through the per-key singleflight record.
+// attempt through the per-key singleflight record. The supervised system
+// server is the exception: its entry is owned by its supervisor (spawned at
+// init, respawned with backoff), so a miss or a stale error returns the
+// supervisor's state instead of dialing — a spawn attempt outside the
+// supervisor's backoff bookkeeping would bypass its crash-loop cap.
 func (m *MCPManager) Tools(ctx context.Context, ref Ref) ([]tool.BaseTool, error) {
 	k := key{ref.ServerID}
+
+	if m.supervised(ref.ServerID) {
+		m.mu.Lock()
+		e, ok := m.entries[k]
+		m.mu.Unlock()
+		if !ok || e.err != nil {
+			if ok && e.err != nil {
+				return nil, e.err
+			}
+			return nil, fmt.Errorf("browser-use system server is starting")
+		}
+		return e.conn.tools, nil
+	}
 
 	m.mu.Lock()
 	if e, ok := m.entries[k]; ok {
@@ -243,6 +289,29 @@ func (m *MCPManager) Tools(ctx context.Context, ref Ref) ([]tool.BaseTool, error
 	return entry.conn.tools, nil
 }
 
+// Invoke calls one tool on the system browser-use server directly, carrying
+// the given metadata as the call's _meta — the per-call channel the parent
+// stamps the calling session's workspace screenshots directory through
+// (internal/browseruse.MetaScreenshotDir), so the child writes captures
+// inside the model's workspace jail. argsJSON passes through verbatim, and
+// the result is the same unwrapped payload text the listed eino tools'
+// InvokableRun returns (mcp-result-unwrapping), so callers parse both
+// identically. System refs only: third-party servers have no meta contract.
+// The call counts toward the supervisor's in-flight gauge like every listed
+// tool's invocation.
+func (m *MCPManager) Invoke(ctx context.Context, ref Ref, name, argsJSON string, meta map[string]any) (string, error) {
+	if !m.supervised(ref.ServerID) || ref.ServerID != SystemServerID {
+		return "", fmt.Errorf("mcp invoke: %s does not carry the system server's meta contract", ref.Name)
+	}
+	m.mu.Lock()
+	e, ok := m.entries[key{ref.ServerID}]
+	m.mu.Unlock()
+	if !ok || e.err != nil || e.conn == nil {
+		return "", fmt.Errorf("mcp invoke: browser-use system server is not ready")
+	}
+	return m.system.invokeWithMeta(ctx, e.conn, name, argsJSON, meta)
+}
+
 // connect dials ref within the connect timeout and returns the entry to
 // cache — success or failure alike (design D7: the failure is cached as an
 // errored entry, never propagated as a run failure).
@@ -283,8 +352,15 @@ func (m *MCPManager) Status(serverID string) (status, statusErr string, toolCoun
 // Invalidate drops the cached entry for serverID and closes its connection,
 // reaping any stdio child. Called on every mutating config write (update,
 // delete, disable) so config changes take effect immediately (design D7).
-// Unknown keys are no-ops.
+// The supervised system server's key is a no-op: it has no store row, no
+// mutating write can address it (the settings service rejects the id), and
+// its lifecycle belongs to the supervisor — config changes reach it through
+// the supervisor's idle-boundary restart instead. Unknown keys are no-ops.
 func (m *MCPManager) Invalidate(serverID string) {
+	if m.supervised(serverID) {
+		slog.Debug("invalidate ignored for the supervised system server", "server_id", serverID)
+		return
+	}
 	k := key{serverID}
 	m.mu.Lock()
 	e, ok := m.entries[k]
@@ -297,8 +373,9 @@ func (m *MCPManager) Invalidate(serverID string) {
 	}
 }
 
-// Close stops the janitor, closes every cached connection in parallel, and
-// empties the cache. Used by the composition root's shutdown path.
+// Close stops the janitor, stops the system server's supervisor, closes
+// every cached connection in parallel, and empties the cache. Used by the
+// composition root's shutdown path.
 func (m *MCPManager) Close() {
 	m.mu.Lock()
 	select {
@@ -306,6 +383,9 @@ func (m *MCPManager) Close() {
 		// Already closed.
 	default:
 		close(m.stop)
+	}
+	if m.system != nil {
+		m.system.markStopped()
 	}
 	entries := m.entries
 	m.entries = make(map[key]*cacheEntry)

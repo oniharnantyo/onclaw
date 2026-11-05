@@ -4,7 +4,9 @@ import (
 	"context"
 	"fmt"
 
+	"github.com/oniharnantyo/buddies/internal/agents/mcp"
 	"github.com/oniharnantyo/buddies/internal/store"
+	"github.com/oniharnantyo/buddies/internal/vault"
 )
 
 // SettingsService is the bound service for shared configuration: providers,
@@ -23,6 +25,19 @@ type SettingsService struct {
 	// effect immediately (design D7). Never nil: the constructor installs a
 	// no-op until the composition root injects the real cache.
 	invalidateMCP func(serverID string)
+	// systemServerState reads the supervised system MCP server's (browser-
+	// use) live connection state, so MCPServers can synthesize its System row
+	// without a store row (rebrand-browser-use-system-mcp, spec agent-mcp
+	// "System-provided server"). Nil until the composition root injects it:
+	// then the listing carries no system row.
+	systemServerState func() (mcp.ServerState, bool)
+	// systemServerRestart stops the supervised system MCP server's child and
+	// re-arms its supervision (rebrand-browser-use-system-mcp): deleting a
+	// browser profile tears the child down — its stdin-close shutdown closes
+	// every profile browser — before the profile directory is removed. Nil
+	// until the composition root injects it: deletion then proceeds without
+	// the restart.
+	systemServerRestart func()
 	// emitter forwards service events to the host's event bus — the MCP
 	// OAuth completion announcement (design D2). Never nil: the constructor
 	// installs Noop{} until the composition root injects the host adapter.
@@ -35,6 +50,14 @@ type SettingsService struct {
 	// (add-document-editing design D6). Nil until WithDocumentTemplates
 	// wires it: template uploads refuse with a readable error.
 	templates store.DocumentTemplateStore
+	// vault backs the Saved-logins methods (add-browser-login-handover
+	// design D5). Nil until WithVault wires it: those methods refuse with a
+	// readable error.
+	vault *vault.Service
+	// chromeUserDataDir resolves this machine's Chrome user-data directory
+	// for profile detection (design D9) — a seam so tests inject a fixture
+	// directory. Never nil: the constructor installs the GOOS resolver.
+	chromeUserDataDir func() (string, error)
 }
 
 // SettingsOption configures the settings service.
@@ -59,6 +82,36 @@ func WithBrowserDir(dir string) SettingsOption {
 	return func(s *SettingsService) {
 		if dir != "" {
 			s.browserDir = dir
+		}
+	}
+}
+
+// WithSystemServerState supplies the seam that reads the supervised system
+// MCP server's (browser-use) live connection state, so MCPServers can
+// synthesize its System row from supervision state instead of a store row
+// (rebrand-browser-use-system-mcp, spec agent-mcp "System-provided server").
+// A nil function is ignored — the listing then carries no system row
+// (mirrors WithMCPInvalidate).
+func WithSystemServerState(state func() (mcp.ServerState, bool)) SettingsOption {
+	return func(s *SettingsService) {
+		if state != nil {
+			s.systemServerState = state
+		}
+	}
+}
+
+// WithSystemServerRestart supplies the seam that stops the supervised system
+// MCP server's child and re-arms its supervision. Deleting a browser profile
+// uses it so the child's graceful shutdown closes the profile's browser
+// before the directory is removed (rebrand-browser-use-system-mcp, spec
+// browser-use "Persistent browser profiles"; the settings delta's "deleting a
+// profile SHALL remove it after its browser closes"). A nil function is
+// ignored — deletion then proceeds without the restart (mirrors
+// WithMCPInvalidate).
+func WithSystemServerRestart(restart func()) SettingsOption {
+	return func(s *SettingsService) {
+		if restart != nil {
+			s.systemServerRestart = restart
 		}
 	}
 }
@@ -102,10 +155,11 @@ func WithDocumentTemplates(templates store.DocumentTemplateStore) SettingsOption
 // applied on top of the no-op defaults.
 func NewSettingsService(s store.Store, opts ...SettingsOption) *SettingsService {
 	svc := &SettingsService{
-		store:         s,
-		invalidateMCP: func(string) {},
-		emitter:       Noop{},
-		urlOpener:     NoBrowser{},
+		store:             s,
+		invalidateMCP:     func(string) {},
+		emitter:           Noop{},
+		urlOpener:         NoBrowser{},
+		chromeUserDataDir: defaultChromeUserDataDir,
 	}
 	for _, opt := range opts {
 		opt(svc)

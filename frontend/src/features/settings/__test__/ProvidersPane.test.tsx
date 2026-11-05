@@ -561,20 +561,21 @@ describe("ProvidersPane", () => {
     expect(getAllByText("Providers").length).toBeGreaterThanOrEqual(2);
     expect(getByText("Custom providers")).toBeTruthy();
 
-    // Auto-selects first provider on load
-    expect(getByTestId("provider-p1").getAttribute("aria-selected")).toBe(
+    // Auto-selects first provider on load; rows are buttons, so the
+    // selected state rides aria-pressed.
+    expect(getByTestId("provider-p1").getAttribute("aria-pressed")).toBe(
       "true"
     );
-    expect(getByTestId("provider-p2").getAttribute("aria-selected")).toBe(
+    expect(getByTestId("provider-p2").getAttribute("aria-pressed")).toBe(
       "false"
     );
 
     // Click second provider
     await user.click(getByTestId("provider-p2"));
-    expect(getByTestId("provider-p2").getAttribute("aria-selected")).toBe(
+    expect(getByTestId("provider-p2").getAttribute("aria-pressed")).toBe(
       "true"
     );
-    expect(getByTestId("provider-p1").getAttribute("aria-selected")).toBe(
+    expect(getByTestId("provider-p1").getAttribute("aria-pressed")).toBe(
       "false"
     );
   });

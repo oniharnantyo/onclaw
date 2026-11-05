@@ -88,6 +88,26 @@ const SELECT_OPTIONS: readonly (readonly [
   ],
 ];
 
+/** Human-readable swatch names (screen readers, not `title`s). */
+const COLOR_NAMES: Record<string, string> = {
+  "#000": "black",
+  "#fff": "white",
+  "#77311D": "brown",
+  "#F9C9B6": "light skin",
+  "#AC6651": "tan skin",
+  "#FC909F": "pink",
+  "#D2EFF3": "light blue",
+  "#506AF4": "blue",
+  "#F48150": "orange",
+  "#9287FF": "purple",
+  "#6BD9E9": "cyan",
+  "#F4D150": "yellow",
+  "#E0DDFF": "lavender",
+  "#FFEDEF": "blush",
+  "#FFEBA4": "cream",
+  "#74D153": "green",
+};
+
 export function AvatarPicker({
   value,
   onChange,
@@ -144,11 +164,12 @@ export function AvatarPicker({
             <button
               type="button"
               onClick={() => setShowCustom(!showCustom)}
+              aria-expanded={showCustom}
               data-testid="btn-avatar-customize"
               className={cn(
                 "inline-flex h-8 items-center gap-1.5 rounded-md border px-2.5 text-[12px] font-medium transition-colors",
                 showCustom
-                  ? "border-accent bg-[color-mix(in_oklab,var(--accent)_10%,transparent)] text-accent"
+                  ? "border-accent bg-[color-mix(in_oklab,var(--accent)_10%,transparent)] text-accenttext"
                   : "border-line bg-surface text-fg2 hover:border-accent hover:text-fg active:bg-[color-mix(in_oklab,var(--fg)_6%,transparent)]"
               )}
             >
@@ -170,7 +191,10 @@ export function AvatarPicker({
               readonly string[],
             ]): ReactElement => (
               <div key={key} className="flex flex-col gap-1">
-                <label className="text-[10px] font-medium capitalize text-fg2">
+                <label
+                  htmlFor={`avatar-trait-${key}`}
+                  className="text-[10px] font-medium capitalize text-fg2"
+                >
                   {key.replace(/([A-Z])/g, " $1").trim()}
                 </label>
                 {key.toLowerCase().includes("color") ? (
@@ -180,18 +204,20 @@ export function AvatarPicker({
                         key={opt}
                         type="button"
                         onClick={() => handleChange(key, opt)}
+                        aria-pressed={currentConfig[key] === opt}
+                        aria-label={COLOR_NAMES[opt] ?? opt}
                         className={cn(
                           "h-[18px] w-[18px] rounded-full border border-black/10 transition-transform hover:scale-110",
                           currentConfig[key] === opt &&
                             "ring-2 ring-accent ring-offset-1 ring-offset-warm"
                         )}
                         style={{ backgroundColor: opt }}
-                        title={opt}
                       />
                     ))}
                   </div>
                 ) : (
                   <select
+                    id={`avatar-trait-${key}`}
                     value={currentConfig[key]}
                     onChange={(e: React.ChangeEvent<HTMLSelectElement>) =>
                       handleChange(key, e.target.value)

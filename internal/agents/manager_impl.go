@@ -14,6 +14,8 @@ import (
 	"time"
 
 	"github.com/cloudwego/eino/adk"
+	"github.com/cloudwego/eino/components/model"
+	"github.com/cloudwego/eino/components/tool"
 	"github.com/cloudwego/eino/schema"
 
 	"github.com/oniharnantyo/buddies/internal/agents/backend"
@@ -80,6 +82,13 @@ type manager struct {
 	// add-grouped-session-rail design D2); nil (the default) means
 	// transitions go unobserved.
 	onTransition func(sessionID string, busy bool)
+	// groupTurns is the late-binding group turn source holder (WithGroupTurns,
+	// add-agent-groups design D3); nil (the default) means group dispatching
+	// is unavailable.
+	groupTurns *GroupTurnRef
+	// agentLanes is the per-agent group-dispatch lane state (add-agent-groups
+	// design D6), keyed by agent id. Created lazily; guarded by mu.
+	agentLanes map[string]*agentLane
 
 	// baseCtx parents turn goroutines: turns survive the Send call and any
 	// subscriber disconnect (design D7 — a disconnected client never loses
@@ -103,6 +112,23 @@ type manager struct {
 	// — and a resolve that fails before its append releases its entry so a
 	// retry can proceed.
 	resolving map[string]bool
+	// pendingInputs is the live browser-attention registry
+	// (add-browser-login-handover design D3), keyed by interrupt id. An entry
+	// exists exactly while a parked attention tool call waits: ResolveInput
+	// hands the typed value to it (in memory only — never persisted), and a
+	// cold restart loses it, which is what makes a stale resolve fail with
+	// ErrInputNotPending while the card folds expired client-side (the
+	// frontend transcript fold normalizes a still-pending card once the
+	// session is no longer busy — expireUnresolvedInputs in
+	// frontend/src/features/chat/entries.ts). Guarded by mu.
+	pendingInputs map[string]*pendingInput
+	// resolvingInputs guards the input resolve methods' validate-then-append
+	// window exactly like resolving does for approvals: interrupt ids whose
+	// resolve has begun or landed, so a second concurrent resolve conflicts
+	// exactly like the sequential already-resolved case. Entries persist once
+	// the resolution lands; a resolve that fails before its append releases
+	// its entry so a retry can proceed. Guarded by mu.
+	resolvingInputs map[string]bool
 	// sessionTasks is the delegated-task space per session (spec
 	// agent-subagents "Background lane"): background tasks complete
 	// independently of the turn that spawned them and stay addressable
@@ -115,6 +141,15 @@ type manager struct {
 type inFlightTool struct {
 	Name      string
 	Arguments string
+}
+
+// groupTurnContext is a group dispatch's turn context (add-agent-groups
+// design D3/D4): the packet the model input assembles from and the
+// source-provided in-channel tools. A running turn's group is non-nil
+// exactly for a group turn.
+type groupTurnContext struct {
+	packet GroupPacket
+	tools  []tool.BaseTool
 }
 
 // runningTurn is one session's in-flight turn record (design D3): the two
@@ -152,6 +187,24 @@ type runningTurn struct {
 	// events of the original run and of any approval resume of it. Empty on
 	// a cold resume (process lost) — the resume reads as a user run.
 	origin string
+	// agentID is the session agent's id (add-agent-groups design D6): the
+	// per-agent lane's busy key, installed with the record so lane scans read
+	// it race-free.
+	agentID string
+	// group is the group dispatch's turn context (add-agent-groups design
+	// D3); non-nil exactly for a group turn — the packet replaces the session
+	// replay as the model input, and the source's in-channel tools ride
+	// beside the ordinary catalog surface (fix-agent-group-member-tools
+	// design D1).
+	group *groupTurnContext
+	// laneClaimed reports that this turn claimed its agent's group-dispatch
+	// lane (add-agent-groups design D6); released when the turn finishes so
+	// the queued dispatches drain. A group turn's ordinary surface can carry
+	// the approval-gated shell (fix-agent-group-member-tools design D2), so a
+	// claimed turn can park on a pending approval: the claim survives the
+	// park and releases when the parked turn is resolved or cancelled (the
+	// resume terminal paths and discardPending).
+	laneClaimed bool
 
 	// ctx is the turn's cancellable context (design D3) — the run's context,
 	// created with the record; the escalation hard-stops through it.
@@ -300,7 +353,7 @@ func (m *manager) Submit(ctx context.Context, req SendRequest) (*Turn, error) {
 		return nil, fmt.Errorf("send message: %w", err)
 	}
 
-	rt, err := m.startTurn(req.SessionID, req.Origin)
+	rt, err := m.startTurn(req.SessionID, agent.ID, req.Origin, nil)
 	if err != nil {
 		return nil, err
 	}
@@ -366,7 +419,7 @@ func (m *manager) Regenerate(ctx context.Context, sessionID, turnID string) (*Tu
 		return nil, fmt.Errorf("regenerate: turn %s has no user message to re-run", turnID)
 	}
 
-	rt, err := m.startTurn(sessionID, hooks.OriginUser)
+	rt, err := m.startTurn(sessionID, agent.ID, hooks.OriginUser, nil)
 	if err != nil {
 		return nil, err
 	}
@@ -398,11 +451,300 @@ func (m *manager) Regenerate(ctx context.Context, sessionID, turnID string) (*Tu
 	return rt.turn, nil
 }
 
+// agentLane is one agent's group-dispatch lane (add-agent-groups design D6):
+// the FIFO queue of group dispatches waiting for the agent's turn slot, plus
+// the claim latch that keeps two group dispatches of the same agent from
+// starting together. Ordinary sends never touch the lane — the per-session
+// busy guard stays their only serializer.
+type agentLane struct {
+	// active reports that a group dispatch claimed the lane: it is starting
+	// or running. Claimed by drainGroupLane before startTurn and released
+	// when the claiming turn finishes.
+	active bool
+	// queue holds the waiting dispatches in arrival order.
+	queue []*groupLaneEntry
+}
+
+// groupLaneEntry is one queued group dispatch: its request and the Turn
+// handle its submitter waits on.
+type groupLaneEntry struct {
+	req  GroupTurnRequest
+	turn *Turn
+}
+
+// laneFor returns the agent's lane, creating it on first use. The caller
+// holds m.mu.
+func (m *manager) laneFor(agentID string) *agentLane {
+	lane, ok := m.agentLanes[agentID]
+	if !ok {
+		lane = &agentLane{}
+		m.agentLanes[agentID] = lane
+	}
+	return lane
+}
+
+// agentBusyLocked reports whether the agent has any turn in flight — own
+// chat or group thread (add-agent-groups design D6). The caller holds m.mu.
+func (m *manager) agentBusyLocked(agentID string) bool {
+	for _, rt := range m.running {
+		if rt.agentID == agentID {
+			return true
+		}
+	}
+	return false
+}
+
+// SubmitGroup dispatches one group member turn (add-agent-groups design
+// D3/D6): the packet is the turn's whole model input, and the dispatch
+// queues on the agent's lane while the agent has any turn in flight — it
+// never fails with ErrTurnInProgress. See the Manager interface for the full
+// contract.
+func (m *manager) SubmitGroup(ctx context.Context, req GroupTurnRequest) (*Turn, error) {
+	// Fail fast when the seam is unwired; the dispatch itself re-resolves
+	// the source at drain time, so a source bound between the two reads is
+	// picked up.
+	if _, err := m.groupSource(); err != nil {
+		return nil, err
+	}
+	sess, err := m.sessions.Session(ctx, req.SessionID)
+	if err != nil {
+		return nil, fmt.Errorf("submit group turn: %w", err)
+	}
+	agent, err := m.store.Agents().ByID(ctx, sess.AgentID)
+	if err != nil {
+		return nil, fmt.Errorf("submit group turn: %w", err)
+	}
+	entry := &groupLaneEntry{
+		req:  req,
+		turn: &Turn{id: newTurnID(), done: make(chan struct{})},
+	}
+	m.enqueueGroupTurn(agent.ID, entry)
+	// Kick the drain: on a free agent the dispatch starts right away, on a
+	// busy one it waits for the lane.
+	m.drainGroupLane(agent.ID)
+	return entry.turn, nil
+}
+
+// groupSource resolves the wired group turn source; ErrGroupTurnsUnavailable
+// when the ref is unwired or the groups service has not bound itself yet.
+func (m *manager) groupSource() (GroupTurnSource, error) {
+	if m.groupTurns == nil {
+		return nil, ErrGroupTurnsUnavailable
+	}
+	if src := m.groupTurns.Source(); src != nil {
+		return src, nil
+	}
+	return nil, ErrGroupTurnsUnavailable
+}
+
+// enqueueGroupTurn parks one dispatch at the lane's tail. The caller holds
+// no locks.
+func (m *manager) enqueueGroupTurn(agentID string, entry *groupLaneEntry) {
+	m.mu.Lock()
+	lane := m.laneFor(agentID)
+	lane.queue = append(lane.queue, entry)
+	m.mu.Unlock()
+}
+
+// drainGroupLane starts the lane's head dispatch when the agent is fully
+// free — no group dispatch claimed or running, and no turn of the agent's in
+// flight anywhere. Called whenever a group dispatch is submitted and when
+// any turn of the agent finishes (add-agent-groups design D6: the lane frees
+// on the terminal outcome, own chat and group turns alike). The entry is
+// popped before its turn starts, so a drain can never double-start it.
+func (m *manager) drainGroupLane(agentID string) {
+	for {
+		m.mu.Lock()
+		lane := m.agentLanes[agentID]
+		if lane == nil || lane.active || len(lane.queue) == 0 || m.agentBusyLocked(agentID) {
+			m.mu.Unlock()
+			return
+		}
+		lane.active = true
+		entry := lane.queue[0]
+		lane.queue = lane.queue[1:]
+		m.mu.Unlock()
+
+		if err := m.startGroupTurn(entry, agentID); err != nil {
+			// The dispatch never claimed the member session — an ordinary
+			// send raced onto it between the busy check and startTurn. The
+			// group service holds the Turn handle, sees the error, and can
+			// re-dispatch; the lane re-opens for the next entry.
+			entry.turn.finish(fmt.Errorf("dispatch group turn: %w", err))
+			m.releaseGroupLane(agentID)
+			continue
+		}
+		return
+	}
+}
+
+// releaseGroupLane re-opens the agent's lane claim. The caller holds no
+// locks.
+func (m *manager) releaseGroupLane(agentID string) {
+	m.mu.Lock()
+	if lane := m.agentLanes[agentID]; lane != nil {
+		lane.active = false
+	}
+	m.mu.Unlock()
+}
+
+// groupLaneTurnDone releases a finished turn's lane claim and kicks the
+// agent's lane drain (add-agent-groups design D6). Runs on every terminal
+// path — the claiming group turn's own finish and any ordinary turn's finish
+// that unblocks a waiting dispatch alike.
+func (m *manager) groupLaneTurnDone(rt *runningTurn) {
+	if rt.agentID == "" {
+		return
+	}
+	if rt.laneClaimed {
+		m.releaseGroupLane(rt.agentID)
+	}
+	m.drainGroupLane(rt.agentID)
+}
+
+// cancelQueuedGroupTurns drops the session's queued group dispatches
+// (add-agent-groups design D6): each waiting Turn completes with
+// ErrTurnCancelled and never runs. A session with nothing queued is a safe
+// no-op.
+func (m *manager) cancelQueuedGroupTurns(sessionID string) error {
+	dropped := make([]*Turn, 0, 1)
+	m.mu.Lock()
+	for _, lane := range m.agentLanes {
+		kept := make([]*groupLaneEntry, 0, len(lane.queue))
+		for _, entry := range lane.queue {
+			if entry.req.SessionID == sessionID {
+				dropped = append(dropped, entry.turn)
+				continue
+			}
+			kept = append(kept, entry)
+		}
+		lane.queue = kept
+	}
+	m.mu.Unlock()
+	for _, turn := range dropped {
+		turn.finish(ErrTurnCancelled)
+	}
+	return nil
+}
+
+// startGroupTurn claims the member session's busy slot and launches the
+// dispatch's turn goroutine — the normal startTurn/finishTurn path (design
+// D3: a group turn is a real turn on a real session). Called with the
+// agent's lane claimed. An error return means the turn never started: the
+// caller finishes the entry's Turn handle with it and re-opens the lane.
+func (m *manager) startGroupTurn(entry *groupLaneEntry, agentID string) error {
+	src, err := m.groupSource()
+	if err != nil {
+		return err
+	}
+	// The dispatch's reads ride a detached context: a queued dispatch runs
+	// after its submitter's call returned, exactly like the turn goroutine
+	// itself.
+	setupCtx := context.WithoutCancel(m.baseCtx)
+	sess, err := m.sessions.Session(setupCtx, entry.req.SessionID)
+	if err != nil {
+		return fmt.Errorf("dispatch group turn: %w", err)
+	}
+	agent, err := m.store.Agents().ByID(setupCtx, sess.AgentID)
+	if err != nil {
+		return fmt.Errorf("dispatch group turn: %w", err)
+	}
+	rt, err := m.startTurn(sess.ID, agent.ID, hooks.OriginUser, entry.turn)
+	if err != nil {
+		return err
+	}
+	rt.laneClaimed = true
+
+	// The in-channel tools resolve at dispatch time (design D4): the
+	// source-provided group tools ride the turn BESIDE the member's ordinary
+	// catalog surface, which the runner resolves per turn exactly as for a
+	// session turn (fix-agent-group-member-tools design D1). A failure here
+	// takes the normal terminal path — the lane releases through finishTurn
+	// like any finished turn.
+	tools, err := src.GroupTurnTools(setupCtx, entry.req.Packet.GroupID, agent.ID)
+	if err != nil {
+		m.finishTurn(sess.ID, rt, fmt.Errorf("resolve group tools: %w", err))
+		return nil
+	}
+	rt.group = &groupTurnContext{packet: entry.req.Packet, tools: tools}
+
+	// The same effective configuration resolution as Submit (design D1/D2).
+	override := ModelOverride{Model: sess.Model, Effort: sess.Effort}
+	if override.Effort == "" {
+		override.Effort = agent.Effort
+	}
+	packet := entry.req.Packet
+	go func() {
+		defer rt.cancel()
+		err := m.runTurn(rt.ctx, rt, sess, *agent, override, turnRequest{
+			message:     packet.Request,
+			attachments: packet.Attachments,
+			origin:      hooks.OriginUser,
+		})
+		m.finishTurn(sess.ID, rt, err)
+		// The acceptance cursor advances to the packet's through_seq after
+		// the terminal outcome (add-agent-groups design D3) — a full packet
+		// rebuilds it, a delta advances it. Best-effort: the turn's outcome
+		// is already terminal, and the next packet rebuilds from the store's
+		// cursor when a commit is lost.
+		if cerr := src.CommitCursor(context.WithoutCancel(m.baseCtx), packet.GroupID, agent.ID, packet.ThroughSeq); cerr != nil {
+			slog.Warn("group turn: commit acceptance cursor", "group", packet.GroupID, "agent", agent.ID, "error", cerr)
+		}
+	}()
+	return nil
+}
+
+// SummarizeText runs one direct summarizer call on the agent's configured
+// model (add-agent-groups design D3). It touches neither the agent lane nor
+// any session's busy slot. See the Manager interface for the full contract.
+func (m *manager) SummarizeText(ctx context.Context, agentID, instruction, text string) (string, error) {
+	agent, err := m.store.Agents().ByID(ctx, agentID)
+	if err != nil {
+		return "", fmt.Errorf("summarize text: %w", err)
+	}
+	mdl, err := m.registry.Build(ctx, *agent, ModelOverride{})
+	if err != nil {
+		return "", fmt.Errorf("summarize text: %w", err)
+	}
+	return summarizeTextWithModel(ctx, mdl, instruction, text)
+}
+
+// summarizeTextWithModel runs the summarizer call the compaction gate uses
+// (design D3: the same prompt seam): the summarizer system prompt — with the
+// caller's instruction appended when one rides — leads, the material is the
+// user message, and the reply's text blocks concatenate into the summary.
+func summarizeTextWithModel(ctx context.Context, mdl model.BaseModel[*schema.AgenticMessage], instruction, text string) (string, error) {
+	sys := summarizeSystemPrompt
+	if strings.TrimSpace(instruction) != "" {
+		sys += "\n\n" + instruction
+	}
+	summarized, err := mdl.Generate(ctx, []*schema.AgenticMessage{
+		schema.SystemAgenticMessage(sys),
+		schema.UserAgenticMessage(text),
+	})
+	if err != nil {
+		return "", fmt.Errorf("summarize text: %w", err)
+	}
+	var sb strings.Builder
+	if summarized != nil {
+		for _, b := range summarized.ContentBlocks {
+			if b != nil && b.AssistantGenText != nil {
+				sb.WriteString(b.AssistantGenText.Text)
+			}
+		}
+	}
+	return sb.String(), nil
+}
+
 // startTurn claims the session's busy slot and returns the new turn's
-// running record; ErrTurnInProgress when a turn is already in flight. origin
-// is the dispatch's run origin (design D6), kept on the record so an approval
-// resume stamps the same origin.
-func (m *manager) startTurn(sessionID, origin string) (*runningTurn, error) {
+// running record; ErrTurnInProgress when a turn is already in flight. agentID
+// is the session agent's id — the per-agent lane's busy key (add-agent-groups
+// design D6). turn is the turn handle to install: nil creates a fresh one
+// (the ordinary dispatches); a group dispatch passes the handle its submitter
+// already holds, so a queued dispatch's caller waits on the turn that actually
+// runs. origin is the dispatch's run origin (design D6), kept on the record so
+// an approval resume stamps the same origin.
+func (m *manager) startTurn(sessionID, agentID, origin string, turn *Turn) (*runningTurn, error) {
 	m.mu.Lock()
 	if _, inFlight := m.running[sessionID]; inFlight {
 		m.mu.Unlock()
@@ -412,10 +754,13 @@ func (m *manager) startTurn(sessionID, origin string) (*runningTurn, error) {
 	// escalation can hard-stop it; the ADK safe-point cancel is handed
 	// over by the run itself once it starts.
 	turnCtx, cancel := context.WithCancel(m.baseCtx)
-	turn := &Turn{id: newTurnID(), done: make(chan struct{})}
+	if turn == nil {
+		turn = &Turn{id: newTurnID(), done: make(chan struct{})}
+	}
 	rt := &runningTurn{
 		turn:         turn,
 		sessionID:    sessionID,
+		agentID:      agentID,
 		origin:       origin,
 		ctx:          turnCtx,
 		cancel:       cancel,
@@ -444,6 +789,7 @@ func (m *manager) finishTurn(sessionID string, rt *runningTurn, err error) {
 	m.mu.Unlock()
 	m.notifyTransition(sessionID, false)
 	rt.turn.finish(err)
+	m.groupLaneTurnDone(rt)
 }
 
 // resolveAttachments maps send-time capability keys onto their registered
@@ -523,13 +869,15 @@ func (m *manager) notifyTransition(sessionID string, busy bool) {
 var cancelEscalationDelay = 2 * time.Second
 
 // Cancel stops the session's in-flight or parked turn (spec agent-runtime
-// "Turn cancellation"). With no turn in flight it is a safe no-op.
+// "Turn cancellation"). With no turn in flight it drops the session's queued
+// group dispatches instead (add-agent-groups design D6) — the same stop, one
+// step earlier on the lane — and with nothing queued it is a safe no-op.
 func (m *manager) Cancel(_ context.Context, sessionID string) error {
 	m.mu.Lock()
 	rt, ok := m.running[sessionID]
 	m.mu.Unlock()
 	if !ok {
-		return nil
+		return m.cancelQueuedGroupTurns(sessionID)
 	}
 	if rt.pending != nil {
 		return m.discardPending(sessionID, rt)
@@ -603,6 +951,7 @@ func (m *manager) discardPending(sessionID string, rt *runningTurn) error {
 	m.mu.Unlock()
 	m.notifyTransition(sessionID, false)
 	rt.turn.finish(ErrTurnCancelled)
+	m.groupLaneTurnDone(rt)
 	return nil
 }
 

@@ -204,7 +204,11 @@ describe("generated document card (spec: Generated document access)", () => {
     );
 
     await waitFor((): void => {
-      expect(mockGenerated).toHaveBeenCalledWith("a1", "s1", "summary-2026.pdf");
+      expect(mockGenerated).toHaveBeenCalledWith(
+        "a1",
+        "s1",
+        "summary-2026.pdf"
+      );
     });
 
     expect(screen.getByTestId("create-doc-size").textContent).toBe("50 KB");

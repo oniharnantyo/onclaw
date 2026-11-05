@@ -40,7 +40,10 @@ type SendRequest struct {
 // Concurrency: Send serializes turns per session — a second Send on a
 // session with an in-flight turn fails with ErrTurnInProgress; senders queue
 // and resend after the running Turn completes. Distinct sessions run
-// concurrently.
+// concurrently. Group dispatches (SubmitGroup) queue on the agent's turn
+// lane while the agent has any turn in flight anywhere — own chat or group
+// thread — and drain in arrival order when the lane frees (add-agent-groups
+// design D6); they never fail with ErrTurnInProgress.
 type Manager interface {
 	// CreateSession registers a new, untitled chat session for the agent;
 	// store.ErrNotFound when the agent does not exist. The runtime titles
@@ -71,6 +74,31 @@ type Manager interface {
 	// bad attachments. Model and provider failures do NOT fail Submit: they
 	// surface as the turn's terminal error and a persisted turn_error event.
 	Submit(ctx context.Context, req SendRequest) (*Turn, error)
+	// SubmitGroup dispatches one group member turn (add-agent-groups design
+	// D3/D6) and returns promptly: the req.Packet — built by the group turn
+	// source — is the turn's whole model input (the member session's log is
+	// never replayed into a group turn), and the turn runs on the member's
+	// own session through the normal turn path (busy slot, turn events,
+	// checkpointing). The dispatch queues on the agent's turn lane while the
+	// agent has any turn in flight — own chat or group thread — and starts
+	// in arrival order when the lane frees; it never fails with
+	// ErrTurnInProgress. The returned Turn carries the dispatched turn's
+	// terminal outcome, for a queued dispatch included. Fails with
+	// store.ErrNotFound for an unknown session and ErrGroupTurnsUnavailable
+	// when no group turn source is wired. Model, provider, and tool-source
+	// failures do NOT fail SubmitGroup: they surface as the turn's terminal
+	// error.
+	SubmitGroup(ctx context.Context, req GroupTurnRequest) (*Turn, error)
+	// SummarizeText runs one direct summarizer call on the agent's
+	// configured model (add-agent-groups design D3): the compaction
+	// summarizer prompt with the caller's instruction appended leads the
+	// system message, text is the material to summarize, and the model's
+	// reply text returns. It acquires neither the agent's turn lane nor any
+	// session's busy slot — group summary maintenance calls it after a
+	// member turn completes, and a lane acquisition there would deadlock
+	// against the very turn that triggered it. Fails with store.ErrNotFound
+	// for an unknown agent; model failures surface as the error.
+	SummarizeText(ctx context.Context, agentID, instruction, text string) (string, error)
 	// Regenerate re-runs a turn's prompt as a new alternative answer (design
 	// D7, spec chat-view "Regenerate and branch variants"): the original
 	// turn's user text (and attachments, re-sent from disk — never
@@ -95,8 +123,10 @@ type Manager interface {
 	// with any partial output retained, and the session is released so the
 	// next send dispatches normally. Cancelling a turn parked on a pending
 	// approval discards the run and clears the pending approval. Cancelling
-	// with no turn in flight is a safe no-op (spec agent-runtime "Turn
-	// cancellation").
+	// with no turn in flight drops the session's queued group dispatches
+	// instead (add-agent-groups design D6) — their Turns complete with
+	// ErrTurnCancelled and never run — and with nothing queued it is a safe
+	// no-op (spec agent-runtime "Turn cancellation").
 	Cancel(ctx context.Context, sessionID string) error
 	// ResolveApproval submits the user's decision for the session's pending
 	// approval (spec chat-approvals "Decision side-channel"). Approving
@@ -106,6 +136,28 @@ type Manager interface {
 	// decision for an interrupt that is not pending fails with
 	// ErrApprovalNotPending and changes nothing.
 	ResolveApproval(ctx context.Context, sessionID, interruptID string, approved bool) error
+	// ResolveInput submits the user-typed secret for the session's pending
+	// browser attention request (add-browser-login-handover design D3,
+	// spec chat-approvals "Browser attention requests"). The value is handed
+	// to the parked tool call for delivery to the browser engine and is NEVER
+	// persisted: the input_resolved receipt records the outcome, the redacted
+	// length, and the optional saved-login id only. text is dropped (and the
+	// error surfaces) when the request cannot be completed: an interrupt that
+	// is not pending, a takeover-kind request, or a pending request whose
+	// process was lost fails with ErrInputNotPending and changes nothing.
+	ResolveInput(ctx context.Context, sessionID, interruptID, text, identifier string, savedAs bool, savedLoginID string) error
+	// BeginTakeover approves the session's pending browser takeover request
+	// (design D8): the parked tool call hands the profile's browser over to
+	// the user (headed relaunch on the child) and the card flips active when
+	// this returns nil. A request that is not a live pending takeover fails
+	// with ErrInputNotPending and changes nothing.
+	BeginTakeover(ctx context.Context, sessionID, interruptID string) error
+	// ResolveAttention ends the session's pending browser takeover (design
+	// D8): outcome is "completed" (the user pressed Done) or "cancelled" —
+	// the receipt lands on the transcript and the parked tool call returns
+	// its ending result. An interrupt that is not a live pending request
+	// fails with ErrInputNotPending and changes nothing.
+	ResolveAttention(ctx context.Context, sessionID, interruptID, outcome string) error
 	// Busy reports whether the session has a turn in flight — running or
 	// parked on a pending approval (spec chat-view: the running indicator,
 	// and the delete refusal for a session with a turn in flight).
@@ -260,18 +312,21 @@ func NewManager(s store.Store, opts ...Option) Manager {
 // production callers use NewManager.
 func newManager(s store.Store, svc sessions.Service, registry modelRegistry, opts ...Option) *manager {
 	m := &manager{
-		store:        s,
-		sessions:     svc,
-		registry:     registry,
-		resolver:     NewCapabilityResolver(s),
-		mcpManager:   noopMCPServer{},
-		hooks:        hooks.NewNoopDispatcher(),
-		docgen:       docgen.NewConverter(),
-		baseCtx:      context.Background(),
-		subs:         make(map[string]map[int]*streamSub),
-		running:      make(map[string]*runningTurn),
-		resolving:    make(map[string]bool),
-		sessionTasks: make(map[string]*subagents.TaskRegistry),
+		store:           s,
+		sessions:        svc,
+		registry:        registry,
+		resolver:        NewCapabilityResolver(s),
+		mcpManager:      noopMCPServer{},
+		hooks:           hooks.NewNoopDispatcher(),
+		docgen:          docgen.NewConverter(),
+		baseCtx:         context.Background(),
+		subs:            make(map[string]map[int]*streamSub),
+		running:         make(map[string]*runningTurn),
+		resolving:       make(map[string]bool),
+		pendingInputs:   make(map[string]*pendingInput),
+		resolvingInputs: make(map[string]bool),
+		sessionTasks:    make(map[string]*subagents.TaskRegistry),
+		agentLanes:      make(map[string]*agentLane),
 	}
 	for _, opt := range opts {
 		opt(m)

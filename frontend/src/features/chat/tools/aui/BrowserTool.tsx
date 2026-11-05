@@ -16,13 +16,15 @@ import { ImageOff } from "lucide-react";
 import type { ToolCallMessagePartProps } from "@assistant-ui/react";
 
 import { client, type BrowserScreenshotContent } from "../../../../lib/client";
+import { useChatStore } from "../../store";
+import type { ChatStore } from "../../types";
 
 import {
   isNumber,
   isObject,
   isString,
   parseArgs,
-  parseJSONResult,
+  parseToolResult,
   str,
   type Json,
 } from "../parse";
@@ -125,12 +127,16 @@ function ScreenshotThumb({
 }: {
   screenshot: { path: string; width?: number; height?: number };
 }): ReactElement {
-  // The bound read addresses the file by basename only (spec: screenshots
-  // are "addressed by the file name … resolve them solely inside the
-  // screenshots directory"), so the guard tests the basename shape; a path
-  // carrying directories passes only if its basename is a screenshot name.
+  // The bound read addresses the file by basename plus the viewing session
+  // (spec: screenshots are "addressed by the file name … resolve them solely
+  // inside" the calling session's workspace screenshots directory), so the
+  // guard tests the basename shape; a path carrying directories passes only
+  // if its basename is a screenshot name.
   const base = screenshot.path.split("/").pop() ?? "";
-  const valid = SCREENSHOT_NAME.test(base);
+  const sessionID = useChatStore((s: ChatStore) => s.activeSessionID);
+
+  const valid =
+    SCREENSHOT_NAME.test(base) && isString(sessionID) && sessionID !== "";
 
   const [url, setURL] = useState<string | null>(null);
   const [failed, setFailed] = useState(!valid);
@@ -143,7 +149,7 @@ function ScreenshotThumb({
     let created: string | null = null;
 
     client.chat
-      .browserScreenshot(base)
+      .browserScreenshot(sessionID, base)
       .then((content: BrowserScreenshotContent): void => {
         if (!mounted || !isString(content?.data)) {
           if (mounted) setFailed(true);
@@ -170,7 +176,7 @@ function ScreenshotThumb({
 
       if (created) URL.revokeObjectURL(created);
     };
-  }, [base, valid]);
+  }, [base, valid, sessionID]);
 
   if (failed || !url) {
     return (
@@ -213,12 +219,24 @@ function ScreenshotThumb({
   );
 }
 
+/** The MCP namespace prefix the Browser Use tools surface under (design
+ * D6); the tool NAME carries the action after it. */
+const BROWSER_USE_PREFIX = "mcp__browser-use__";
+
 export function BrowserTool(props: ToolCallMessagePartProps): ReactElement {
+  // The action rides the tool name now (`mcp__browser-use__navigate`); the
+  // legacy `args.action` form stands in for names outside the namespace.
   const action = useMemo((): string => {
+    const name = props.toolName ?? "";
+
+    if (name.startsWith(BROWSER_USE_PREFIX)) {
+      return name.slice(BROWSER_USE_PREFIX.length);
+    }
+
     const args = parseArgs(props.argsText);
 
     return args === null ? "" : str(args, "action");
-  }, [props.argsText]);
+  }, [props.toolName, props.argsText]);
 
   const resultText = isTextResult(props.result) ? props.result : "";
   const isError = props.isError === true;
@@ -244,7 +262,7 @@ function BrowserBody({
   // The screenshot body is driven by the args action, not just the shape —
   // a navigate result is also `{url,title}`.
   if (action === "screenshot") {
-    const parsed = parseJSONResult(resultText);
+    const parsed = parseToolResult(resultText);
     const path = isObject(parsed) && isString(parsed.path) ? parsed.path : null;
 
     if (path === null || isError) {
@@ -277,7 +295,7 @@ function BrowserBody({
     );
   }
 
-  const parsed = parseJSONResult(resultText);
+  const parsed = parseToolResult(resultText);
 
   if (!isObject(parsed)) {
     return (
@@ -317,9 +335,15 @@ function BrowserBody({
   const title = isString(parsed.title) ? parsed.title : "";
   const ok = parsed.ok === true ? "ok" : parsed.ok === false ? "failed" : null;
 
-  const elementList = Array.isArray(parsed.elements)
-    ? toElements(parsed.elements)
-    : [];
+  // Full element lists ride only snapshot/read; interactive actions return
+  // slim results whose `changed` deltas render through the same table.
+  const rawElements = Array.isArray(parsed.elements)
+    ? parsed.elements
+    : Array.isArray(parsed.changed)
+      ? parsed.changed
+      : [];
+
+  const elementList = toElements(rawElements) ?? [];
 
   const elements = elementList ?? [];
 

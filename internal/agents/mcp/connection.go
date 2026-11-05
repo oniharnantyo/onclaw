@@ -5,6 +5,7 @@ import (
 	"encoding/base64"
 	"errors"
 	"fmt"
+	"io"
 	"maps"
 	"os"
 	"os/exec"
@@ -35,6 +36,10 @@ const (
 	StatusConnected    = "connected"
 	StatusError        = "error"
 	StatusAuthRequired = "auth_required"
+	// StatusUnknown is the un-probed default: no connection attempt has been
+	// made yet (the store column's shipped default; the supervised system
+	// server reports it before its first spawn attempt completes).
+	StatusUnknown = "unknown"
 )
 
 // ErrUnsupportedTransport is returned for a connection whose Transport is not
@@ -78,6 +83,12 @@ type Connection struct {
 type connection struct {
 	client client.MCPClient
 	tools  []tool.BaseTool
+	// stderr is the stdio child's stderr stream, when the dial captured one
+	// (always for a live stdio dial, nil for the HTTP transports). Left
+	// undrained it is exactly the stock transport's pipe; the system server's
+	// supervisor drains it to capture crash excerpts and to observe the
+	// child's exit (spec browser-use "Supervision").
+	stderr io.Reader
 }
 
 // connect dials the server described by conn and performs the initialize
@@ -87,7 +98,7 @@ type connection struct {
 // server waiting on user authorization comes back as *AuthRequiredError —
 // StatusAuthRequired to the probe — everything else as a plain error.
 func connect(ctx context.Context, conn Connection) (*connection, error) {
-	cli, err := dial(ctx, conn)
+	cli, stderr, err := dial(ctx, conn)
 	if err != nil {
 		return nil, classifyConnectError(ctx, conn, err)
 	}
@@ -105,7 +116,11 @@ func connect(ctx context.Context, conn Connection) (*connection, error) {
 		abandonClient(cli)
 		return nil, classifyConnectError(ctx, conn, fmt.Errorf("mcp list tools: %w", err))
 	}
-	return &connection{client: cli, tools: tools}, nil
+	// The adapter marshals the whole MCP result envelope as each tool's
+	// output; the unwrap sits here — innermost, before the supervisor's
+	// gauge, the renaming pass, and the agents-package interceptors — so
+	// every caller sees the payload text (mcp-result-unwrapping).
+	return &connection{client: cli, tools: wrapResultUnwrapping(tools), stderr: stderr}, nil
 }
 
 // classifyConnectError maps a failed dial/handshake onto the probe's status
@@ -135,12 +150,20 @@ func abandonClient(cli client.MCPClient) {
 	go closeClient(key{}, &cacheEntry{conn: &connection{client: cli}})
 }
 
-// dial opens the transport for conn. stdio launches the configured command
-// (mcp-go starts the transport in the constructor); streamable HTTP and SSE
-// dial lazily through Start. The handshake follows in connect.
-func dial(ctx context.Context, conn Connection) (client.MCPClient, error) {
+// dial opens the transport for conn and returns the ready client plus, for a
+// stdio dial, the child's stderr stream (nil for the HTTP transports). stdio
+// launches the configured command; streamable HTTP and SSE dial lazily through
+// Start. The handshake follows in connect.
+func dial(ctx context.Context, conn Connection) (client.MCPClient, io.Reader, error) {
 	switch conn.Transport {
 	case TransportStdio:
+		// The stock constructor (client.NewStdioMCPClientWithOptions) builds
+		// this exact transport, starts it on context.Background(), and wraps
+		// it in a client — reproduced here so the child's stderr pipe is also
+		// reachable (the supervisor of the system server drains it; nobody
+		// draining would let a chatty child block on a full pipe). Behavior
+		// is otherwise byte-identical.
+		//
 		// mcp-go v0.43.0's default launch path merges the supplied env over
 		// os.Environ() (client/transport/stdio.go spawnCommand: cmd.Env =
 		// append(os.Environ(), c.env...)), which would leak every parent
@@ -148,16 +171,19 @@ func dial(ctx context.Context, conn Connection) (client.MCPClient, error) {
 		// escape hatch: the CommandFunc builds the whole exec.Cmd, so cmd.Env
 		// is exactly the constructed slice, never merged over the parent.
 		env := constructChildEnv(os.Environ(), conn.Env)
-		cli, err := client.NewStdioMCPClientWithOptions(conn.Command, env, conn.Args,
+		tr := transport.NewStdioWithOptions(conn.Command, env, conn.Args,
 			transport.WithCommandFunc(func(ctx context.Context, command string, cmdEnv []string, args []string) (*exec.Cmd, error) {
 				cmd := exec.CommandContext(ctx, command, args...)
 				cmd.Env = cmdEnv
 				return cmd, nil
 			}))
-		if err != nil {
-			return nil, fmt.Errorf("mcp stdio start %q: %w", conn.Command, err)
+		// Start on context.Background() exactly as the stock constructor did:
+		// the caller's ctx (the manager's connect window) would kill the child
+		// at the timeout, long after the dial returned.
+		if err := tr.Start(context.Background()); err != nil {
+			return nil, nil, fmt.Errorf("mcp stdio start %q: %w", conn.Command, err)
 		}
-		return cli, nil
+		return client.NewClient(tr), tr.Stderr(), nil
 	case TransportStreamableHTTP:
 		opts := []transport.StreamableHTTPCOption{transport.WithHTTPHeaders(requestHeaders(conn))}
 		var (
@@ -166,19 +192,19 @@ func dial(ctx context.Context, conn Connection) (client.MCPClient, error) {
 		)
 		if conn.OAuth.Enabled {
 			if err := conn.OAuth.ready(); err != nil {
-				return nil, fmt.Errorf("mcp streamable http dial %s: %w", conn.URL, err)
+				return nil, nil, fmt.Errorf("mcp streamable http dial %s: %w", conn.URL, err)
 			}
 			cli, err = client.NewOAuthStreamableHttpClient(conn.URL, conn.OAuth.config(), opts...)
 		} else {
 			cli, err = client.NewStreamableHttpClient(conn.URL, opts...)
 		}
 		if err != nil {
-			return nil, fmt.Errorf("mcp streamable http dial %s: %w", conn.URL, err)
+			return nil, nil, fmt.Errorf("mcp streamable http dial %s: %w", conn.URL, err)
 		}
 		if err := cli.Start(ctx); err != nil {
-			return nil, fmt.Errorf("mcp streamable http connect %s: %w", conn.URL, err)
+			return nil, nil, fmt.Errorf("mcp streamable http connect %s: %w", conn.URL, err)
 		}
-		return cli, nil
+		return cli, nil, nil
 	case TransportSSE:
 		opts := []transport.ClientOption{transport.WithHeaders(requestHeaders(conn))}
 		var (
@@ -187,31 +213,34 @@ func dial(ctx context.Context, conn Connection) (client.MCPClient, error) {
 		)
 		if conn.OAuth.Enabled {
 			if err := conn.OAuth.ready(); err != nil {
-				return nil, fmt.Errorf("mcp sse dial %s: %w", conn.URL, err)
+				return nil, nil, fmt.Errorf("mcp sse dial %s: %w", conn.URL, err)
 			}
-			cli, err = client.NewOAuthSSEClient(conn.URL, conn.OAuth.config(), opts...)
+			cli, err = client.NewOAuthSSEClient(conn.URL, conn.OAuth.config())
 		} else {
 			cli, err = client.NewSSEMCPClient(conn.URL, opts...)
 		}
 		if err != nil {
-			return nil, fmt.Errorf("mcp sse dial %s: %w", conn.URL, err)
+			return nil, nil, fmt.Errorf("mcp sse dial %s: %w", conn.URL, err)
 		}
 		if err := cli.Start(ctx); err != nil {
-			return nil, fmt.Errorf("mcp sse connect %s: %w", conn.URL, err)
+			return nil, nil, fmt.Errorf("mcp sse connect %s: %w", conn.URL, err)
 		}
-		return cli, nil
+		return cli, nil, nil
 	default:
-		return nil, fmt.Errorf("%w: %q", ErrUnsupportedTransport, conn.Transport)
+		return nil, nil, fmt.Errorf("%w: %q", ErrUnsupportedTransport, conn.Transport)
 	}
 }
 
 // stdioEnvBaseline is the fixed allowlist of parent environment variables a
 // stdio MCP child receives beyond the connection's configured rows (design
 // D7; onclaw's fix-stdio-env-leak contract): names children need to shell out
-// (PATH, HOME, TMPDIR), localize (LANG, LC_ALL, TZ), and traverse enterprise
-// proxies (upper- and lowercase forms). The baseline is deliberately not
-// configurable — a configurable allowlist reintroduces the leak via
-// misconfiguration.
+// (PATH, HOME, TMPDIR), localize (LANG, LC_ALL, TZ), traverse enterprise
+// proxies (upper- and lowercase forms), and — the one buddies-owned addition
+// (rebrand-browser-use-system-mcp) — BUDDIES_BROWSER_ALLOW_PRIVATE, whose
+// presence in the server process's environment is what the browser-use
+// child's private-network guard keys on (spec browser-use "Private-network
+// guard"). The baseline is deliberately not configurable — a configurable
+// allowlist reintroduces the leak via misconfiguration.
 var stdioEnvBaseline = map[string]struct{}{
 	"PATH":        {},
 	"HOME":        {},
@@ -227,6 +256,8 @@ var stdioEnvBaseline = map[string]struct{}{
 	"https_proxy": {},
 	"all_proxy":   {},
 	"no_proxy":    {},
+
+	"BUDDIES_BROWSER_ALLOW_PRIVATE": {},
 }
 
 // constructChildEnv builds the stdio child environment: baseline entries

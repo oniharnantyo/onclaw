@@ -166,14 +166,17 @@ describe("App shell", () => {
     await view.unmount();
   });
 
-  it("keeps the view title on the agents strip", async () => {
+  it("keeps the agents strip textless (the panel header is the title)", async () => {
     const view = await renderUI(<App />);
     await act(async () => {
       useNavStore.setState({ menu: "agents" });
     });
     const strip = screen.getByTestId("titlebar-strip");
-    expect(strip.textContent).toContain("Agents");
-    expect(strip.textContent).not.toContain("sessions");
+    // Agents is textless on the strip like chat: the agents view's own
+    // panel header ("Agents" + the new-agent button) is the title — a strip
+    // copy rendered the word twice (user-reported duplicate).
+    expect(strip.textContent).not.toContain("Agents");
+    expect(strip.querySelector("button")).toBeNull();
     await view.unmount();
   });
 
@@ -188,7 +191,9 @@ describe("App shell", () => {
     const main = document.querySelector("main");
     expect(main?.getAttribute("data-active-menu")).toBe("schedules");
     expect(screen.getByTestId("scheduler-view-mock")).toBeTruthy();
-    expect(screen.getByTestId("titlebar-strip").textContent).toContain(
+    // The strip is textless on schedules — the view's own PaneHeader is the
+    // title (a strip copy rendered the word twice).
+    expect(screen.getByTestId("titlebar-strip").textContent).not.toContain(
       "Schedules"
     );
     await view.unmount();
@@ -205,7 +210,7 @@ describe("App shell", () => {
     const main = document.querySelector("main");
     expect(main?.getAttribute("data-active-menu")).toBe("knowledge");
     expect(screen.getByTestId("knowledge-view-mock")).toBeTruthy();
-    expect(screen.getByTestId("titlebar-strip").textContent).toContain(
+    expect(screen.getByTestId("titlebar-strip").textContent).not.toContain(
       "Knowledge"
     );
     await view.unmount();
@@ -258,9 +263,10 @@ describe("App shell", () => {
     // Rail remains visible when viewing settings
     expect(railAside()).toBeTruthy();
 
-    // Strip shows "Settings" title
+    // The strip is textless here too — settings names itself with a
+    // PaneHeader inside the view, like knowledge/scheduler.
     const strip = screen.getByTestId("titlebar-strip");
-    expect(strip.textContent).toContain("Settings");
+    expect(strip.textContent).not.toContain("Settings");
     expect(strip.textContent).not.toContain("Chat");
 
     // Chat layer is absent, replaced by settings view
@@ -273,6 +279,26 @@ describe("App shell", () => {
     });
     expect(screen.getByTestId("chat-session-rail")).toBeTruthy();
     expect(useChatStore.getState().activeSessionID).toBe("s1");
+    await view.unmount();
+  });
+
+  it("keeps the settings strip textless in both rail states (title lives in the view)", async () => {
+    const view = await renderUI(<App />);
+    await act(async () => {
+      usePlatformStore.setState({ isDesktopApp: true });
+      useNavStore.setState({ menu: "settings" });
+    });
+
+    // No strip copy in either rail state: the corner expand button owns
+    // the band's left edge when collapsed, and the view's own PaneHeader
+    // is the title (a strip copy rendered under that button — user report).
+    const strip = screen.getByTestId("titlebar-strip");
+    expect(strip.textContent).not.toContain("Settings");
+
+    await clickToggle();
+    expect(screen.getByTestId("btn-toggle-rail")).toBeTruthy();
+    expect(strip.textContent).not.toContain("Settings");
+
     await view.unmount();
   });
 
@@ -314,17 +340,31 @@ describe("App shell", () => {
     // Scoped to the rail: the below-lg bar island keeps its (CSS-hidden)
     // labels by contract.
     expect(railAside().textContent).not.toContain("Agents");
-    // The expand control moved above the sessions rail's label (the real
-    // SessionRail renders here), so the nav rail keeps no toggle of its own.
-    expect(
-      railAside().querySelector('[data-testid="btn-toggle-rail"]')
-    ).toBeNull();
+    // Collapsed, the way back is view-local: chat hosts it in the sessions
+    // rail (above the SESSIONS label — the shell's island-corner button
+    // would collide with that label); every other menu gets the shell's
+    // island-corner button. The rail header itself keeps no toggle while
+    // collapsed.
+    expect(screen.getByTestId("btn-toggle-rail")).toBeTruthy();
     expect(
       screen
         .getByTestId("chat-session-rail")
         .querySelector('[data-testid="btn-toggle-rail"]')
     ).toBeTruthy();
+    expect(
+      railAside().querySelector('[data-testid="btn-toggle-rail"]')
+    ).toBeNull();
     expect(window.localStorage.getItem("buddies.railCollapsed")).toBe("1");
+
+    // Switch to agents while collapsed: the shell's island-corner button
+    // takes over, on every non-chat menu.
+    await act(async () => {
+      useNavStore.setState({ menu: "agents" });
+    });
+    const corner = screen.getByTestId("btn-toggle-rail");
+    expect(corner.getAttribute("aria-label")).toBe("Expand navigation");
+    expect(screen.queryByTestId("chat-session-rail")).toBeNull();
+    expect(railAside().contains(corner)).toBe(false);
 
     await act(async () => {
       useNavStore.getState().toggleRail();

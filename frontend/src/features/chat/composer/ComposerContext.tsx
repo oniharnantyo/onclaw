@@ -18,6 +18,7 @@
  */
 import { useEffect, useMemo, useRef, useState } from "react";
 import type { ReactElement } from "react";
+import { useShallow } from "zustand/react/shallow";
 
 import type { ContextUsage } from "../../../../bindings/github.com/oniharnantyo/buddies/internal/agents/models";
 import type { Agent } from "../../../../bindings/github.com/oniharnantyo/buddies/internal/store/models";
@@ -29,9 +30,10 @@ import type {
 
 import { client } from "../../../lib/client";
 import {
-  computeContextBreakdown,
-  type ContextBreakdown,
+  computeContextBreakdownFromEstimates,
+  estimateTranscript,
   type ContextSegment,
+  type PromptDocContent,
   type SegmentKey,
 } from "../lib/contextBreakdown";
 import { cachedPromptDocuments, loadPromptDocuments } from "../lib/promptDocs";
@@ -179,17 +181,40 @@ function LegendRow({ segment }: { segment: ContextSegment }): ReactElement {
  * click. Rendered as a span with flex display — the ring's wrapper is
  * phrasing content, and a span keeps the HTML honest. */
 function BreakdownPopover({
-  breakdown,
+  used,
+  limit,
+  promptDocs,
+  enabledTools,
+  enabledSkills,
   lastInput,
   lastOutput,
   reducedMotion,
 }: {
-  breakdown: ContextBreakdown;
+  used: number;
+  limit: number;
+  promptDocs: PromptDocContent | null;
+  enabledTools: number;
+  enabledSkills: number;
   lastInput: number | null;
   lastOutput: number | null;
   reducedMotion: boolean;
 }): ReactElement {
-  const { limit } = breakdown;
+  // Task 5.4 (design D5): the entries are read HERE — this component only
+  // mounts while the popover is open — through a scalar estimate selector,
+  // so the always-mounted meter never subscribes to the streaming array and
+  // the open popover re-renders only when a displayed number moves.
+  const transcript = useChatStore(
+    useShallow((s: ChatStore) => estimateTranscript(s.entries))
+  );
+
+  const breakdown = computeContextBreakdownFromEstimates({
+    used,
+    limit,
+    promptDocs,
+    enabledTools,
+    enabledSkills,
+    transcript,
+  });
 
   const barWidth = (tokens: number): string =>
     `${Math.min(100, Math.max(0, (tokens / limit) * 100))}%`;
@@ -290,7 +315,6 @@ function readLastTurn(usage: ContextUsage): LastTurnRead {
 export function ContextMeter(): ReactElement | null {
   const agents = useChatStore((s: ChatStore) => s.agents);
   const skills = useChatStore((s: ChatStore) => s.skills);
-  const entries = useChatStore((s: ChatStore) => s.entries);
   const models = useChatStore((s: ChatStore) => s.models);
   const modelOverride = useChatStore((s: ChatStore) => s.modelOverride);
   const activeAgentID = useChatStore((s: ChatStore) => s.activeAgentID);
@@ -391,19 +415,6 @@ export function ContextMeter(): ReactElement | null {
 
   const limit = overrideLimit > 0 ? overrideLimit : (usage?.limit ?? 0);
 
-  const breakdown = useMemo((): ContextBreakdown | null => {
-    if (!usage) return null;
-
-    return computeContextBreakdown({
-      used: usage.used,
-      limit,
-      promptDocs,
-      enabledTools,
-      enabledSkills,
-      entries,
-    });
-  }, [usage, limit, promptDocs, enabledTools, enabledSkills, entries]);
-
   const lastTurn = usage ? readLastTurn(usage) : null;
 
   // Open popover: outside click and Escape close (the same contract as the
@@ -433,7 +444,7 @@ export function ContextMeter(): ReactElement | null {
     };
   }, [open]);
 
-  if (!usage || !breakdown || limit <= 0) return null;
+  if (!usage || limit <= 0) return null;
 
   const openPopover = (): void => {
     setOpen(true);
@@ -459,7 +470,11 @@ export function ContextMeter(): ReactElement | null {
       </button>
       {open && lastTurn && (
         <BreakdownPopover
-          breakdown={breakdown}
+          used={usage.used}
+          limit={limit}
+          promptDocs={promptDocs}
+          enabledTools={enabledTools}
+          enabledSkills={enabledSkills}
           lastInput={lastTurn.input}
           lastOutput={lastTurn.output}
           reducedMotion={reducedMotion}

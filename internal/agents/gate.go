@@ -205,3 +205,60 @@ func (m *manager) workspaceDir(agent store.Agent) (string, error) {
 	}
 	return dir, nil
 }
+
+// mergeGroupTools appends the source-provided in-channel group tools to the
+// turn's resolved ordinary surface (fix-agent-group-member-tools design D1,
+// spec agent-groups "Group tools ride beside the work tools"): the member's
+// gated catalog surface and the group tools are offered together, the group
+// tools never displacing the ordinary ones. The merge never shadows: a group
+// tool whose name is already taken by the composed surface — a catalog tool,
+// a workspace middleware tool, or a delegation tool — fails the turn with a
+// clear error instead of silently replacing the ordinary tool.
+func mergeGroupTools(surface *resolvedTools, groupTools []tool.BaseTool) ([]tool.BaseTool, error) {
+	taken := make(map[string]bool, len(surface.tools)+len(filesystemToolNames)+len(plantaskToolNames)+3)
+	for _, t := range surface.tools {
+		if t == nil {
+			continue
+		}
+		info, err := t.Info(context.Background())
+		if err != nil {
+			continue
+		}
+		taken[info.Name] = true
+	}
+	// The fs and plantask middlewares' tools exist beside the direct ones
+	// whenever the jail was rooted; the shell answers to execute, and the
+	// delegation tools are always reserved names.
+	if surface.agentDir != "" {
+		for _, name := range filesystemToolNames {
+			taken[name] = true
+		}
+		for _, name := range plantaskToolNames {
+			taken[name] = true
+		}
+		if surface.shell {
+			taken[ToolExecute] = true
+		}
+	}
+	taken[ToolAgent] = true
+	taken[ToolTaskOutput] = true
+	taken[ToolTaskStop] = true
+
+	merged := make([]tool.BaseTool, 0, len(surface.tools)+len(groupTools))
+	merged = append(merged, surface.tools...)
+	for _, t := range groupTools {
+		if t == nil {
+			continue
+		}
+		info, err := t.Info(context.Background())
+		if err != nil {
+			return nil, fmt.Errorf("resolve group tool: %w", err)
+		}
+		if taken[info.Name] {
+			return nil, fmt.Errorf("group tool %q collides with the turn's ordinary tool surface", info.Name)
+		}
+		taken[info.Name] = true
+		merged = append(merged, t)
+	}
+	return merged, nil
+}

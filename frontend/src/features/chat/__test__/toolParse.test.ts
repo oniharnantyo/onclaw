@@ -11,8 +11,11 @@ import {
   num,
   parseArgs,
   parseJSONResult,
+  parseToolResult,
   str,
   type ToolArgs,
+  unwrapMCPEnvelope,
+  unwrapMCPResultText,
 } from "../tools/parse";
 
 describe("parseArgs", () => {
@@ -108,5 +111,118 @@ describe("callDurationMs", () => {
 
   it("a zero duration marks a pre-change record — no fabricated latency", () => {
     expect(callDurationMs({ duration_ms: 0 })).toBeUndefined();
+  });
+});
+
+describe("unwrapMCPEnvelope", () => {
+  it("a single-text envelope yields the parsed inner payload", () => {
+    const envelope = JSON.stringify({
+      content: [
+        {
+          type: "text",
+          text: '{"url":"https://example.com","title":"Example"}',
+        },
+      ],
+    });
+
+    expect(unwrapMCPEnvelope(parseJSONResult(envelope) ?? null)).toEqual({
+      url: "https://example.com",
+      title: "Example",
+    });
+  });
+
+  it("an inner text that is not JSON comes back as the raw string", () => {
+    const envelope = JSON.stringify({
+      content: [{ type: "text", text: "plain page text" }],
+    });
+
+    expect(unwrapMCPEnvelope(parseJSONResult(envelope) ?? null)).toBe(
+      "plain page text"
+    );
+  });
+
+  it("multi-part and wrong-typed envelopes pass through unchanged", () => {
+    const multi = {
+      content: [
+        { type: "text", text: "a" },
+        { type: "text", text: "b" },
+      ],
+    };
+
+    const wrongType = { content: [{ type: "image", text: "a" }] };
+    const noText = { content: [{ type: "text" }] };
+    const notArray = { content: "text" };
+
+    expect(unwrapMCPEnvelope(multi)).toBe(multi);
+    expect(unwrapMCPEnvelope(wrongType)).toBe(wrongType);
+    expect(unwrapMCPEnvelope(noText)).toBe(noText);
+    expect(unwrapMCPEnvelope(notArray)).toBe(notArray);
+  });
+
+  it("non-envelope values (including pre-unwrapped payloads) pass through unchanged", () => {
+    const payload = { url: "https://example.com", title: "Example" };
+    const text = "just text";
+    const list = [1, 2];
+
+    expect(unwrapMCPEnvelope(payload)).toBe(payload);
+    expect(unwrapMCPEnvelope(text)).toBe(text);
+    expect(unwrapMCPEnvelope(list)).toBe(list);
+    expect(unwrapMCPEnvelope(null)).toBeNull();
+  });
+
+  it("unwraps exactly one level — a nested envelope's inner envelope stays", () => {
+    const inner = JSON.stringify({
+      content: [{ type: "text", text: '{"deep":true}' }],
+    });
+
+    const outer = JSON.stringify({ content: [{ type: "text", text: inner }] });
+
+    expect(unwrapMCPEnvelope(parseJSONResult(outer) ?? null)).toEqual(
+      parseJSONResult(inner)
+    );
+  });
+});
+
+describe("parseToolResult", () => {
+  it("peels one envelope level off a parsed result", () => {
+    const envelope = JSON.stringify({
+      content: [{ type: "text", text: '{"elements":[]}' }],
+    });
+
+    expect(parseToolResult(envelope)).toEqual({ elements: [] });
+  });
+
+  it("a pre-unwrapped payload parses through untouched", () => {
+    expect(parseToolResult('{"url":"https://example.com"}')).toEqual({
+      url: "https://example.com",
+    });
+    expect(parseToolResult("not json")).toBeNull();
+    expect(parseToolResult(undefined)).toBeNull();
+  });
+});
+
+describe("unwrapMCPResultText", () => {
+  it("an envelope string yields the inner text verbatim", () => {
+    const envelope = JSON.stringify({
+      content: [{ type: "text", text: "the page text" }],
+    });
+
+    expect(unwrapMCPResultText(envelope)).toBe("the page text");
+  });
+
+  it("an envelope whose inner is JSON yields the inner text (still unparsed)", () => {
+    const envelope = JSON.stringify({
+      content: [{ type: "text", text: '{"path":"1.png","width":800}' }],
+    });
+
+    expect(unwrapMCPResultText(envelope)).toBe('{"path":"1.png","width":800}');
+  });
+
+  it("non-envelope strings pass through unchanged", () => {
+    expect(unwrapMCPResultText('{"url":"https://example.com"}')).toBe(
+      '{"url":"https://example.com"}'
+    );
+    expect(unwrapMCPResultText("plain text")).toBe("plain text");
+    expect(unwrapMCPResultText("")).toBe("");
   });
 });

@@ -21,8 +21,13 @@
  * CommonMark's intraword rules mean `snake_case` holds emphasis markers only
  * to over-eager counters, and appending an underscore mid-word would itself
  * be a transient artifact. Markers inside inline code or fenced code are
- * never counted: CommonMark treats that content as literal. Pure function —
- * no imports, no state.
+ * never counted: CommonMark treats that content as literal.
+ *
+ * Task 5.3 (design D5) adds an incremental wrapper: the scan is still
+ * synchronous, but only the unfinalized tail is rescanned per token. The
+ * full-document scan stays as the reference (`stabilizeMarkdownFull`) and
+ * runs on a cache miss; the wrapper's output is byte-identical to it at
+ * every prefix.
  */
 
 /** A fence opener: up to three leading spaces, then 3+ backticks or tildes. */
@@ -244,8 +249,13 @@ function stabilizeSegment(seg: string): string {
 /**
  * Closes dangling markdown constructs in a streaming partial. With nothing
  * dangling the input passes through byte-identical.
+ *
+ * This is the full-document scan (task 5.3's reference path): the public
+ * `stabilizeMarkdown` is an incremental wrapper that delegates here on a
+ * cache miss. Exported so the parity tests can compare the incremental
+ * result against the scan it replaces at every prefix.
  */
-export function stabilizeMarkdown(source: string): string {
+export function stabilizeMarkdownFull(source: string): string {
   const { lines, roles, dangling } = classifyLines(source);
 
   let changed = false;
@@ -293,4 +303,170 @@ export function stabilizeMarkdown(source: string): string {
   }
 
   return changed ? out.join("\n") : source;
+}
+
+/**
+ * The latest line start up to which a scan can no longer change (task 5.3,
+ * design D5): the finalized-prefix length. A line start is safe only when
+ * everything before it is closed — no open fence, no unmatched backtick run
+ * whose equal-length closer could still arrive, and an even `**`/`*` count.
+ * Under those conditions a later append can neither open a construct that
+ * reaches back across the boundary nor move a closer before it, so the
+ * prefix is byte-identical in every future full scan.
+ *
+ * Conservative by construction: every uncertainty (an open construct,
+ * escaped markers the full scan still counts, HTML blocks, list continuity)
+ * simply keeps the boundary where it was, and the tail is rescanned.
+ */
+function finalizedPrefixLength(source: string): number {
+  const lines = source.split("\n");
+  let fence: FenceState | null = null;
+  let openRun = 0;
+  let bold = 0;
+  let italic = 0;
+  let best = 0;
+  let offset = 0;
+
+  for (let i = 0; i < lines.length; i += 1) {
+    const line = lines[i] ?? "";
+    const opener = fence === null ? FENCE_OPEN.exec(line) : null;
+
+    // A fence opener starts a fresh segment: the prose before it is closed
+    // (its fix is already determined), so the boundary is safe at this line
+    // start even when that segment carried a dangling marker. Otherwise the
+    // shared prose state must be clean.
+    const clean =
+      opener !== null ||
+      (fence === null && openRun === 0 && bold % 2 === 0 && italic % 2 === 0);
+
+    if (clean) best = offset;
+
+    if (fence !== null) {
+      if (bareFence(line, fence.char, fence.len)) fence = null;
+    } else if (opener !== null) {
+      const marker = opener[1] ?? "";
+
+      fence = { char: marker[0] ?? "`", len: marker.length };
+      // A fence ends the prose segment: the next one starts clean.
+      openRun = 0;
+      bold = 0;
+      italic = 0;
+    } else {
+      // Prose line: mirror segmentFix's counters exactly (backtick runs
+      // close only equal-length runs; emphasis is counted outside the
+      // pending span).
+      let at = 0;
+
+      while (at < line.length) {
+        const ch = line[at];
+
+        if (ch === "`") {
+          let end = at;
+
+          while (end < line.length && line[end] === "`") end += 1;
+
+          const run = end - at;
+
+          if (openRun === 0) openRun = run;
+          else if (run === openRun) openRun = 0;
+
+          at = end;
+
+          continue;
+        }
+
+        if (openRun === 0) {
+          if (ch === "*") {
+            if (line[at + 1] === "*") {
+              bold += 1;
+              at += 2;
+
+              continue;
+            }
+
+            italic += 1;
+          }
+        }
+
+        at += 1;
+      }
+    }
+
+    offset += line.length + 1;
+  }
+
+  return best;
+}
+
+/** Incremental cache (task 5.3): the previous input, its finalized prefix
+ * length, and that prefix's output. A streaming caller passes growing
+ * prefixes, so each call rescans only the unfinalized tail; the finalized
+ * prefix carries over byte-identically by the boundary rule above. */
+interface StreamCache {
+  source: string;
+  boundary: number;
+  prefix: string;
+  /** The full stabilized result for `source` (an unchanged re-render asks
+   * for the same text again). */
+  result: string;
+}
+
+let streamCache: StreamCache | null = null;
+
+/** Clears the incremental cache. Tests call it to pin a full-scan parity
+ * starting point; production callers never need it (a non-prefix input
+ * falls back to the full scan on its own). */
+export function resetStabilizeMarkdownCache(): void {
+  streamCache = null;
+}
+
+/**
+ * Streaming entry point (task 5.3): a byte-identical incremental wrapper
+ * around `stabilizeMarkdownFull`. When the new source extends the previous
+ * input, only the tail after the finalized boundary is rescanned; any other
+ * input (a reload, a different message, a shrunk text) takes the full scan.
+ * The result equals the full scan at EVERY prefix, not just at the end —
+ * the tests pin that equality over the fence/emphasis corpus.
+ *
+ * The parse stays synchronous (the documented first-token trade): the
+ * incremental path only removes redundant rescanning, it never defers a
+ * render.
+ */
+export function stabilizeMarkdown(source: string): string {
+  const cache = streamCache;
+
+  if (cache !== null) {
+    if (source === cache.source) return cache.result;
+
+    if (
+      source.length > cache.source.length &&
+      source.startsWith(cache.source)
+    ) {
+      const tail = source.slice(cache.boundary);
+      const tailBoundary = finalizedPrefixLength(tail);
+      const boundary = cache.boundary + tailBoundary;
+
+      // Fixes insert bytes (a closer), so the finalized prefix is built by
+      // scanning the newly closed region — each input byte is finalized
+      // exactly once — and the still-open tail is rescanned from the clean
+      // boundary. A clean boundary splits the full scan: its left side can
+      // never change, and its right side scans from fresh state.
+      const prefix =
+        cache.prefix + stabilizeMarkdownFull(tail.slice(0, tailBoundary));
+
+      const result = prefix + stabilizeMarkdownFull(tail.slice(tailBoundary));
+
+      streamCache = { source, boundary, prefix, result };
+
+      return result;
+    }
+  }
+
+  const result = stabilizeMarkdownFull(source);
+  const boundary = finalizedPrefixLength(source);
+  const prefix = stabilizeMarkdownFull(source.slice(0, boundary));
+
+  streamCache = { source, boundary, prefix, result };
+
+  return result;
 }

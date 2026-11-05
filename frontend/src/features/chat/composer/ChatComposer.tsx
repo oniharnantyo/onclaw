@@ -7,7 +7,14 @@
  * highlighted item is picked instead of sending. While a turn is in flight
  * the send control becomes a stop control (runtime cancel → store.stop) and
  * sends join the store's ordered queue (the adapter deliberately omits
- * queueing; the store drains FIFO at turn terminals).
+ * queueing; the store drains FIFO at turn terminals). On the group surface
+ * the stop control branches (align-group-task-lifecycle design D6, spec
+ * agent-groups "Composer stop ends the active run"): no session turn runs
+ * there — group work runs in members' own sessions — so while the open
+ * group has a running task the stop ends that run's root chain
+ * (groups.stopTask of the first running task's RootTaskID, store order;
+ * several active roots stop only the first) and refreshes the task list,
+ * with a failed stop surfacing as a danger toast.
  *
  * Attachments ride the wave-1 attachment adapter: the paperclip and pasted
  * files mint chips through the runtime, the tray still shows the legacy
@@ -47,17 +54,24 @@ import {
 import { MessageQueue } from "@/components/assistant-ui/elements/message-queue";
 
 import type { ModelCapability } from "../../../../bindings/github.com/oniharnantyo/buddies/internal/services/models";
-import type { Agent } from "../../../../bindings/github.com/oniharnantyo/buddies/internal/store/models";
+import type {
+  Agent,
+  AgentGroupTask,
+} from "../../../../bindings/github.com/oniharnantyo/buddies/internal/store/models";
 
 import { cn } from "../../../lib/cn";
+import { client } from "../../../lib/client";
+import { toast } from "../../../lib/toasts";
 import {
   useAttachmentStore,
   type AttachmentChip,
   type AttachmentChipState,
 } from "../attachments";
 import { formatBytes } from "../components/AttachmentView";
+import { GroupTaskState } from "../../groups/groupEntries";
 import { useChatStore } from "../store";
 import type { ChatStore, QueuedMessage } from "../types";
+import type { ExtendedChatStore } from "../store";
 import { ContextMeter } from "./ComposerContext";
 import { ComposerPickers } from "./ComposerPickers";
 import { ComposerTriggers } from "./composerTriggers";
@@ -122,7 +136,7 @@ function Chip({ chip }: { chip: AttachmentChip }): ReactElement {
       ) : chip.status === "rejected" ? (
         <CircleAlert
           aria-hidden="true"
-          className="size-3.5 shrink-0 text-danger"
+          className="size-3.5 shrink-0 text-dangertext"
         />
       ) : (
         <X aria-hidden="true" className="hidden size-3" />
@@ -146,7 +160,7 @@ function Chip({ chip }: { chip: AttachmentChip }): ReactElement {
           aria-label={`Retry ${chip.name}`}
           data-testid={`chip-retry-${chip.id}`}
           onClick={() => void retry(chip.id)}
-          className="flex h-5 w-5 shrink-0 items-center justify-center rounded-full text-muted transition-colors hover:bg-[color-mix(in_oklab,var(--fg)_8%,transparent)] hover:text-fg"
+          className="-m-0.5 flex h-6 w-6 shrink-0 items-center justify-center rounded-full text-muted transition-colors hover:bg-[color-mix(in_oklab,var(--fg)_8%,transparent)] hover:text-fg"
         >
           <RotateCw aria-hidden="true" className="size-3" />
         </button>
@@ -156,7 +170,7 @@ function Chip({ chip }: { chip: AttachmentChip }): ReactElement {
         aria-label={`Remove ${chip.name}`}
         data-testid={`chip-remove-${chip.id}`}
         onClick={drop}
-        className="flex h-5 w-5 shrink-0 items-center justify-center rounded-full text-muted transition-colors hover:bg-[color-mix(in_oklab,var(--fg)_8%,transparent)] hover:text-fg"
+        className="-m-0.5 flex h-6 w-6 shrink-0 items-center justify-center rounded-full text-muted transition-colors hover:bg-[color-mix(in_oklab,var(--fg)_8%,transparent)] hover:text-fg"
       >
         <X aria-hidden="true" className="size-3" />
       </button>
@@ -176,6 +190,15 @@ function ComposerSurface(): ReactElement {
   const modelOverride = useChatStore((s: ChatStore) => s.modelOverride);
   const activeAgentID = useChatStore((s: ChatStore) => s.activeAgentID);
   const activeSessionID = useChatStore((s: ChatStore) => s.activeSessionID);
+  // The group surface (add-agent-groups design D9): with a group open the
+  // composer targets the group — no agent session gates the send.
+  const activeGroupID = useChatStore((s: ExtendedChatStore) => s.activeGroupID);
+  const groupTasks = useChatStore((s: ExtendedChatStore) => s.groupTasks);
+
+  const refreshGroupTasks = useChatStore(
+    (s: ExtendedChatStore) => s.refreshGroupTasks
+  );
+
   const busy = useChatStore((s: ChatStore) => s.busy);
   const queue = useChatStore((s: ChatStore) => s.queue);
   const removeQueued = useChatStore((s: ChatStore) => s.removeQueued);
@@ -189,12 +212,12 @@ function ComposerSurface(): ReactElement {
 
   const clearChips = useAttachmentStore((s: AttachmentChipState) => s.clear);
 
-  // The tray is the draft of the open session's next message: switching
-  // sessions discards it (and the runtime draft behind it).
+  // The tray is the draft of the open conversation's next message: switching
+  // sessions (or groups) discards it (and the runtime draft behind it).
   useEffect((): void => {
     clearChips();
     void aui.composer.clearAttachments();
-  }, [activeSessionID, clearChips]);
+  }, [activeSessionID, activeGroupID, clearChips]);
 
   const uploading = chips.some(
     (chip: AttachmentChip): boolean => chip.status === "uploading"
@@ -292,9 +315,39 @@ function ComposerSurface(): ReactElement {
   }
 
   const canSend =
-    activeAgentID !== null &&
+    (activeAgentID !== null || activeGroupID !== null) &&
     !uploading &&
     (text.trim().length > 0 || readyKeys.length > 0);
+
+  // The group surface's stop control (align-group-task-lifecycle design D6,
+  // spec agent-groups "Composer stop ends the active run"): while the open
+  // group has a running task the send control becomes stop, ending that
+  // run's root chain. Store-order first running task — with several active
+  // roots only the first stops, acceptable at the 2-active budget (design
+  // risk note). Session work never sets this: member turns ride busyGroups.
+  const runningGroupTask =
+    activeGroupID === null
+      ? null
+      : (groupTasks.find(
+          (t: AgentGroupTask): boolean => t.State === GroupTaskState.Running
+        ) ?? null);
+
+  /** Stops the open group's active root run and refreshes the task list; a
+   * refusal (the chain's root drifted to a resting state) surfaces as a
+   * danger toast — the same wrapper the stopped notice's controls use. */
+  const stopGroupRun = (): void => {
+    if (runningGroupTask === null) return;
+
+    void client.groups
+      .stopTask(runningGroupTask.RootTaskID, "")
+      .then((): Promise<void> => refreshGroupTasks())
+      .catch((err: Error): void => {
+        toast(
+          err instanceof Error ? err.message : "The task could not be stopped",
+          "danger"
+        );
+      });
+  };
 
   const runningLabel = agentName ? `${agentName} is responding` : "Responding";
 
@@ -314,12 +367,19 @@ function ComposerSurface(): ReactElement {
     const trimmed = text.trim();
 
     // Send is blocked while any upload is in flight (spec chat-attachments);
-    // an attachment-only message (no typed text) is sendable.
-    if (uploading || !activeAgentID) return;
+    // an attachment-only message (no typed text) is sendable. A group
+    // conversation needs no agent session (add-agent-groups design D9).
+    if (uploading || (activeAgentID === null && activeGroupID === null)) return;
 
     if (!trimmed && readyKeys.length === 0) return;
 
-    if (trimmed === "/new" && readyKeys.length === 0) {
+    // The /new command mints a session — a group send has none to mint, so
+    // the literal text routes to the group like any other message.
+    if (
+      trimmed === "/new" &&
+      readyKeys.length === 0 &&
+      activeGroupID === null
+    ) {
       aui.composer.setText("");
       void newSession();
 
@@ -386,7 +446,7 @@ function ComposerSurface(): ReactElement {
       <Composer className="mx-auto max-w-3xl rounded-[24px] group-data-[dragging=true]:ring-1 group-data-[dragging=true]:ring-accent/50">
         <ComposerTriggers />
         <ComposerPrimitive.Root>
-          <ComposerBar className="gap-1.5">
+          <ComposerBar className="gap-1.5 focus-within:border-accent">
             {chips.length > 0 && (
               <ComposerAttachments
                 data-testid="attachment-tray"
@@ -399,7 +459,7 @@ function ComposerSurface(): ReactElement {
             )}
             {unsupported.length > 0 && (
               <p
-                className="pb-1.5 text-[11px] leading-4 text-warn"
+                className="pb-1.5 text-[11px] leading-4 text-warntext"
                 data-testid="attachment-capability-warning"
                 role="status"
               >
@@ -409,7 +469,7 @@ function ComposerSurface(): ReactElement {
             )}
             {connectorGaps.length > 0 && (
               <p
-                className="pb-1.5 text-[11px] leading-4 text-warn"
+                className="pb-1.5 text-[11px] leading-4 text-warntext"
                 data-testid="attachment-connector-warning"
                 role="status"
               >
@@ -456,7 +516,23 @@ function ComposerSurface(): ReactElement {
                 {/* Context ring on the bubble's rail, at its right end beside
                     send. */}
                 <ContextMeter />
-                {busy ? (
+                {/* The group surface's stop (design D6): the open group has
+                    a running task — no session turn exists to cancel, so the
+                    button stops the run's root chain directly. */}
+                {runningGroupTask !== null ? (
+                  <button
+                    type="button"
+                    aria-label="Stop"
+                    data-testid="btn-stop"
+                    className="flex size-8 shrink-0 items-center justify-center rounded-full bg-danger text-accenton transition-opacity hover:opacity-90"
+                    onClick={stopGroupRun}
+                  >
+                    <Square
+                      aria-hidden="true"
+                      className="size-3 fill-current"
+                    />
+                  </button>
+                ) : busy ? (
                   <ComposerPrimitive.Cancel asChild>
                     <button
                       type="button"

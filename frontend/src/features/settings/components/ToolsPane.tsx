@@ -9,17 +9,15 @@ import { Icon, type IconName } from "../../../components/ui/Icon";
 import { Toggle } from "../../../components/ui/Toggle";
 import { client } from "../../../lib/client";
 import { cn } from "../../../lib/cn";
-import BrowserConfigDialog from "./BrowserConfigDialog";
 import DocumentConfigDialog from "./DocumentConfigDialog";
 import WebSearchConfigDialog from "./WebSearchConfigDialog";
 
 /** The tools with structured configuration; each one's gear opens its
  * editor. onclaw-v2 keys this off the catalog's configurable flag —
  * buddies' catalog carries no config schema yet, so the configurable tools
- * are named here. */
+ * are named here. The browser tool left the catalog (it is the Browser Use
+ * system MCP server now, configured in its own settings pane). */
 const WEB_SEARCH_TOOL = "web_search";
-
-const BROWSER_TOOL = "browser";
 
 const DOCUMENT_TOOL = "create_document";
 
@@ -51,7 +49,6 @@ export default function ToolsPane(): ReactElement {
   const [loading, setLoading] = useState(true);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [configOpen, setConfigOpen] = useState(false);
-  const [browserConfigOpen, setBrowserConfigOpen] = useState(false);
   const [documentConfigOpen, setDocumentConfigOpen] = useState(false);
 
   /** Bumped by the rescan button to re-run the catalog fetch; mount is
@@ -126,7 +123,6 @@ export default function ToolsPane(): ReactElement {
       ) : (
         <div className="space-y-3" data-testid="tool-list">
           {tools.map((tool: ToolEntry) => {
-            const isBrowser = tool.Name === BROWSER_TOOL;
             const isDocument = tool.Name === DOCUMENT_TOOL;
 
             return (
@@ -152,25 +148,19 @@ export default function ToolsPane(): ReactElement {
                 </div>
 
                 <div className="flex items-center gap-2">
-                  {(tool.Name === WEB_SEARCH_TOOL ||
-                    isBrowser ||
-                    isDocument) && (
+                  {(tool.Name === WEB_SEARCH_TOOL || isDocument) && (
                     <button
                       type="button"
                       aria-label={
-                        isBrowser
-                          ? "Configure Browser"
-                          : isDocument
-                            ? "Configure Create Document"
-                            : "Configure Web Search"
+                        isDocument
+                          ? "Configure Create Document"
+                          : "Configure Web Search"
                       }
                       data-testid={`btn-tool-config-${tool.Name}`}
                       onClick={() =>
-                        isBrowser
-                          ? setBrowserConfigOpen(true)
-                          : isDocument
-                            ? setDocumentConfigOpen(true)
-                            : setConfigOpen(true)
+                        isDocument
+                          ? setDocumentConfigOpen(true)
+                          : setConfigOpen(true)
                       }
                       className="flex h-8 w-8 items-center justify-center rounded-md border border-line text-muted transition-colors hover:border-accent hover:text-fg"
                     >
@@ -192,9 +182,6 @@ export default function ToolsPane(): ReactElement {
 
       {configOpen && (
         <WebSearchConfigDialog onClose={() => setConfigOpen(false)} />
-      )}
-      {browserConfigOpen && (
-        <BrowserConfigDialog onClose={() => setBrowserConfigOpen(false)} />
       )}
       {documentConfigOpen && (
         <DocumentConfigDialog onClose={() => setDocumentConfigOpen(false)} />

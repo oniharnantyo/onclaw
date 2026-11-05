@@ -26,7 +26,11 @@ import type {
 import { ComposerTriggerPopover } from "@/components/assistant-ui/elements/composer-trigger-popover.aui";
 
 import type { Agent } from "../../../../bindings/github.com/oniharnantyo/buddies/internal/store/models";
-import { useChatStore } from "../store";
+import {
+  groupMentionItems,
+  isEveryoneMention,
+} from "../../groups/MentionPicker";
+import { useChatStore, type ExtendedChatStore } from "../store";
 import type { ChatStore, PickerSkill } from "../types";
 
 /** The three trigger characters the composer owns. */
@@ -207,15 +211,30 @@ function triggerAdapter(
 /** The slash catalogue is static, so its adapter is module-level. */
 const SLASH_ADAPTER: TriggerAdapter = triggerAdapter(slashItems);
 
-/** The three trigger menus, mounted once inside TriggerPopoverRoot. */
+/** The three trigger menus, mounted once inside TriggerPopoverRoot. In a
+ * GROUP conversation the `@` menu offers the group's members and `@everyone`
+ * instead of the agents list (add-agent-groups task 5.4): a member pick also
+ * records the explicit recipient the send binding carries (design D4). */
 export function ComposerTriggers(): ReactElement {
   const agents = useChatStore((s: ChatStore) => s.agents);
   const skills = useChatStore((s: ChatStore) => s.skills);
+  const activeGroupID = useChatStore((s: ExtendedChatStore) => s.activeGroupID);
+  const groupMembers = useChatStore((s: ExtendedChatStore) => s.groupMembers);
+
+  const setGroupRecipient = useChatStore(
+    (s: ExtendedChatStore) => s.setGroupRecipient
+  );
+
+  const groupMention = activeGroupID !== null;
 
   const mentionAdapter = useMemo(
     (): TriggerAdapter =>
-      triggerAdapter((query: string) => agentItems(agents, query)),
-    [agents]
+      triggerAdapter((query: string) =>
+        groupMention
+          ? groupMentionItems(groupMembers, agents, query)
+          : agentItems(agents, query)
+      ),
+    [groupMention, groupMembers, agents]
   );
 
   const skillAdapter = useMemo(
@@ -239,7 +258,19 @@ export function ComposerTriggers(): ReactElement {
         char="@"
         matcher={mentionMatcher}
         adapter={mentionAdapter}
-        directive={{ formatter: MENTION_FORMATTER }}
+        directive={
+          groupMention
+            ? {
+                formatter: MENTION_FORMATTER,
+                onInserted: (item: TriggerItem): void => {
+                  // An explicit member pick rides the send as the recipient
+                  // (design D4); @everyone is parsed host-side from the
+                  // text alone.
+                  setGroupRecipient(isEveryoneMention(item) ? null : item.id);
+                },
+              }
+            : { formatter: MENTION_FORMATTER }
+        }
         iconMap={TRIGGER_ICONS}
         fallbackIcon={UserRound}
         aria-label="Mentions"

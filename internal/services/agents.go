@@ -78,6 +78,16 @@ type CreateAgentInput struct {
 	SubagentsEnabled *bool
 }
 
+// GroupCleaner is the narrow seam behind the agents service's delete
+// cleanup (add-agent-groups spec data-store "Agent workspace lifecycle"):
+// deleting an agent removes its group memberships, falls the lead back where
+// it was the lead, and pauses its open group tasks with a visible reason.
+// *groups.Service satisfies it; declared narrowly so tests fake only what
+// Delete touches.
+type GroupCleaner interface {
+	CleanupAgent(ctx context.Context, agentID string) error
+}
+
 // AgentsService is the bound service for agent definitions: CRUD over the
 // store's agent table plus the prompt-document lifecycle — synchronous
 // generation at create (design D4), regeneration, the documents' read/save
@@ -100,6 +110,10 @@ type AgentsService struct {
 	// ListWorkspaceSkills still reads the agent's workspace tier — the same
 	// capability-off posture resolveSkills takes on an empty skillsDir.
 	skillsDir string
+	// groups removes the agent's group memberships before the row delete
+	// (add-agent-groups tasks 4.3); nil — a runtime built without the groups
+	// service — skips the cleanup.
+	groups GroupCleaner
 }
 
 // NewAgentsService returns the agent management service over s, generating
@@ -108,8 +122,17 @@ type AgentsService struct {
 // whose agent scopes Delete cleans up; nil skips that cleanup. skillsDir is
 // the global skills library directory; empty means the runtime has no
 // skills capability and the workspace-skill promote/delete bindings reject.
-func NewAgentsService(s store.Store, prompts PromptGenerator, ws *workspaces.Manager, k *knowledge.Store, skillsDir string) *AgentsService {
-	return &AgentsService{store: s, prompts: prompts, workspaces: ws, knowledge: k, skillsDir: skillsDir}
+// The optional groupCleanup wires the agent-deletion group cleanup
+// (add-agent-groups tasks 4.3); omitted, Delete skips it.
+func NewAgentsService(s store.Store, prompts PromptGenerator, ws *workspaces.Manager, k *knowledge.Store, skillsDir string, groupCleanup ...GroupCleaner) *AgentsService {
+	svc := &AgentsService{store: s, prompts: prompts, workspaces: ws, knowledge: k, skillsDir: skillsDir}
+	for _, c := range groupCleanup {
+		if c != nil {
+			svc.groups = c
+			break
+		}
+	}
+	return svc
 }
 
 // Create stores a new agent and generates its prompt documents synchronously
@@ -247,7 +270,14 @@ func (s *AgentsService) Update(ctx context.Context, agent store.Agent) (store.Ag
 	return agent, nil
 }
 
-// Delete removes the agent; store.ErrNotFound when absent. The agent's
+// Delete removes the agent; store.ErrNotFound when absent. Before the row
+// delete the agent's group memberships are cleaned up (add-agent-groups spec
+// data-store "Agent workspace lifecycle"): the agent leaves every group's
+// roster, a group it led falls the lead to the first remaining member, and
+// its open group tasks pause with a visible reason — while the groups, their
+// transcripts, and other members' work remain. The cleanup runs first (a
+// group's lead column references the agent row, so deleting first would
+// orphan the reference) and a cleanup failure aborts the delete. The agent's
 // session history is preserved (spec: deleting an agent keeps its sessions),
 // the workspace directory is removed best-effort after the row delete, and
 // the agent's knowledge scope follows it (the FK cascade removed its
@@ -257,6 +287,11 @@ func (s *AgentsService) Delete(ctx context.Context, id string) error {
 	stored, err := s.store.Agents().ByID(ctx, id)
 	if err != nil {
 		return fmt.Errorf("delete agent: %w", err)
+	}
+	if s.groups != nil {
+		if err := s.groups.CleanupAgent(ctx, id); err != nil {
+			return fmt.Errorf("delete agent: group cleanup: %w", err)
+		}
 	}
 	if err := s.store.Agents().Delete(ctx, id); err != nil {
 		return fmt.Errorf("delete agent: %w", err)

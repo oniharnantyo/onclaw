@@ -1,3 +1,4 @@
+import { act } from "react";
 import { beforeEach, describe, expect, it, vi } from "vite-plus/test";
 import userEvent from "@testing-library/user-event";
 import type { Client } from "../../../lib/client";
@@ -19,6 +20,18 @@ vi.mock("../../../lib/client", () => ({
       mcpServers: vi.fn(async () => []),
       webSearchProviders: vi.fn(async () => []),
       webSearchConfig: vi.fn(async () => ({ entries: [] })),
+      // The Browser Use pane reads on selection (rebrand-browser-use-system-mcp
+      // 5.1): config round trip + profile list + system row status.
+      browserConfig: vi.fn(async () => ({
+        defaultProfile: "default",
+        headless: true,
+        idleTimeoutSeconds: 120,
+        actionTimeoutSeconds: 30,
+        allowPrivate: false,
+      })),
+      browserProfiles: vi.fn(async () => [
+        { name: "default", modified_at: "", size_bytes: 0 },
+      ]),
     },
     channels: {
       channel: vi.fn(async () => ({
@@ -73,6 +86,7 @@ const navItemIds = [
   "settings-nav-item-providers",
   "settings-nav-item-integrations",
   "settings-nav-item-channels",
+  "settings-nav-item-browseruse",
   "settings-nav-item-skills",
   "settings-nav-item-tools",
   "settings-nav-item-hooks",
@@ -83,7 +97,10 @@ describe("SettingsView", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     // The pane label persists in the store across renders; reset per test.
-    useNavStore.setState({ settingsPaneLabel: "Providers" });
+    useNavStore.setState({
+      settingsPaneLabel: "Providers",
+      settingsPaneRequest: null,
+    });
   });
 
   it("opens on Providers: page title, grouped sidebar, and only that pane mounted", async () => {
@@ -118,7 +135,8 @@ describe("SettingsView", () => {
     }
 
     // The INTEGRATIONS section carries its panes in nav order: Integrations,
-    // Channels (add-telegram-channel task 9.1).
+    // Channels (add-telegram-channel task 9.1), Browser Use
+    // (rebrand-browser-use-system-mcp 5.1).
     const integrationItems = Array.from(
       getByTestId("settings-nav-section-integrations").querySelectorAll(
         "[data-testid^='settings-nav-item-']"
@@ -128,6 +146,7 @@ describe("SettingsView", () => {
     expect(integrationItems).toEqual([
       "settings-nav-item-integrations",
       "settings-nav-item-channels",
+      "settings-nav-item-browseruse",
     ]);
 
     // The AUTOMATION section carries its panes in nav order: Skills, Tools,
@@ -172,6 +191,52 @@ describe("SettingsView", () => {
     expect(mockedClient.settings.skills).toHaveBeenCalled();
   });
 
+  it("moves the sidebar selection with the arrow keys and labels the pane by the active tab", async () => {
+    const user = userEvent.setup();
+
+    // The settings render helper leaves prior containers mounted; the tab
+    // hook reaches tabs by document id, so drop them first to keep the
+    // document-id lookup scoped to this render.
+    document.body.innerHTML = "";
+
+    const { container, getByTestId, getByRole } = await renderUI(
+      <SettingsView />
+    );
+
+    const providers = getByTestId("settings-nav-item-providers");
+
+    // Roving tabindex: only the active tab is in the tab order.
+    expect(providers.getAttribute("tabindex")).toBe("0");
+    expect(
+      getByTestId("settings-nav-item-integrations").getAttribute("tabindex")
+    ).toBe("-1");
+
+    providers.focus();
+    await user.keyboard("{ArrowRight}");
+
+    const integrations = getByTestId("settings-nav-item-integrations");
+
+    expect(integrations.getAttribute("aria-selected")).toBe("true");
+    expect(integrations.getAttribute("tabindex")).toBe("0");
+    expect(providers.getAttribute("aria-selected")).toBe("false");
+    expect(providers.getAttribute("tabindex")).toBe("-1");
+    // Focus rides the selection.
+    expect(document.activeElement).toBe(integrations);
+
+    // The active pane body is the panel labelled by the selected tab.
+    const panel = container.querySelector(
+      `[role="tabpanel"][aria-labelledby="${integrations.id}"]`
+    );
+
+    expect(panel).toBeTruthy();
+
+    // The tabs live inside the tablist container.
+    const tablist = getByRole("tablist");
+
+    expect(tablist.getAttribute("aria-label")).toBe("Settings sections");
+    expect(tablist.contains(integrations)).toBe(true);
+  });
+
   it("selects the Integrations pane from the INTEGRATIONS section", async () => {
     const user = userEvent.setup();
 
@@ -200,6 +265,40 @@ describe("SettingsView", () => {
     ).toBe("true");
     expect(await findByTestId("channels-pane")).toBeTruthy();
     expect(getByTestId("settings-pane-title").textContent).toBe("Channels");
+  });
+
+  it("selects the Browser Use pane from the INTEGRATIONS section", async () => {
+    const user = userEvent.setup();
+
+    const { getByTestId, findByTestId } = await renderUI(<SettingsView />);
+
+    await user.click(getByTestId("settings-nav-item-browseruse"));
+
+    expect(
+      getByTestId("settings-nav-item-browseruse").getAttribute("aria-selected")
+    ).toBe("true");
+    expect(await findByTestId("browseruse-pane")).toBeTruthy();
+    expect(getByTestId("settings-pane-title").textContent).toBe("Browser Use");
+    expect(mockedClient.settings.browserConfig).toHaveBeenCalled();
+  });
+
+  it("opens the pane a cross-menu openSettingsPane request named", async () => {
+    // Prior renders stay mounted (see the keyboard test); drop them so the
+    // testid lookups hit this render.
+    document.body.innerHTML = "";
+
+    const { getByTestId, findByTestId } = await renderUI(<SettingsView />);
+
+    // The MCP pane's "open settings" on the Browser Use row rides the nav
+    // store (design D11): the request names one pane, the view consumes it.
+    await act(async () => {
+      useNavStore.getState().openSettingsPane("browseruse");
+    });
+
+    expect(
+      getByTestId("settings-nav-item-browseruse").getAttribute("aria-selected")
+    ).toBe("true");
+    expect(await findByTestId("browseruse-pane")).toBeTruthy();
   });
 
   it("filters the pane list by label from the search input and restores it on clear", async () => {

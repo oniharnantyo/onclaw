@@ -33,15 +33,19 @@ const (
 // (fix-pdf-attachment-carriage design D2), its artifacts/ deliverables
 // (add-turn-artifacts design D1) — not dot-prefixed because the user is
 // meant to find them — and the reduction middleware's trunc/ and clear/
-// offloads. The flat artifacts/ and uploads/ names remain the pre-session
-// layout's legacy locations; existing files are read where they were
-// recorded, new turns write only under their session.
+// offloads. browser/ is the session's browser-screenshot captures (the
+// browser tool writes there through the host's per-call _meta, inside the
+// workspace jail, so the model can read its own capture back). The flat
+// artifacts/ and uploads/ names remain the pre-session layout's legacy
+// locations; existing files are read where they were recorded, new turns
+// write only under their session.
 const (
 	DirSkills    = "skills"
 	DirTasks     = ".tasks"
 	DirArtifacts = "artifacts"
 	DirUploads   = "uploads"
 	DirSessions  = "sessions"
+	DirBrowser   = "browser"
 )
 
 // maxSlugLen is the slug length cap (DNS label limit). The slug doubles as

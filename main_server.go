@@ -29,13 +29,26 @@ import (
 //go:embed all:frontend/dist
 var assets embed.FS
 
-// init registers the typed custom event the services emit so the binding
-// generator produces its frontend definition (the per-session event names
-// are dynamic and intentionally unregistered).
+// init registers the typed custom events the services emit so the binding
+// generator produces their frontend definitions. The set mirrors main.go's
+// desktop registration exactly: the server build generates the bindings the
+// shared frontend compiles against (build:frontend runs under this tag
+// set), so a missing registration here drops its payload type and breaks
+// the frontend build. The per-session event names (SessionEventName) are
+// dynamic and intentionally unregistered; the per-group event name
+// (GroupEventName) is dynamic the same way, and its payload registers under
+// the documented "<id>" placeholder so the generator emits the GroupEvent
+// type for the frontend.
 func init() {
 	application.RegisterEvent[services.GatewayStateEvent](services.EventGatewayState)
+	application.RegisterEvent[services.MCPOAuthCompletedEvent](services.EventMCPOAuthCompleted)
+	application.RegisterEvent[services.SchedulesChangedEvent](services.EventSchedulesChanged)
+	application.RegisterEvent[services.KnowledgeChangedEvent](services.EventKnowledgeChanged)
+	application.RegisterEvent[services.TurnsChangedEvent](services.EventTurnsChanged)
 	application.RegisterEvent[services.ChannelChangedEvent](services.EventChannelChanged)
 	application.RegisterEvent[services.ChannelStateEvent](services.EventChannelState)
+	application.RegisterEvent[services.GroupsChangedEvent](services.EventGroupsChanged)
+	application.RegisterEvent[services.GroupEvent]("group:<id>:event")
 }
 
 func main() {
@@ -45,7 +58,11 @@ func main() {
 	// `buddies serve` run the same host; options come from env and the
 	// post-"--" flags.
 	runner := func(ctx context.Context, app *cli.App) error {
-		return cli.RunServerHost(ctx, app, emitter, application.AssetFileServerFS(assets), cli.ParseServerOptions())
+		return cli.RunServerHost(ctx, app, emitter, application.AssetFileServerFS(assets), cli.ParseServerOptions(),
+			// The shared frontend imports the window-theme binding, so the
+			// server-tag binding generation must discover the type; bound
+			// here it is inert (no native window handle is ever set).
+			application.NewService(NewWindowThemeService()))
 	}
 	cli.SetServeHost(runner)
 

@@ -14,7 +14,7 @@ import {
   type Event as SessionEvent,
 } from "../../../../../bindings/github.com/oniharnantyo/buddies/internal/sessions/models";
 import { applyEvent, asEntry, asRichUser, type Entry } from "../../entries";
-import { entriesToRepository, type ActiveVariants } from "../branches";
+import { buildRepository, type ActiveVariants } from "../branches";
 
 function ev(
   kind: SessionEvent["kind"],
@@ -67,7 +67,7 @@ function parentsOf(repository: {
 
 describe("variant branch tree (task 2.2, design D3)", () => {
   it("chains a transcript without variants linearly, head at the newest", () => {
-    const repository = entriesToRepository(
+    const repository = buildRepository(
       fold(...turn("t1", "one"), ...turn("t2", "two"))
     );
 
@@ -87,7 +87,7 @@ describe("variant branch tree (task 2.2, design D3)", () => {
     // A background subagent finishing after a NEWER turn re-uses the old
     // turn id; a second message for that turn would carry a duplicate id
     // and the repository import rejects it — the boot-blanking app-killer.
-    const repository = entriesToRepository(
+    const repository = buildRepository(
       fold(
         ...turn("t1", "one"),
         ...turn("t2", "two"),
@@ -114,7 +114,7 @@ describe("variant branch tree (task 2.2, design D3)", () => {
   });
 
   it("makes a regenerated turn a sibling of the original under the anchor", () => {
-    const repository = entriesToRepository(
+    const repository = buildRepository(
       fold(...turn("t1", "original"), ...regen("t1", "t2", "second"))
     );
 
@@ -130,7 +130,7 @@ describe("variant branch tree (task 2.2, design D3)", () => {
   });
 
   it("heads the newest of three variants by default", () => {
-    const repository = entriesToRepository(
+    const repository = buildRepository(
       fold(
         ...turn("t1", "one"),
         ...regen("t1", "t2", "two"),
@@ -163,11 +163,11 @@ describe("variant branch tree (task 2.2, design D3)", () => {
       return asEntry({ ...asRichUser(entry), activeVariant: 0 });
     });
 
-    expect(entriesToRepository(switched).headId).toBe("t1");
+    expect(buildRepository(switched).headId).toBe("t1");
 
     // An explicit override resolves the same way for callers that hold it.
     const override: ActiveVariants = new Map([["t1", 1]]);
 
-    expect(entriesToRepository(entries, override).headId).toBe("t2");
+    expect(buildRepository(entries, override).headId).toBe("t2");
   });
 });

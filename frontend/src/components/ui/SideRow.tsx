@@ -22,6 +22,7 @@ export function SideRow({
   testId,
   title,
   ariaCurrent,
+  ariaControls,
 }: {
   active?: boolean;
   /** Accordion headers pass the open state; plain rows omit it. */
@@ -37,6 +38,9 @@ export function SideRow({
   title?: string;
   /** Emits `aria-current="page"` even on a non-`active` row. */
   ariaCurrent?: boolean;
+  /** Accordion headers point at their content region's id (design D9's
+   * aria-controls grammar); omitted on plain rows. */
+  ariaControls?: string;
 }): ReactElement {
   return (
     <button
@@ -47,6 +51,7 @@ export function SideRow({
       title={title || label}
       aria-current={ariaCurrent ? "page" : active || undefined}
       aria-expanded={expanded}
+      aria-controls={ariaControls}
       className={cn(
         "flex h-[30px] w-full items-center gap-2 rounded-md px-2.5 text-left transition-colors",
         active

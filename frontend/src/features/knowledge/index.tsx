@@ -238,7 +238,7 @@ export default function KnowledgeView(): ReactElement {
 
       {error && (
         <p
-          className="text-sm text-danger"
+          className="text-sm text-dangertext"
           role="alert"
           data-testid="knowledge-error"
         >

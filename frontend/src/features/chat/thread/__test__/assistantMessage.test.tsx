@@ -147,6 +147,17 @@ describe("GFM rendering (task 3.2)", () => {
   it("renders a pipe table as a table with header and body rows", async () => {
     await mount(settledTurn("| a | b |\n| --- | --- |\n| 1 | 2 |\n| 3 | 4 |"));
 
+    // The completed path loads the markdown element lazily (design D6); the
+    // table lands when its chunk does.
+    await waitFor(
+      () => {
+        expect(
+          document.querySelector("[data-testid='entry-assistant'] table")
+        ).not.toBeNull();
+      },
+      { timeout: 10_000 }
+    );
+
     const table = document.querySelector(
       "[data-testid='entry-assistant'] table"
     );
@@ -207,8 +218,16 @@ describe("mermaid (task 3.2, design D5)", () => {
 
     await mount(settledTurn(`look:\n\n\`\`\`mermaid\n${SOURCE}\n\`\`\``));
 
+    // The renderer chunk loads on mount (design D6): the fence paints first,
+    // the diagram swaps in when the module lands.
+    await waitFor(
+      () => {
+        expect(document.querySelector("[data-test-mermaid]")).not.toBeNull();
+      },
+      { timeout: 10_000 }
+    );
+
     expect(renderMermaidSVG).toHaveBeenCalled();
-    expect(document.querySelector("[data-test-mermaid]")).not.toBeNull();
   });
 
   it("falls back to the source with a quiet note when the diagram fails to parse", async () => {
@@ -217,6 +236,15 @@ describe("mermaid (task 3.2, design D5)", () => {
     });
 
     await mount(settledTurn(`look:\n\n\`\`\`mermaid\n${SOURCE}\n\`\`\``));
+
+    await waitFor(
+      () => {
+        expect(
+          document.querySelector("[data-slot='mermaid-fallback']")
+        ).not.toBeNull();
+      },
+      { timeout: 10_000 }
+    );
 
     const fallback = document.querySelector("[data-slot='mermaid-fallback']");
 
@@ -232,7 +260,12 @@ describe("mermaid (task 3.2, design D5)", () => {
       settledTurn(`look:\n\n\`\`\`mermaid\n${SOURCE}\n\`\`\``)
     );
 
-    expect(document.querySelector("[data-test-mermaid]")).not.toBeNull();
+    await waitFor(
+      () => {
+        expect(document.querySelector("[data-test-mermaid]")).not.toBeNull();
+      },
+      { timeout: 10_000 }
+    );
 
     document.documentElement.dataset.theme = "dark";
     await mounted.setEntries(

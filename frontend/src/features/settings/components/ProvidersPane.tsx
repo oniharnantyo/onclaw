@@ -525,7 +525,7 @@ export default function ProvidersPane(_props?: {
         key={p.ID}
         role="button"
         tabIndex={0}
-        aria-selected={isSelected}
+        aria-pressed={isSelected}
         data-testid={`provider-${p.ID}`}
         onClick={() => selectProvider(p.ID)}
         onKeyDown={(e: ReactKeyboardEvent<HTMLDivElement>) => {

@@ -5,7 +5,10 @@
  * text survives the cancel, a send while busy joins the ordered queue and
  * dispatches by itself when the turn ends, the placeholder names the agent
  * with the trigger tokens in their own hint row, and the composer never
- * sends without an agent.
+ * sends without an agent. On the group surface the stop control branches
+ * (align-group-task-lifecycle design D6, spec agent-groups "Composer stop
+ * ends the active run"): while the open group has a running task stop ends
+ * that run's root chain — no session turn exists to cancel.
  */
 import { act } from "react";
 import { fireEvent, screen, waitFor } from "@testing-library/dom";
@@ -15,7 +18,13 @@ import { beforeEach, describe, expect, it, vi } from "vite-plus/test";
 // The client mock factory is imported FIRST on purpose: the hoisted
 // `vi.mock` below runs the moment the chat store pulls the client module in,
 // so the factory's module must already be evaluated by then.
-import { live, makeClient, type MockedClient } from "./clientMock";
+import {
+  groupTask,
+  groupTaskRows,
+  live,
+  makeClient,
+  type MockedClient,
+} from "./clientMock";
 import {
   Kind,
   type Event as SessionEvent,
@@ -43,7 +52,10 @@ beforeEach(() => {
   vi.clearAllMocks();
   live.handler = null;
   live.turnSeq = 0;
-  seedStore();
+  groupTaskRows.length = 0;
+  // The group surface is not the suite's default: reset it so the group
+  // tests below cannot leak into the session-surface ones.
+  seedStore({ activeGroupID: null, groupTasks: [] });
 });
 
 describe("the composer (task 5.1)", () => {
@@ -292,5 +304,62 @@ describe("the composer (task 5.1)", () => {
 
     expect(mockedClient.chat.send).not.toHaveBeenCalled();
     expect(mockedClient.chat.createSession).not.toHaveBeenCalled();
+  });
+});
+
+describe("the composer's group stop control (align-group-task-lifecycle D6)", () => {
+  it("with a group open and a running task, stop ends that run's root chain", async () => {
+    // A delegated child is the running task: stop must target the chain's
+    // ROOT (RootTaskID), not the child itself (design D6). The mocked tasks
+    // listing serves the same row so the post-stop refresh re-applies it.
+    const running = groupTask({
+      TaskID: "t-child",
+      RootTaskID: "t-root",
+      State: "running",
+    });
+
+    groupTaskRows.push(running);
+    useChatStore.setState({
+      activeAgentID: null,
+      sessions: [],
+      activeSessionID: null,
+      activeGroupID: "g1",
+      groupTasks: [running],
+    });
+
+    const user = userEvent.setup();
+    await renderComposer();
+
+    // The running run owns the control: no send while it runs.
+    expect(screen.queryByTestId("btn-send")).toBeNull();
+
+    await user.click(screen.getByTestId("btn-stop"));
+
+    // The group's stop is the groups binding on the root — never the
+    // session runtime's cancel (no session turn exists on this surface).
+    await waitFor(() =>
+      expect(mockedClient.groups.stopTask).toHaveBeenCalledWith("t-root", "")
+    );
+    expect(mockedClient.chat.cancel).not.toHaveBeenCalled();
+
+    // The stop refreshes the open group's task rows through the store.
+    await waitFor(() =>
+      expect(mockedClient.groups.tasks).toHaveBeenCalledWith("g1")
+    );
+  });
+
+  it("with a group open and no running task, send shows and stop does not", async () => {
+    useChatStore.setState({
+      activeAgentID: null,
+      sessions: [],
+      activeSessionID: null,
+      activeGroupID: "g1",
+      groupTasks: [groupTask({ TaskID: "t1", State: "queued" })],
+    });
+
+    await renderComposer();
+
+    expect(screen.getByTestId("btn-send")).toBeTruthy();
+    expect(screen.queryByTestId("btn-stop")).toBeNull();
   });
 });

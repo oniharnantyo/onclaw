@@ -942,7 +942,9 @@ describe("session subscription teardown and preservation (task 3.2)", () => {
     // Verify client.chat.unsubscribe was never called during session switching
     expect(mockedClient.chat.unsubscribe).not.toHaveBeenCalled();
 
-    // Emitting on s1 feeds the active transcript
+    // Emitting on s1 feeds the active transcript. The delta rides the
+    // frame coalescer (task 5.1), so the assertion waits for the frame's
+    // single commit instead of reading synchronously after the emit.
     await emit(
       ev(Kind.KindTextDelta, {
         turn_id: "t-live",
@@ -950,13 +952,15 @@ describe("session subscription teardown and preservation (task 3.2)", () => {
       })
     );
 
-    const entries = useChatStore.getState().entries;
+    await waitFor(() => {
+      const entries = useChatStore.getState().entries;
 
-    expect(entries).toHaveLength(1);
-    expect(entries[0]).toMatchObject({
-      kind: "assistant",
-      turnID: "t-live",
-      text: "live delta on s1",
+      expect(entries).toHaveLength(1);
+      expect(entries[0]).toMatchObject({
+        kind: "assistant",
+        turnID: "t-live",
+        text: "live delta on s1",
+      });
     });
   });
 
@@ -1410,5 +1414,96 @@ describe("panel tabs — pinned identity tab (add-pinned-identity-tab)", () => {
 
     expect(useChatStore.getState().activePanelTabID).toBe(ids[0]);
     expect(tabIDs()).toEqual([ids[0]]);
+  });
+});
+
+describe("input expiry (add-browser-login-handover, 'Expired pending request')", () => {
+  function inputRequiredEvent(): SessionEvent {
+    return {
+      kind: Kind.KindInputRequired,
+      occurred_at: "2026-01-01T00:00:01Z",
+      turn_id: "t1",
+      id: "ev-input",
+      input: { interrupt_id: "int-1", prompt: "Enter the password" },
+    };
+  }
+
+  it("a transcript ending in a bare input_required with the session NOT busy folds expired", async () => {
+    mockedClient.chat.transcriptPage.mockResolvedValueOnce([
+      {
+        kind: Kind.KindUserMessage,
+        occurred_at: "2026-01-01T00:00:00Z",
+        turn_id: "t1",
+        id: "ev-user",
+        text: "sign in",
+      } as SessionEvent,
+      inputRequiredEvent(),
+    ]);
+
+    await useChatStore.getState().selectSession("s1");
+
+    const input = useChatStore
+      .getState()
+      .entries.find((en: Entry): boolean => (en.kind as string) === "input");
+
+    expect(input).toMatchObject({ resolved: true, outcome: "expired" });
+  });
+
+  it("the same transcript while the session IS busy (live-parked) stays pending", async () => {
+    mockedClient.chat.turnState.mockResolvedValueOnce({
+      busy: true,
+      turn_id: "t1",
+    });
+    mockedClient.chat.transcriptPage.mockResolvedValueOnce([
+      {
+        kind: Kind.KindUserMessage,
+        occurred_at: "2026-01-01T00:00:00Z",
+        turn_id: "t1",
+        id: "ev-user",
+        text: "sign in",
+      } as SessionEvent,
+      inputRequiredEvent(),
+    ]);
+
+    await useChatStore.getState().selectSession("s1");
+
+    const input = useChatStore
+      .getState()
+      .entries.find((en: Entry): boolean => (en.kind as string) === "input");
+
+    expect(input).toMatchObject({ resolved: false });
+  });
+
+  it("a busy→false transition with a pending input and no receipt flips it expired", async () => {
+    await useChatStore.getState().selectSession("s1");
+
+    // A live parked request: the card folds pending, the turn is active.
+    act((): void => {
+      emit(inputRequiredEvent());
+      useChatStore.setState({ busy: true, activeTurnID: "t1" });
+    });
+
+    expect(
+      useChatStore
+        .getState()
+        .entries.find((en: Entry): boolean => (en.kind as string) === "input")
+    ).toMatchObject({ resolved: false });
+
+    // The turn ends without any input_resolved receipt — the sweep expires.
+    act((): void => {
+      emit({
+        kind: Kind.KindTurnCompleted,
+        occurred_at: "2026-01-01T00:00:02Z",
+        turn_id: "t1",
+        id: "ev-done",
+      });
+    });
+
+    const input = useChatStore
+      .getState()
+      .entries.find((en: Entry): boolean => (en.kind as string) === "input");
+
+    expect(input).toMatchObject({ resolved: true, outcome: "expired" });
+    expect(useChatStore.getState().busy).toBe(false);
   });
 });

@@ -90,7 +90,9 @@ import { toWorkspaceRel } from "../toolPaths";
 import { workspaceFileTab } from "../components/panelRenderers";
 import { ArtifactsView } from "../components/ArtifactsView";
 import { PLAIN_DOC_NAME, exportGeneratedDocument } from "../exportDocument";
-import { ChatToolGroup, toolRenderers } from "../tools/aui";
+import { ChatToolGroup, resolveToolRenderer } from "../tools/aui";
+import { authorOfMessage } from "../../groups/groupEntries";
+import { GroupAttribution } from "../../groups/GroupAttribution";
 import { AgentAvatar } from "../../../components";
 import { DayGate, MessageTime, useDayBoundary } from "./DayDivider";
 
@@ -599,10 +601,31 @@ function TurnRule(): ReactElement | null {
  * reactions; a second instance would make two faces fight over them) — so
  * the stub renders the shared AgentAvatar with no live props under every
  * motion setting. Subagent work stays attributed to the session agent: a
- * subagent's identity lives inside its task tool card, never here. */
+ * subagent's identity lives inside its task tool card, never here.
+ *
+ * In a GROUP conversation the same stub attributes to the entry's own
+ * author instead (add-agent-groups design D7): the per-entry author branch
+ * activates only while a group is open — ordinary sessions keep the
+ * session-agent path above untouched. */
 function TurnAttribution(): ReactElement | null {
   const agents = useChatStore((s: ExtendedChatStore) => s.agents);
   const activeAgentID = useChatStore((s: ExtendedChatStore) => s.activeAgentID);
+  const activeGroupID = useChatStore((s: ExtendedChatStore) => s.activeGroupID);
+  const messageID = useAuiState((s: AssistantState) => s.message.id);
+
+  const author = useChatStore((s: ExtendedChatStore) =>
+    s.activeGroupID === null
+      ? null
+      : authorOfMessage(s.entries, messageID ?? "")
+  );
+
+  if (activeGroupID !== null) {
+    // No task state rides the attribution: task state never renders beneath
+    // transcript messages (align-group-task-lifecycle design D6, agent-groups
+    // spec "State stays off messages") — live work shows on the activity
+    // line, stopped roots on the tail notice.
+    return <GroupAttribution author={author} />;
+  }
 
   const agent = agents.find((a: Agent) => a.ID === activeAgentID) ?? null;
 
@@ -706,8 +729,7 @@ export function ChatAssistantMessage(): ReactElement {
                   </div>
                 );
               case "tool-call": {
-                const Renderer =
-                  toolRenderers[part.toolName] ?? toolRenderers.fallback;
+                const Renderer = resolveToolRenderer(part.toolName);
 
                 // A call that renders outside the group (an MCP app, a
                 // standalone tool UI) carries its own breathing room; inside

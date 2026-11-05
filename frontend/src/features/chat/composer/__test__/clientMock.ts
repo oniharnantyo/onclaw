@@ -10,6 +10,7 @@ import { vi } from "vite-plus/test";
 import type { Event as SessionEvent } from "../../../../../bindings/github.com/oniharnantyo/buddies/internal/sessions/models";
 import type {
   Agent,
+  AgentGroupTask,
   Session,
   Skill,
 } from "../../../../../bindings/github.com/oniharnantyo/buddies/internal/store/models";
@@ -46,6 +47,12 @@ export type MockedClient = Client & {
     skills: MockFn;
     providerModels: MockFn;
     tools: MockFn;
+  };
+  /** The group surface's bindings (align-group-task-lifecycle): the stop
+   * control calls stopTask and the post-stop refresh re-reads tasks. */
+  groups: {
+    tasks: MockFn;
+    stopTask: MockFn;
   };
 };
 
@@ -156,6 +163,32 @@ export const live: LiveEvents = {
   turnSeq: 0,
 };
 
+/** One group task row the group-surface suites seed the store (and the
+ * mocked tasks listing) with; the spread applies only the driven fields. */
+export function groupTask(overrides: Partial<AgentGroupTask>): AgentGroupTask {
+  // SAFETY: the literal covers every required AgentGroupTask field.
+  return {
+    TaskID: "t1",
+    GroupID: "g1",
+    ParentTaskID: null,
+    RootTaskID: "t1",
+    OwnerAgentID: "a1",
+    RequestMessageID: "",
+    Instruction: "",
+    ExpectedResult: "",
+    State: "running",
+    StopReason: null,
+    Revision: 1,
+    AssignmentCount: 1,
+    Error: null,
+    ...overrides,
+  } as AgentGroupTask;
+}
+
+/** The task rows the mocked groups.tasks serves to the post-stop refresh;
+ * the group suites mutate this between tests. */
+export const groupTaskRows: AgentGroupTask[] = [];
+
 /** The mocked client: every member the composer (or its rail) can reach. */
 export function makeClient(): MockedClient {
   const c = {
@@ -226,6 +259,12 @@ export function makeClient(): MockedClient {
         async (): Promise<ModelCapability[]> => capabilities
       ),
       tools: vi.fn(async (): Promise<never[]> => []),
+    },
+    // The group surface's bindings (align-group-task-lifecycle): the stop
+    // control calls stopTask; the post-stop refresh re-reads the listing.
+    groups: {
+      tasks: vi.fn(async (): Promise<AgentGroupTask[]> => [...groupTaskRows]),
+      stopTask: vi.fn(async (): Promise<void> => undefined),
     },
   };
 

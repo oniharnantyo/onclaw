@@ -49,9 +49,9 @@ export function AgentCard({
         <AgentAvatar id={agent.ID} avatar={agent.Avatar} size={44} />
         <div className="min-w-0 flex-1">
           <div className="flex min-w-0 items-center gap-1.5">
-            <h3 className="truncate text-[15px] font-semibold text-fg">
+            <h2 className="truncate text-[15px] font-semibold text-fg">
               {agent.Name}
-            </h3>
+            </h2>
             <StatusDot status={presence} live className="shrink-0" />
           </div>
           <p
@@ -78,7 +78,7 @@ export function AgentCard({
 
       {failed && (
         <div
-          className="mt-3 flex items-center justify-between gap-2 rounded-md border border-danger/30 bg-danger/10 p-2.5 text-xs text-danger"
+          className="mt-3 flex items-center justify-between gap-2 rounded-md border border-danger/30 bg-danger/10 p-2.5 text-xs text-dangertext"
           data-testid={`agent-card-failed-${agent.ID}`}
         >
           <div className="min-w-0 flex-1">
@@ -95,7 +95,7 @@ export function AgentCard({
           </div>
           <button
             type="button"
-            className="shrink-0 rounded-md border border-danger/40 bg-surface px-2 py-1 text-[11px] font-semibold text-danger transition-colors hover:bg-danger hover:text-accenton disabled:opacity-50"
+            className="shrink-0 rounded-md border border-danger/40 bg-surface px-2 py-1 text-[11px] font-semibold text-dangertext transition-colors hover:bg-danger hover:text-accenton disabled:opacity-50"
             data-testid={`agent-retry-${agent.ID}`}
             aria-label={`Retry prompt generation for ${agent.Name}`}
             onClick={() => onRetry(agent.ID)}

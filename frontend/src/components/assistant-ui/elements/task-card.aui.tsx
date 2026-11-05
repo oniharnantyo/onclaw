@@ -12,8 +12,7 @@ import {
   type ToolCallMessagePartProps,
   type ToolCallMessagePartStatus,
 } from "@assistant-ui/react";
-import { type FC, useState } from "react";
-import { MarkdownText } from "@/components/assistant-ui/elements/markdown-text";
+import { type FC, lazy, Suspense, useState } from "react";
 import {
   formatUnknownValue,
   offersInterruptAction,
@@ -32,6 +31,22 @@ import {
   taskStateOf,
   useTaskElapsed,
 } from "../utils/task";
+
+// Dynamic so the heavy markdown element stays out of this element's static
+// import graph (fix-ui-audit-findings design D6b).
+const MarkdownText = lazy(async () => {
+  const mod = await import("@/components/assistant-ui/elements/markdown-text");
+
+  return { default: mod.MarkdownText };
+});
+
+/** The transcript sentence slot: the lazy element behind its own Suspense,
+ * so the card's tool shells render before the markdown chunk lands. */
+const TaskMarkdownText: FC = () => (
+  <Suspense fallback={null}>
+    <MarkdownText />
+  </Suspense>
+);
 
 export type { TaskCardState } from "./task-card";
 export { TASK_PAGE_SIZE } from "../utils/task";
@@ -71,7 +86,10 @@ const NestedMessage: FC = () => {
         {ROLE_LABELS[role]}
       </span>
       <MessagePrimitive.Parts
-        components={{ Text: MarkdownText, tools: { Fallback: NestedToolCall } }}
+        components={{
+          Text: TaskMarkdownText,
+          tools: { Fallback: NestedToolCall },
+        }}
       />
     </MessagePrimitive.Root>
   );

@@ -173,24 +173,55 @@ function estimateConversation(entries: Entry[]): number {
 }
 
 /**
- * Computes the breakdown (design D7): the four client segments at face
- * value over post-compaction entries, plus the Server context remainder
- * floored at zero. Segment values are returned unscaled — the caller
- * displays `used` as the total, never the estimate sum.
+ * The transcript-derived segment estimates (task 5.4, design D5): the two
+ * client segments that read the entries — files and conversation. Split out
+ * so a subscriber can select the pair as scalars and re-render only when a
+ * number actually changes, instead of re-deriving on every streaming delta.
  */
-export function computeContextBreakdown(
-  input: BreakdownInput
-): ContextBreakdown {
-  const recent = postCompactionEntries(input.entries);
+export interface TranscriptEstimates {
+  files: number;
+  conversation: number;
+}
 
+/** Estimates the transcript's two client segments over post-compaction
+ * entries. */
+export function estimateTranscript(entries: Entry[]): TranscriptEstimates {
+  const recent = postCompactionEntries(entries);
+
+  return {
+    files: estimateFiles(recent),
+    conversation: estimateConversation(recent),
+  };
+}
+
+/** The breakdown inputs with the transcript estimates already computed
+ * (task 5.4): the popover selects the scalars and hands them here. */
+export interface BreakdownEstimatesInput {
+  used: number;
+  limit: number;
+  promptDocs: PromptDocContent | null;
+  enabledTools: number;
+  enabledSkills: number;
+  transcript: TranscriptEstimates;
+}
+
+/**
+ * Computes the breakdown from precomputed transcript estimates: the four
+ * client segments at face value, plus the Server context remainder floored
+ * at zero. Segment values are returned unscaled — the caller displays
+ * `used` as the total, never the estimate sum.
+ */
+export function computeContextBreakdownFromEstimates(
+  input: BreakdownEstimatesInput
+): ContextBreakdown {
   const instructions = estimateInstructions(input.promptDocs);
 
   const tools =
     input.enabledTools * TOKENS_PER_TOOL +
     input.enabledSkills * TOKENS_PER_SKILL;
 
-  const files = estimateFiles(recent);
-  const conversation = estimateConversation(recent);
+  const files = input.transcript.files;
+  const conversation = input.transcript.conversation;
 
   const estimatedSum = instructions + tools + files + conversation;
 
@@ -228,4 +259,23 @@ export function computeContextBreakdown(
     limit: input.limit,
     headroom: input.limit - input.used,
   };
+}
+
+/**
+ * Computes the breakdown from the open session's entries (design D7): the
+ * pure entry-reading path, kept for callers that hold the transcript. The
+ * live meter uses `computeContextBreakdownFromEstimates` with a scalar
+ * selector instead (task 5.4).
+ */
+export function computeContextBreakdown(
+  input: BreakdownInput
+): ContextBreakdown {
+  return computeContextBreakdownFromEstimates({
+    used: input.used,
+    limit: input.limit,
+    promptDocs: input.promptDocs,
+    enabledTools: input.enabledTools,
+    enabledSkills: input.enabledSkills,
+    transcript: estimateTranscript(input.entries),
+  });
 }

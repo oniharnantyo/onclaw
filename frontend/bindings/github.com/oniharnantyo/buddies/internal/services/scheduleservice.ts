@@ -13,7 +13,10 @@
 
 // eslint-disable-next-line @typescript-eslint/ban-ts-comment
 // @ts-ignore: Unused imports
-import { Call as $Call, CancellablePromise as $CancellablePromise } from "@wailsio/runtime";
+import {
+  Call as $Call,
+  CancellablePromise as $CancellablePromise,
+} from "@wailsio/runtime";
 
 // eslint-disable-next-line @typescript-eslint/ban-ts-comment
 // @ts-ignore: Unused imports
@@ -25,22 +28,24 @@ import * as scheduler$0 from "../scheduler/models.js";
  * "<field>: <message>" for inline field errors); every other failure is
  * wrapped.
  */
-export function Create($in: scheduler$0.ScheduleInput): $CancellablePromise<scheduler$0.ScheduleView> {
-    return $Call.ByID(1167684956, $in);
+export function Create(
+  $in: scheduler$0.ScheduleInput
+): $CancellablePromise<scheduler$0.ScheduleView> {
+  return $Call.ByID(1167684956, $in);
 }
 
 /**
  * Delete removes the schedule; an unknown id wraps store.ErrNotFound.
  */
 export function Delete(id: string): $CancellablePromise<void> {
-    return $Call.ByID(395387363, id);
+  return $Call.ByID(395387363, id);
 }
 
 /**
  * Get returns one schedule's view; an unknown id wraps store.ErrNotFound.
  */
 export function Get(id: string): $CancellablePromise<scheduler$0.ScheduleView> {
-    return $Call.ByID(1487383908, id);
+  return $Call.ByID(1487383908, id);
 }
 
 /**
@@ -48,7 +53,7 @@ export function Get(id: string): $CancellablePromise<scheduler$0.ScheduleView> {
  * order. The result is empty (not nil) when no schedules exist.
  */
 export function List(): $CancellablePromise<scheduler$0.ScheduleView[] | null> {
-    return $Call.ByID(2393824064);
+  return $Call.ByID(2393824064);
 }
 
 /**
@@ -56,8 +61,10 @@ export function List(): $CancellablePromise<scheduler$0.ScheduleView[] | null> {
  * editor's live preview. An invalid expression yields a Preview with OK
  * false carrying the parse error — not a Go error.
  */
-export function Preview(expr: string): $CancellablePromise<scheduler$0.Preview> {
-    return $Call.ByID(1493247676, expr);
+export function Preview(
+  expr: string
+): $CancellablePromise<scheduler$0.Preview> {
+  return $Call.ByID(1493247676, expr);
 }
 
 /**
@@ -65,22 +72,30 @@ export function Preview(expr: string): $CancellablePromise<scheduler$0.Preview> 
  * scheduled run, bypassing the gateway state, the enabled flag, and the
  * stored next fire time.
  */
-export function RunNow(id: string): $CancellablePromise<scheduler$0.ScheduleView> {
-    return $Call.ByID(699902319, id);
+export function RunNow(
+  id: string
+): $CancellablePromise<scheduler$0.ScheduleView> {
+  return $Call.ByID(699902319, id);
 }
 
 /**
  * SetEnabled toggles the schedule; enabling computes its next fire time,
  * disabling clears it.
  */
-export function SetEnabled(id: string, enabled: boolean): $CancellablePromise<scheduler$0.ScheduleView> {
-    return $Call.ByID(2939838345, id, enabled);
+export function SetEnabled(
+  id: string,
+  enabled: boolean
+): $CancellablePromise<scheduler$0.ScheduleView> {
+  return $Call.ByID(2939838345, id, enabled);
 }
 
 /**
  * Update rewrites a schedule's input fields; like Create, a rejected write
  * returns the unwrapped *scheduler.ValidationError.
  */
-export function Update(id: string, $in: scheduler$0.ScheduleInput): $CancellablePromise<scheduler$0.ScheduleView> {
-    return $Call.ByID(744775193, id, $in);
+export function Update(
+  id: string,
+  $in: scheduler$0.ScheduleInput
+): $CancellablePromise<scheduler$0.ScheduleView> {
+  return $Call.ByID(744775193, id, $in);
 }

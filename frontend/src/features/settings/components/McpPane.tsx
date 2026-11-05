@@ -26,7 +26,35 @@ import { Textarea } from "../../../components/ui/Textarea";
 import { Toggle } from "../../../components/ui/Toggle";
 import { client } from "../../../lib/client";
 import type { MCPOAuthCompletedEvent } from "../../../lib/events";
+import { useNavStore } from "../../../stores/nav";
 import type { McpDialogState, SettingsPaneConfig } from "../types";
+
+/** The synthesized system server's id (design D6): the built-in Browser Use
+ * stdio server, always enabled, non-editable and non-deletable. */
+const SYSTEM_SERVER_ID = "browser-use";
+
+/** The Browser Use pane key the system row's "open settings" action asks
+ * settings to open. */
+const BROWSER_USE_PANE_KEY = "browseruse";
+
+/** Whether a listing row is the synthesized system server: keyed on the id
+ * primarily, with the backend's System flag accepted as well (the view
+ * shape carries it; the id check keeps older shapes working). */
+function isSystemRow(server: MCPServer): boolean {
+  return (
+    server.ID === SYSTEM_SERVER_ID ||
+    (server as MCPServer & { System?: boolean }).System === true
+  );
+}
+
+/** Accent-tinted badge marking the built-in System row (design D11). */
+function SystemChip(): ReactElement {
+  return (
+    <Chip className="border-[color-mix(in_oklab,var(--accent)_35%,transparent)] bg-[color-mix(in_oklab,var(--accent)_10%,transparent)] text-accenttext">
+      system
+    </Chip>
+  );
+}
 
 function emptyServer(): MCPServer {
   return {
@@ -450,133 +478,189 @@ export default function McpPane(_props: {
         />
       ) : (
         <SettingsList testId="mcp-list">
-          {servers.map((server: MCPServer) => (
-            <SettingsRow
-              key={server.ID}
-              title={server.Name}
-              testId={`mcp-${server.ID}`}
-              lead={
-                <span
-                  className="inline-flex"
-                  data-testid={`mcp-dot-${server.ID}`}
-                  data-status={dotStatus(server.Status)}
-                >
-                  <StatusDot
-                    status={dotStatus(server.Status)}
-                    className="shrink-0"
-                  />
-                </span>
-              }
-              badges={
-                <>
-                  <Chip>{server.Transport}</Chip>
-                  {server.Auth?.mode === "oauth" && (
-                    <span
-                      className="inline-flex"
-                      data-testid={`mcp-auth-${server.ID}`}
-                    >
-                      <Chip>oauth</Chip>
-                    </span>
-                  )}
-                  {!server.Enabled && <DisabledChip />}
+          {servers.map((server: MCPServer) => {
+            const system = isSystemRow(server);
+
+            return (
+              <SettingsRow
+                key={server.ID}
+                title={server.Name}
+                testId={`mcp-${server.ID}`}
+                lead={
                   <span
                     className="inline-flex"
-                    data-testid={`mcp-status-${server.ID}`}
+                    data-testid={`mcp-dot-${server.ID}`}
+                    data-status={dotStatus(server.Status)}
                   >
-                    <StatusChip server={server} />
+                    <StatusDot
+                      status={dotStatus(server.Status)}
+                      className="shrink-0"
+                    />
                   </span>
-                </>
-              }
-              detail={
-                server.Transport === "stdio"
-                  ? [server.Command, ...(server.Args ?? [])].join(" ")
-                  : server.URL
-              }
-              extra={
-                server.StatusError ? (
-                  <div
-                    className={`truncate text-xs ${
-                      server.Status === STATUS_AUTH_REQUIRED
-                        ? "text-[color-mix(in_oklab,var(--warn),black_38%)]"
-                        : "text-dangertext"
-                    }`}
-                    title={server.StatusError}
-                    data-testid={`mcp-reason-${server.ID}`}
-                  >
-                    {server.StatusError}
-                  </div>
-                ) : null
-              }
-              actions={
-                <>
-                  {server.Status === STATUS_AUTH_REQUIRED && (
-                    <Button
-                      size="sm"
-                      loading={authorizing.has(server.ID)}
-                      data-testid={`mcp-authorize-${server.ID}`}
-                      onClick={() => void authorize(server)}
-                    >
-                      <Icon name="shield" size={14} />
-                      Authorize
-                    </Button>
-                  )}
-                  {server.Auth?.mode === "oauth" &&
-                    server.Status === STATUS_CONNECTED && (
-                      <IconButton
-                        label={`Disconnect ${server.Name}`}
-                        size="sm"
-                        testId={`mcp-disconnect-${server.ID}`}
-                        className="text-[color-mix(in_oklab,var(--warn),black_38%)] hover:bg-[color-mix(in_oklab,var(--warn)_12%,transparent)] hover:text-[color-mix(in_oklab,var(--warn),black_38%)]"
-                        icon={<Icon name="logout" size={16} />}
-                        onClick={() => void disconnect(server)}
-                      />
+                }
+                badges={
+                  <>
+                    {system && (
+                      <span
+                        className="inline-flex"
+                        data-testid={`mcp-system-${server.ID}`}
+                      >
+                        <SystemChip />
+                      </span>
                     )}
-                  <Toggle
-                    on={server.Enabled}
-                    testId={`mcp-toggle-${server.ID}`}
-                    label={
-                      server.Enabled
-                        ? `Disable ${server.Name}`
-                        : `Enable ${server.Name}`
-                    }
-                    disabled={refreshing.has(server.ID)}
-                    onChange={() => void toggleEnabled(server)}
-                  />
-                  <IconButton
-                    label={`Refresh ${server.Name}`}
-                    size="sm"
-                    testId={`mcp-refresh-${server.ID}`}
-                    disabled={refreshing.has(server.ID)}
-                    icon={
-                      <Icon
-                        name="refresh"
-                        size={16}
-                        className={
-                          refreshing.has(server.ID) ? "animate-spin" : ""
-                        }
-                      />
-                    }
-                    onClick={() => void refresh(server)}
-                  />
-                  <IconButton
-                    label={`Edit ${server.Name}`}
-                    size="sm"
-                    testId={`mcp-edit-${server.ID}`}
-                    icon={<Icon name="edit" size={16} />}
-                    onClick={() => openDialog(server)}
-                  />
-                  <IconButton
-                    label={`Remove ${server.Name}`}
-                    size="sm"
-                    testId={`mcp-remove-${server.ID}`}
-                    className="text-danger hover:bg-[color-mix(in_oklab,var(--danger)_12%,transparent)] hover:text-danger"
-                    icon={<Icon name="trash" size={16} />}
-                    onClick={() => setRemoving(server)}
-                  />
-                </>
-              }
-            />
-          ))}
+                    {!system && <Chip>{server.Transport}</Chip>}
+                    {server.Auth?.mode === "oauth" && (
+                      <span
+                        className="inline-flex"
+                        data-testid={`mcp-auth-${server.ID}`}
+                      >
+                        <Chip>oauth</Chip>
+                      </span>
+                    )}
+                    {!system && !server.Enabled && <DisabledChip />}
+                    <span
+                      className="inline-flex"
+                      data-testid={`mcp-status-${server.ID}`}
+                    >
+                      <StatusChip server={server} />
+                    </span>
+                  </>
+                }
+                detail={
+                  system
+                    ? "Built-in server — spawned from the buddies binary"
+                    : server.Transport === "stdio"
+                      ? [server.Command, ...(server.Args ?? [])].join(" ")
+                      : server.URL
+                }
+                extra={
+                  server.StatusError ? (
+                    <div
+                      className={`truncate text-xs ${
+                        server.Status === STATUS_AUTH_REQUIRED
+                          ? "text-[color-mix(in_oklab,var(--warn),black_38%)]"
+                          : "text-dangertext"
+                      }`}
+                      title={server.StatusError}
+                      data-testid={`mcp-reason-${server.ID}`}
+                    >
+                      {server.StatusError}
+                    </div>
+                  ) : null
+                }
+                actions={
+                  <>
+                    {system ? (
+                      // System row semantics (design D11, spec agent-mcp
+                      // "System-provided server"): always enabled, so no
+                      // toggle, and no edit or remove affordances — the
+                      // service rejects mutations on the system id anyway.
+                      // Refresh stays (the row is probed on demand like any
+                      // user row), next to the pane deep-link.
+                      <>
+                        <Button
+                          variant="ghost"
+                          size="sm"
+                          data-testid={`mcp-open-settings-${server.ID}`}
+                          onClick={(): void =>
+                            useNavStore
+                              .getState()
+                              .openSettingsPane(BROWSER_USE_PANE_KEY)
+                          }
+                        >
+                          <Icon name="cog" size={14} />
+                          Open settings
+                        </Button>
+                        <IconButton
+                          label={`Refresh ${server.Name}`}
+                          size="sm"
+                          testId={`mcp-refresh-${server.ID}`}
+                          disabled={refreshing.has(server.ID)}
+                          icon={
+                            <Icon
+                              name="refresh"
+                              size={16}
+                              className={
+                                refreshing.has(server.ID) ? "animate-spin" : ""
+                              }
+                            />
+                          }
+                          onClick={() => void refresh(server)}
+                        />
+                      </>
+                    ) : (
+                      <>
+                        {server.Status === STATUS_AUTH_REQUIRED && (
+                          <Button
+                            size="sm"
+                            loading={authorizing.has(server.ID)}
+                            data-testid={`mcp-authorize-${server.ID}`}
+                            onClick={() => void authorize(server)}
+                          >
+                            <Icon name="shield" size={14} />
+                            Authorize
+                          </Button>
+                        )}
+                        {server.Auth?.mode === "oauth" &&
+                          server.Status === STATUS_CONNECTED && (
+                            <IconButton
+                              label={`Disconnect ${server.Name}`}
+                              size="sm"
+                              testId={`mcp-disconnect-${server.ID}`}
+                              className="text-[color-mix(in_oklab,var(--warn),black_38%)] hover:bg-[color-mix(in_oklab,var(--warn)_12%,transparent)] hover:text-[color-mix(in_oklab,var(--warn),black_38%)]"
+                              icon={<Icon name="logout" size={16} />}
+                              onClick={() => void disconnect(server)}
+                            />
+                          )}
+                        <Toggle
+                          on={server.Enabled}
+                          testId={`mcp-toggle-${server.ID}`}
+                          label={
+                            server.Enabled
+                              ? `Disable ${server.Name}`
+                              : `Enable ${server.Name}`
+                          }
+                          disabled={refreshing.has(server.ID)}
+                          onChange={() => void toggleEnabled(server)}
+                        />
+                        <IconButton
+                          label={`Refresh ${server.Name}`}
+                          size="sm"
+                          testId={`mcp-refresh-${server.ID}`}
+                          disabled={refreshing.has(server.ID)}
+                          icon={
+                            <Icon
+                              name="refresh"
+                              size={16}
+                              className={
+                                refreshing.has(server.ID) ? "animate-spin" : ""
+                              }
+                            />
+                          }
+                          onClick={() => void refresh(server)}
+                        />
+                        <IconButton
+                          label={`Edit ${server.Name}`}
+                          size="sm"
+                          testId={`mcp-edit-${server.ID}`}
+                          icon={<Icon name="edit" size={16} />}
+                          onClick={() => openDialog(server)}
+                        />
+                        <IconButton
+                          label={`Remove ${server.Name}`}
+                          size="sm"
+                          testId={`mcp-remove-${server.ID}`}
+                          className="text-dangertext hover:bg-[color-mix(in_oklab,var(--danger)_12%,transparent)] hover:text-dangertext"
+                          icon={<Icon name="trash" size={16} />}
+                          onClick={() => setRemoving(server)}
+                        />
+                      </>
+                    )}
+                  </>
+                }
+              />
+            );
+          })}
         </SettingsList>
       )}
 

@@ -30,7 +30,7 @@ import type {
 import { resetCollapseMap } from "../../collapse";
 import { useChatStore } from "../../../store";
 import { partProps } from "./harness";
-import { toolRenderers } from "../renderers";
+import { resolveToolRenderer, toolRenderers } from "../renderers";
 
 type MockFn = ReturnType<typeof vi.fn>;
 
@@ -87,6 +87,8 @@ const mockScreenshot = (client as MockedClient).chat.browserScreenshot;
 beforeEach(async () => {
   vi.clearAllMocks();
   resetCollapseMap();
+  // The screenshot thumb addresses the bound read with the viewing session.
+  useChatStore.setState({ activeSessionID: "s1" });
 
   mockScreenshot.mockImplementation(
     async (): Promise<BrowserScreenshotContent> => ({
@@ -456,19 +458,16 @@ describe("web fetch (spec: web-fetch body)", () => {
   });
 });
 
-describe("browser bodies (spec: browser navigation / snapshot table)", () => {
+describe("browser bodies (rebrand-browser-use-system-mcp 6.2: mcp__browser-use__* cards)", () => {
   it("a navigation result shows the address and title", async () => {
-    const Browser = toolRenderers.browser;
+    const Browser = resolveToolRenderer("mcp__browser-use__navigate");
 
     const { unmount } = await renderUI(
       <Browser
         {...partProps({
           toolCallId: "browser-1",
-          toolName: "browser",
-          argsText: JSON.stringify({
-            action: "navigate",
-            url: "https://example.com",
-          }),
+          toolName: "mcp__browser-use__navigate",
+          argsText: JSON.stringify({ url: "https://example.com" }),
           result: '{"url":"https://example.com","title":"Example Domain"}',
         })}
       />
@@ -486,14 +485,14 @@ describe("browser bodies (spec: browser navigation / snapshot table)", () => {
     await unmount();
   });
 
-  it("an action result carries the ok badge and the snapshot's element table", async () => {
-    const Browser = toolRenderers.browser;
+  it("an interactive action's slim result carries the ok badge and the changed-element table", async () => {
+    const Browser = resolveToolRenderer("mcp__browser-use__click");
 
     const result = JSON.stringify({
       ok: true,
       url: "https://example.com",
       title: "Example",
-      elements: [
+      changed: [
         { ref: "e1", role: "button", name: "Submit" },
         { ref: "e2", role: "textbox", name: "Email" },
       ],
@@ -503,8 +502,8 @@ describe("browser bodies (spec: browser navigation / snapshot table)", () => {
       <Browser
         {...partProps({
           toolCallId: "browser-2",
-          toolName: "browser",
-          argsText: JSON.stringify({ action: "click", ref: "e1" }),
+          toolName: "mcp__browser-use__click",
+          argsText: JSON.stringify({ ref: "e1" }),
           result,
         })}
       />
@@ -522,7 +521,7 @@ describe("browser bodies (spec: browser navigation / snapshot table)", () => {
   });
 
   it("a snapshot renders the page title and address and the ref/role/name table", async () => {
-    const Browser = toolRenderers.browser;
+    const Browser = resolveToolRenderer("mcp__browser-use__snapshot");
 
     const result = JSON.stringify({
       url: "https://example.com",
@@ -534,8 +533,8 @@ describe("browser bodies (spec: browser navigation / snapshot table)", () => {
       <Browser
         {...partProps({
           toolCallId: "browser-3",
-          toolName: "browser",
-          argsText: JSON.stringify({ action: "snapshot" }),
+          toolName: "mcp__browser-use__snapshot",
+          argsText: "{}",
           result,
         })}
       />
@@ -563,18 +562,164 @@ describe("browser bodies (spec: browser navigation / snapshot table)", () => {
 
     await unmount();
   });
+
+  it("an envelope-wrapped navigation result still shows the address and title", async () => {
+    const Browser = resolveToolRenderer("mcp__browser-use__navigate");
+
+    const envelope = JSON.stringify({
+      content: [
+        {
+          type: "text",
+          text: '{"url":"https://example.com","title":"Example Domain"}',
+        },
+      ],
+    });
+
+    const { unmount } = await renderUI(
+      <Browser
+        {...partProps({
+          toolCallId: "browser-env-1",
+          toolName: "mcp__browser-use__navigate",
+          argsText: JSON.stringify({ url: "https://example.com" }),
+          result: envelope,
+        })}
+      />
+    );
+
+    await open("browser-env-1");
+
+    expect(screen.getByTestId("browser-url").textContent).toBe(
+      "https://example.com"
+    );
+    expect(screen.getByTestId("browser-title").textContent).toBe(
+      "Example Domain"
+    );
+
+    await unmount();
+  });
+
+  it("an envelope-wrapped snapshot renders the ref/role/name table", async () => {
+    const Browser = resolveToolRenderer("mcp__browser-use__snapshot");
+
+    const envelope = JSON.stringify({
+      content: [
+        {
+          type: "text",
+          text: JSON.stringify({
+            url: "https://example.com",
+            title: "Example",
+            elements: [{ ref: "e1", role: "heading", name: "Hello" }],
+          }),
+        },
+      ],
+    });
+
+    const { unmount } = await renderUI(
+      <Browser
+        {...partProps({
+          toolCallId: "browser-env-2",
+          toolName: "mcp__browser-use__snapshot",
+          argsText: "{}",
+          result: envelope,
+        })}
+      />
+    );
+
+    await open("browser-env-2");
+
+    expect(screen.getByTestId("browser-title").textContent).toBe("Example");
+
+    const table = screen.getByTestId("browser-elements");
+
+    expect(textsOf(within(table).getAllByRole("cell"))).toEqual([
+      "e1",
+      "heading",
+      "Hello",
+    ]);
+
+    await unmount();
+  });
+
+  it("an envelope-wrapped screenshot result still drives the thumbnail", async () => {
+    const Browser = resolveToolRenderer("mcp__browser-use__screenshot");
+
+    const envelope = JSON.stringify({
+      content: [
+        {
+          type: "text",
+          text: JSON.stringify({
+            path: ".browsers/screenshots/1.png",
+            width: 800,
+            height: 600,
+          }),
+        },
+      ],
+    });
+
+    const { unmount } = await renderUI(
+      <Browser
+        {...partProps({
+          toolCallId: "browser-env-3",
+          toolName: "mcp__browser-use__screenshot",
+          argsText: "{}",
+          result: envelope,
+        })}
+      />
+    );
+
+    await open("browser-env-3");
+
+    await waitFor(() => {
+      expect(screen.getByTestId("screenshot-image")).toBeTruthy();
+    });
+    expect(screen.getByTestId("screenshot-image").getAttribute("width")).toBe(
+      "800"
+    );
+
+    await unmount();
+  });
+
+  it("a pre-unwrapped (plain) result passes through unchanged — no double unwrap", async () => {
+    const Browser = resolveToolRenderer("mcp__browser-use__navigate");
+
+    const { unmount } = await renderUI(
+      <Browser
+        {...partProps({
+          toolCallId: "browser-env-4",
+          toolName: "mcp__browser-use__navigate",
+          argsText: JSON.stringify({ url: "https://example.com" }),
+          result: JSON.stringify({
+            content: [
+              { type: "text", text: '{"url":"https://example.com"}' },
+              { type: "text", text: "second part" },
+            ],
+          }),
+        })}
+      />
+    );
+
+    await open("browser-env-4");
+
+    // A multi-part envelope is NOT unwrapped: the object has no url/title/
+    // elements, so no payload renders — the same as before this change.
+    expect(screen.queryByTestId("browser-url")).toBeNull();
+    expect(screen.queryByTestId("browser-title")).toBeNull();
+    expect(screen.queryByTestId("browser-elements")).toBeNull();
+
+    await unmount();
+  });
 });
 
 describe("screenshot thumbnail enlarges (spec: Screenshot thumbnail enlarges)", () => {
   it("fetches by basename and renders a Blob-URL thumbnail at the reported dimensions", async () => {
-    const Browser = toolRenderers.browser;
+    const Browser = resolveToolRenderer("mcp__browser-use__screenshot");
 
     const { unmount } = await renderUI(
       <Browser
         {...partProps({
           toolCallId: "shot-1",
-          toolName: "browser",
-          argsText: JSON.stringify({ action: "screenshot" }),
+          toolName: "mcp__browser-use__screenshot",
+          argsText: "{}",
           result: JSON.stringify({
             path: ".browsers/screenshots/1.png",
             width: 800,
@@ -590,8 +735,8 @@ describe("screenshot thumbnail enlarges (spec: Screenshot thumbnail enlarges)", 
       expect(screen.getByTestId("screenshot-image")).toBeTruthy();
     });
 
-    // The bound read received the basename only — never a path.
-    expect(mockScreenshot).toHaveBeenCalledWith("1.png");
+    // The bound read received the viewing session plus the basename — never a path.
+    expect(mockScreenshot).toHaveBeenCalledWith("s1", "1.png");
 
     const image = screen.getByTestId("screenshot-image");
 
@@ -603,14 +748,14 @@ describe("screenshot thumbnail enlarges (spec: Screenshot thumbnail enlarges)", 
   });
 
   it("the thumbnail enlarges into the lightbox and closes back with Escape", async () => {
-    const Browser = toolRenderers.browser;
+    const Browser = resolveToolRenderer("mcp__browser-use__screenshot");
 
     const { unmount } = await renderUI(
       <Browser
         {...partProps({
           toolCallId: "shot-2",
-          toolName: "browser",
-          argsText: JSON.stringify({ action: "screenshot" }),
+          toolName: "mcp__browser-use__screenshot",
+          argsText: "{}",
           result: JSON.stringify({
             path: ".browsers/screenshots/1.png",
             width: 800,
@@ -654,14 +799,14 @@ describe("screenshot thumbnail enlarges (spec: Screenshot thumbnail enlarges)", 
       new Error("browser: screenshot name refused")
     );
 
-    const Browser = toolRenderers.browser;
+    const Browser = resolveToolRenderer("mcp__browser-use__screenshot");
 
     const { unmount } = await renderUI(
       <Browser
         {...partProps({
           toolCallId: "shot-3",
-          toolName: "browser",
-          argsText: JSON.stringify({ action: "screenshot" }),
+          toolName: "mcp__browser-use__screenshot",
+          argsText: "{}",
           result: JSON.stringify({
             path: ".browsers/screenshots/2.png",
             width: 800,
@@ -674,7 +819,7 @@ describe("screenshot thumbnail enlarges (spec: Screenshot thumbnail enlarges)", 
     await open("shot-3");
 
     await waitFor((): void => {
-      expect(mockScreenshot).toHaveBeenCalledWith("2.png");
+      expect(mockScreenshot).toHaveBeenCalledWith("s1", "2.png");
     });
 
     await waitFor((): void => {
@@ -687,14 +832,14 @@ describe("screenshot thumbnail enlarges (spec: Screenshot thumbnail enlarges)", 
   });
 
   it("a path whose basename breaks the name shape is refused before any call", async () => {
-    const Browser = toolRenderers.browser;
+    const Browser = resolveToolRenderer("mcp__browser-use__screenshot");
 
     const { unmount } = await renderUI(
       <Browser
         {...partProps({
           toolCallId: "shot-4",
-          toolName: "browser",
-          argsText: JSON.stringify({ action: "screenshot" }),
+          toolName: "mcp__browser-use__screenshot",
+          argsText: "{}",
           result: JSON.stringify({
             path: "../secrets/evil.png",
             width: 800,
@@ -862,8 +1007,8 @@ describe("edit diff (spec: Edit renders a diff)", () => {
     );
 
     expect(rows).toHaveLength(4);
-    expect(rows[1]).toContain("bg-red-500/10");
-    expect(rows[2]).toContain("bg-emerald-500/10");
+    expect(rows[1]).toContain("bg-danger/10");
+    expect(rows[2]).toContain("bg-success/10");
 
     await unmount();
   });

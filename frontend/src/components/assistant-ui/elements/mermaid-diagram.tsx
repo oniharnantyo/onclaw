@@ -1,6 +1,5 @@
 "use client";
 
-import { renderMermaidSVG } from "beautiful-mermaid";
 import { Maximize2, Minus, Plus, RotateCcw, X } from "lucide-react";
 import {
   type FC,
@@ -17,6 +16,7 @@ import {
 } from "react";
 import { createPortal } from "react-dom";
 import { cn } from "@/lib/utils";
+import { useFocusTrap } from "@/components/ui/useFocusTrap";
 
 export type MermaidDiagramProps = {
   code: string;
@@ -24,6 +24,19 @@ export type MermaidDiagramProps = {
   /** Renders a skeleton instead of the diagram while `true`. */
   streaming?: boolean;
 };
+
+/** The renderer's signature, read as a type-only module query: the runtime
+ * import is dynamic (below) so `beautiful-mermaid` stays out of the entry
+ * graph and lands when the first completed diagram mounts (design D6). */
+type RenderMermaidSVG = typeof import("beautiful-mermaid").renderMermaidSVG;
+
+/** One shared renderer-chunk promise per page: every diagram that mounts
+ * after the first reuses it. */
+let rendererPromise: Promise<{ renderMermaidSVG: RenderMermaidSVG }> | null =
+  null;
+
+const loadRenderer = (): Promise<{ renderMermaidSVG: RenderMermaidSVG }> =>
+  (rendererPromise ??= import("beautiful-mermaid"));
 
 const MIN_SCALE = 0.5;
 const MAX_SCALE = 4;
@@ -180,6 +193,9 @@ function MermaidZoom({ svg, children }: MermaidZoomProps) {
   const closeRef = useRef<HTMLButtonElement>(null);
   const overlayRef = useRef<HTMLDivElement>(null);
   const viewportRef = useRef<HTMLDivElement>(null);
+
+  useFocusTrap(overlayRef, isOpen);
+
   const drag = useRef<{
     startX: number;
     startY: number;
@@ -210,20 +226,6 @@ function MermaidZoom({ svg, children }: MermaidZoomProps) {
       if (e.key === "Escape") {
         handleClose();
         return;
-      }
-      if (e.key !== "Tab") return;
-      const focusables = overlayRef.current?.querySelectorAll<HTMLElement>(
-        'a[href], button:not([disabled]), [tabindex]:not([tabindex="-1"])',
-      );
-      const first = focusables?.[0];
-      const last = focusables?.[focusables.length - 1];
-      if (!first || !last) return;
-      if (e.shiftKey && document.activeElement === first) {
-        e.preventDefault();
-        last.focus();
-      } else if (!e.shiftKey && document.activeElement === last) {
-        e.preventDefault();
-        first.focus();
       }
     };
     document.addEventListener("keydown", handleKeyDown);
@@ -394,10 +396,27 @@ const MermaidDiagramImpl: FC<MermaidDiagramProps> = ({
   className,
   streaming = false,
 }) => {
+  const [renderSvg, setRenderSvg] = useState<RenderMermaidSVG | null>(null);
+
+  // The renderer chunk loads after the first mount: the code fence paints
+  // immediately and swaps for the diagram when the module lands (design D6).
+  useEffect(() => {
+    let alive = true;
+    void loadRenderer()
+      .then((mod) => {
+        if (alive) setRenderSvg(() => mod.renderMermaidSVG);
+      })
+      // A failed chunk keeps the code fence (the honest degraded state).
+      .catch(() => undefined);
+    return () => {
+      alive = false;
+    };
+  }, []);
+
   const result = useMemo(() => {
-    if (streaming) return null;
+    if (streaming || renderSvg === null) return null;
     try {
-      const svg = renderMermaidSVG(code, {
+      const svg = renderSvg(code, {
         bg: "var(--background)",
         fg: "var(--foreground)",
         muted: "var(--muted-foreground)",
@@ -415,9 +434,9 @@ const MermaidDiagramImpl: FC<MermaidDiagramProps> = ({
         error: err instanceof Error ? err : new Error(String(err)),
       };
     }
-  }, [streaming, code]);
+  }, [streaming, renderSvg, code]);
 
-  if (!result) {
+  if (streaming) {
     return (
       <div
         data-slot="mermaid-skeleton"
@@ -432,6 +451,21 @@ const MermaidDiagramImpl: FC<MermaidDiagramProps> = ({
         <div className="bg-muted-foreground/20 h-8 w-20 rounded-md" />
         <div className="bg-muted-foreground/20 h-px w-10" />
         <div className="bg-muted-foreground/20 h-8 w-20 rounded-md" />
+      </div>
+    );
+  }
+
+  if (result === null) {
+    return (
+      <div
+        data-slot="mermaid-pending"
+        aria-busy="true"
+        className={cn(
+          "aui-mermaid-pending bg-muted/75 rounded-b-lg",
+          className,
+        )}
+      >
+        <pre className="overflow-x-auto p-4 text-sm">{code.trim()}</pre>
       </div>
     );
   }

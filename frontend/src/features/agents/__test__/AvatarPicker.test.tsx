@@ -39,7 +39,10 @@ describe("AvatarPicker", () => {
 
   it("toggles the customize grid", async () => {
     const { container, unmount } = await renderUI(
-      <AvatarPicker value={{ sex: "man" }} onChange={vi.fn()} />
+      <AvatarPicker
+        value={{ sex: "man", faceColor: "#AC6651" }}
+        onChange={vi.fn()}
+      />
     );
 
     expect(container.querySelectorAll("select").length).toBe(0);
@@ -50,6 +53,30 @@ describe("AvatarPicker", () => {
 
     // Nine trait selects (the five color traits render as swatch rows).
     expect(container.querySelectorAll("select").length).toBe(9);
+
+    // The disclosure control exposes its expanded state.
+    const customize = screen.getByTestId("btn-avatar-customize");
+    expect(customize.getAttribute("aria-expanded")).toBe("true");
+
+    // Trait labels are wired to their controls; swatches carry human
+    // readable names and the pressed state tracks the current color.
+    const faceColorLabel = container.querySelector(
+      "label[for='avatar-trait-faceColor']"
+    );
+
+    expect(faceColorLabel?.textContent).toBe("face Color");
+
+    const selected = container.querySelector<HTMLElement>(
+      "button[aria-label='tan skin']"
+    );
+
+    expect(selected!.getAttribute("aria-pressed")).toBe("true");
+
+    const unselected = container.querySelector<HTMLElement>(
+      "button[aria-label='light skin']"
+    );
+
+    expect(unselected!.getAttribute("aria-pressed")).toBe("false");
 
     await act(async () => {
       fireEvent.click(screen.getByTestId("btn-avatar-customize"));

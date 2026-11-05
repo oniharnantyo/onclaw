@@ -56,13 +56,16 @@
 import { useEffect, useRef, useState } from "react";
 import type {
   CSSProperties,
+  KeyboardEvent as ReactKeyboardEvent,
   PointerEvent as ReactPointerEvent,
   ReactElement,
 } from "react";
-import { X } from "lucide-react";
+import { X, Users } from "lucide-react";
 
 import type {
   Agent,
+  AgentGroup,
+  AgentGroupMember,
   Session,
 } from "../../../../bindings/github.com/oniharnantyo/buddies/internal/store/models";
 import type { ProviderView } from "../../../../bindings/github.com/oniharnantyo/buddies/internal/services/models";
@@ -70,6 +73,8 @@ import { AgentAvatar } from "../../../components";
 import { cn } from "../../../lib/cn";
 import type { KnowledgeDocument } from "../../../lib/client";
 import { useLocalNumberPreference } from "../../../lib/useLocalPreference";
+import { useTablist } from "../../../lib/useTablist";
+import { GroupSettingsPane } from "../../groups/GroupSettingsPane";
 import { shortModelName } from "../format";
 import { useLiveAvatar } from "../run/useLiveAvatar";
 import { useChatStore } from "../store";
@@ -98,6 +103,21 @@ export function RightBar(): ReactElement | null {
   const sessions = useChatStore((s: ChatStore) => s.sessions);
   const activeAgentID = useChatStore((s: ChatStore) => s.activeAgentID);
   const activeSessionID = useChatStore((s: ChatStore) => s.activeSessionID);
+  const activeGroupID = useChatStore((s: ChatStore) => s.activeGroupID);
+  const groups = useChatStore((s: ChatStore) => s.groups);
+  const groupMembers = useChatStore((s: ChatStore) => s.groupMembers);
+
+  // The open group (round 6): the bar's second identity — a group island
+  // with the roster at a glance and the settings entry the header no longer
+  // hosts. Null with no group open; the agent branches below then run.
+  const group =
+    activeGroupID === null
+      ? null
+      : (groups.find((g: AgentGroup) => g.ID === activeGroupID) ?? null);
+
+  // The group pane is bar-local view state (the GroupSettingsPane pattern:
+  // the pane hosts its own ModalShell; the island keeps only open-state).
+  const [groupSettingsOpen, setGroupSettingsOpen] = useState(false);
 
   // The identity face's live props (add-live-agent-avatar design D8): it
   // MUST sit above the early returns below — the bar stays mounted across
@@ -129,6 +149,20 @@ export function RightBar(): ReactElement | null {
   useEffect((): void => {
     if (!identityActive) setBrowsingKnowledge(false);
   }, [identityActive]);
+
+  // The preview tabs ride the shared tablist grammar (fix-ui-audit-findings
+  // 3.2, design D7b): roving tabindex + arrow/Home/End movement (arrows stop
+  // at the ends), the content panel labelled by the active tab. With the
+  // pinned identity active no preview tab is selected; an arrow key then
+  // enters the strip at its near end. The pinned tab itself keeps its
+  // aria-current semantics (not a tab). The hook sits above the early
+  // returns — the bar stays mounted across identity ↔ preview swaps.
+  const { tab: tabProps, panel: panelProps } = useTablist<string>({
+    idPrefix: "panel-tab",
+    ids: tabs.map((t: PanelTab): string => t.id),
+    active: identityAgent === null ? activeStoreID : null,
+    onChange: activatePanelTab,
+  });
 
   // One width preference for both states (design D2).
   const [width, setWidth] = useLocalNumberPreference(
@@ -185,6 +219,29 @@ export function RightBar(): ReactElement | null {
     window.addEventListener("pointercancel", stop);
   };
 
+  // Keyboard resize (fix-ui-audit-findings 3.3, design D7c): the handle is
+  // focusable and reports the bar's width; the handle rides the bar's left
+  // edge, so widening follows the edge leftward — ArrowLeft grows the bar,
+  // ArrowRight shrinks it — by the same 4px step the drag's pointer moves
+  // use, Home/End jump to the clamps. setWidth is the same persist-on-set
+  // path a drag release takes, so the width lands in the preference too.
+  const onResizeKeyDown = (e: ReactKeyboardEvent<HTMLDivElement>): void => {
+    const target =
+      e.key === "ArrowLeft"
+        ? width + 4
+        : e.key === "ArrowRight"
+          ? width - 4
+          : e.key === "Home"
+            ? MIN_SIDEBAR_WIDTH
+            : e.key === "End"
+              ? MAX_SIDEBAR_WIDTH
+              : null;
+
+    if (target === null) return;
+    e.preventDefault();
+    setWidth(Math.min(MAX_SIDEBAR_WIDTH, Math.max(MIN_SIDEBAR_WIDTH, target)));
+  };
+
   // One inline style for every aside this component returns (the D2 width
   // var; D8's motion): the width transition drives minimize/restore AND the
   // drag width, so it stands down only while a drag is live. SAFETY: the bar
@@ -215,6 +272,91 @@ export function RightBar(): ReactElement | null {
     shellStyle.boxShadow = "none";
     shellStyle.overflow = "hidden";
     shellStyle.pointerEvents = "none";
+  }
+
+  // Group island (round 6): with a group open the bar swaps its identity —
+  // the group's title-or-name, the roster at a glance, and the settings
+  // entry the header no longer hosts. The same aside shell, collapse
+  // grammar, and resize handle as the agent identity (one bar, two
+  // identities); the pane is bar-local state (the GroupSettingsPane pattern:
+  // the pane hosts its own ModalShell, the island keeps only open-state).
+  if (group !== null) {
+    const roster = groupMembers
+      .map(
+        (m: AgentGroupMember): Agent | null =>
+          agents.find((a: Agent) => a.ID === m.AgentID) ?? null
+      )
+      .filter((a: Agent | null): a is Agent => a !== null);
+
+    return (
+      <aside
+        ref={asideRef}
+        className="glass-panel relative m-2 hidden w-[var(--sidebar-width)] shrink-0 flex-col items-center gap-3 rounded-lg border border-line bg-surface p-4 xl:flex"
+        style={shellStyle}
+        data-testid="chat-right-bar"
+      >
+        {groupSettingsOpen ? (
+          <GroupSettingsPane
+            group={group}
+            variant="panel"
+            onClosed={(): void => setGroupSettingsOpen(false)}
+          />
+        ) : (
+          <>
+            <div className="flex size-14 items-center justify-center rounded-full border border-line text-muted">
+              <Users aria-hidden="true" className="size-6" />
+            </div>
+            <div className="max-w-full text-center">
+              <p
+                className="font-display text-base font-semibold"
+                data-testid="sidebar-group-name"
+              >
+                {group.Title || group.Name}
+              </p>
+              <p
+                className="mt-0.5 font-mono text-xs text-muted"
+                data-testid="sidebar-group-members"
+              >
+                {roster.length} {roster.length === 1 ? "member" : "members"}
+              </p>
+            </div>
+            {roster.length > 0 && (
+              <div className="flex max-w-full flex-wrap justify-center gap-1">
+                {roster.map((a: Agent) => (
+                  <AgentAvatar
+                    key={a.ID}
+                    id={a.ID}
+                    avatar={a.Avatar}
+                    size={24}
+                  />
+                ))}
+              </div>
+            )}
+            <button
+              type="button"
+              className="mt-1 cursor-pointer rounded-md border border-line px-3 py-1.5 text-[12px] font-medium text-fg2 hover:bg-[color-mix(in_oklab,var(--fg)_6%,transparent)] hover:text-fg"
+              data-testid="group-settings-opener"
+              onClick={(): void => setGroupSettingsOpen(true)}
+            >
+              Group settings
+            </button>
+          </>
+        )}
+        <div
+          role="separator"
+          aria-orientation="vertical"
+          aria-label="Resize panel"
+          tabIndex={0}
+          aria-valuemin={MIN_SIDEBAR_WIDTH}
+          aria-valuemax={MAX_SIDEBAR_WIDTH}
+          aria-valuenow={width}
+          onPointerDown={onResizeStart}
+          onKeyDown={onResizeKeyDown}
+          className="absolute inset-y-0 left-0 z-10 hidden w-1.5 cursor-col-resize hover:bg-[color-mix(in_oklab,var(--fg)_8%,transparent)] xl:block"
+          data-testid="sidebar-resize"
+        />
+      </aside>
+    );
   }
 
   const session =
@@ -299,7 +441,12 @@ export function RightBar(): ReactElement | null {
             role="separator"
             aria-orientation="vertical"
             aria-label="Resize panel"
+            tabIndex={0}
+            aria-valuemin={MIN_SIDEBAR_WIDTH}
+            aria-valuemax={MAX_SIDEBAR_WIDTH}
+            aria-valuenow={width}
             onPointerDown={onResizeStart}
+            onKeyDown={onResizeKeyDown}
             className="absolute inset-y-0 left-0 z-10 hidden w-1.5 cursor-col-resize hover:bg-[color-mix(in_oklab,var(--fg)_8%,transparent)] xl:block"
             data-testid="sidebar-resize"
           />
@@ -319,7 +466,12 @@ export function RightBar(): ReactElement | null {
           role="separator"
           aria-orientation="vertical"
           aria-label="Resize panel"
+          tabIndex={0}
+          aria-valuemin={MIN_SIDEBAR_WIDTH}
+          aria-valuemax={MAX_SIDEBAR_WIDTH}
+          aria-valuenow={width}
           onPointerDown={onResizeStart}
+          onKeyDown={onResizeKeyDown}
           className="absolute inset-y-0 left-0 z-10 hidden w-1.5 cursor-col-resize hover:bg-[color-mix(in_oklab,var(--fg)_8%,transparent)] xl:block"
           data-testid="sidebar-resize"
         />
@@ -384,42 +536,60 @@ export function RightBar(): ReactElement | null {
             <AgentAvatar id={agent.ID} avatar={agent.Avatar} size={18} />
           </button>
         )}
-        {tabs.map((tab: PanelTab) => (
-          <div
-            key={tab.id}
-            className={cn(
-              "flex min-w-0 items-center gap-1 rounded-md border px-1.5 py-1",
-              tab.id === activeTab?.id
-                ? "border-line bg-[color-mix(in_oklab,var(--fg)_5%,transparent)] text-fg"
-                : "border-transparent text-muted"
-            )}
-          >
-            <button
-              type="button"
-              className="min-w-0 cursor-pointer truncate text-xs"
-              data-testid={`panel-tab-${tab.id}`}
-              onClick={() => activatePanelTab(tab.id)}
+        {/* Preview tabs own the tablist (fix-ui-audit-findings D7b): the
+            pinned identity button above carries aria-current and is not a
+            tab, so it stays outside the group. The wrapper repeats the
+            strip's flex/gap so the row lays out identically. */}
+        <div
+          role="tablist"
+          aria-label="Preview tabs"
+          className="flex items-center gap-1"
+        >
+          {tabs.map((tab: PanelTab) => (
+            <div
+              key={tab.id}
+              className={cn(
+                "flex min-w-0 items-center gap-1 rounded-md border px-1.5 py-1",
+                tab.id === activeTab?.id
+                  ? "border-line bg-[color-mix(in_oklab,var(--fg)_5%,transparent)] text-fg"
+                  : "border-transparent text-muted"
+              )}
             >
-              {tab.title}
-            </button>
-            <button
-              type="button"
-              className="flex shrink-0 cursor-pointer items-center rounded-full p-0.5 text-muted hover:text-fg"
-              aria-label={`Close ${tab.title}`}
-              title={`Close ${tab.title}`}
-              data-testid={`panel-tab-close-${tab.id}`}
-              onClick={() => closePanelTab(tab.id)}
-            >
-              <X aria-hidden="true" className="size-3" />
-            </button>
-          </div>
-        ))}
+              <button
+                type="button"
+                {...tabProps(tab.id)}
+                className="min-w-0 cursor-pointer truncate text-xs"
+                data-testid={`panel-tab-${tab.id}`}
+                onClick={() => activatePanelTab(tab.id)}
+              >
+                {tab.title}
+              </button>
+              {/* 24px hit area around the small glyph (fix-ui-audit-findings
+                    7.3): the button grows, the X stays size-3. */}
+              <button
+                type="button"
+                className="flex h-6 w-6 shrink-0 cursor-pointer items-center justify-center rounded-full text-muted hover:text-fg"
+                aria-label={`Close ${tab.title}`}
+                title={`Close ${tab.title}`}
+                data-testid={`panel-tab-close-${tab.id}`}
+                onClick={() => closePanelTab(tab.id)}
+              >
+                <X aria-hidden="true" className="size-3" />
+              </button>
+            </div>
+          ))}
+        </div>
       </div>
       <div
         className="od-scroll min-h-0 flex-1 overflow-y-auto p-3 text-sm leading-relaxed text-fg"
         data-testid="panel-content"
       >
-        <div key={surfaceKey} className="od-fade" data-testid="panel-surface">
+        <div
+          key={surfaceKey}
+          {...(activeTab !== null ? panelProps(activeTab.id) : {})}
+          className="od-fade"
+          data-testid="panel-surface"
+        >
           {identityAgent !== null && activeTab === null ? (
             browsingKnowledge ? (
               <KnowledgePanel
@@ -444,7 +614,12 @@ export function RightBar(): ReactElement | null {
         role="separator"
         aria-orientation="vertical"
         aria-label="Resize panel"
+        tabIndex={0}
+        aria-valuemin={MIN_SIDEBAR_WIDTH}
+        aria-valuemax={MAX_SIDEBAR_WIDTH}
+        aria-valuenow={width}
         onPointerDown={onResizeStart}
+        onKeyDown={onResizeKeyDown}
         className="absolute inset-y-0 left-0 z-10 hidden w-1.5 cursor-col-resize hover:bg-[color-mix(in_oklab,var(--fg)_8%,transparent)] xl:block"
         data-testid="sidebar-resize"
       />

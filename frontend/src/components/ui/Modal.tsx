@@ -15,10 +15,7 @@ import type { ReactElement, ReactNode } from "react";
 
 import { cn } from "../../lib/cn";
 import { Icon } from "./Icon";
-
-/** Elements the Tab trap may cycle through (onclaw-v2 selector, verbatim). */
-const FOCUSABLE =
-  'a[href], button:not([disabled]), input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])';
+import { useFocusTrap } from "./useFocusTrap";
 
 export type ModalProps = {
   /** Heading of the dialog; also the accessible name. */
@@ -47,6 +44,10 @@ export function Modal({
 }: ModalProps): ReactElement {
   const boxRef = useRef<HTMLDivElement>(null);
 
+  // Shared Tab trap (design D10a): cycles focus inside the box, also
+  // reclaiming focus that lands outside it or on the parking shell.
+  useFocusTrap(boxRef);
+
   // Latest-callback ref: buddies call sites pass inline arrows, so keying the
   // listener effect on onClose would tear down and re-run focus management on
   // every keystroke of a controlled input inside the dialog.
@@ -55,7 +56,8 @@ export function Modal({
     onCloseRef.current = onClose;
   });
 
-  // Mount/unmount-only: park focus, trap Tab, listen for Escape, restore.
+  // Mount/unmount-only: park focus, listen for Escape, restore. (Tab trapping
+  // lives in the shared useFocusTrap hook.)
   useEffect((): (() => void) => {
     // SAFETY: focus only ever lands on HTMLElements here (the trigger
     // control or the tabIndex box); the restore call is null-safe.
@@ -76,27 +78,6 @@ export function Modal({
         onCloseRef.current();
 
         return;
-      }
-
-      if (e.key === "Tab") {
-        const box = boxRef.current;
-
-        if (!box) return;
-        const items = Array.from(box.querySelectorAll<HTMLElement>(FOCUSABLE));
-
-        if (!items.length) return;
-        const first = items[0];
-        const last = items[items.length - 1];
-        const active = document.activeElement;
-        const inside = active instanceof Node && box.contains(active);
-
-        if (e.shiftKey && (!inside || active === first || active === box)) {
-          e.preventDefault();
-          last.focus();
-        } else if (!e.shiftKey && (!inside || active === last)) {
-          e.preventDefault();
-          first.focus();
-        }
       }
     };
 

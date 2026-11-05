@@ -13,7 +13,10 @@
 
 // eslint-disable-next-line @typescript-eslint/ban-ts-comment
 // @ts-ignore: Unused imports
-import { Call as $Call, CancellablePromise as $CancellablePromise } from "@wailsio/runtime";
+import {
+  Call as $Call,
+  CancellablePromise as $CancellablePromise,
+} from "@wailsio/runtime";
 
 // eslint-disable-next-line @typescript-eslint/ban-ts-comment
 // @ts-ignore: Unused imports
@@ -35,27 +38,49 @@ import * as $models from "./models.js";
  * per-agent fetch). The result is never nil.
  */
 export function AllSessions(): $CancellablePromise<store$0.Session[] | null> {
-    return $Call.ByID(1969927607);
+  return $Call.ByID(1969927607);
 }
 
 /**
  * AttachmentContent resolves one capability key to its metadata and content.
  * An unknown key is refused; the on-disk path is never exposed.
  */
-export function AttachmentContent(key: string): $CancellablePromise<$models.AttachmentContent> {
-    return $Call.ByID(777216739, key);
+export function AttachmentContent(
+  key: string
+): $CancellablePromise<$models.AttachmentContent> {
+  return $Call.ByID(777216739, key);
 }
 
 /**
- * BrowserScreenshot reads one screenshot the browser tool captured: name
- * must be the exact basename the tool writes ("<unixmilli>.png"), resolved
- * strictly as <browserDir>/screenshots/<name>. A name with directory
- * components or outside the shape is refused before any filesystem call; a
- * well-shaped name with no file behind it is a not-found error. No other
- * path is ever touched.
+ * BeginBrowserTakeover approves the session's pending browser takeover
+ * request (design D8): the parent signals the child to relaunch that
+ * profile's browser headed and focused, and the session is held for the
+ * user. A stale id fails with agents.ErrInputNotPending.
  */
-export function BrowserScreenshot(name: string): $CancellablePromise<$models.BrowserScreenshotContent> {
-    return $Call.ByID(276986657, name);
+export function BeginBrowserTakeover(
+  sessionID: string,
+  interruptID: string
+): $CancellablePromise<void> {
+  return $Call.ByID(3425220137, sessionID, interruptID);
+}
+
+/**
+ * BrowserScreenshot reads one screenshot the browser tool captured into the
+ * calling session's workspace: name must be the exact basename the tool
+ * writes ("<unixmilli>.png"), resolved strictly as
+ * <workspaces>/<agent slug>/sessions/<sessionID>/browser/<name> — the same
+ * directory the child writes through the parent's per-call _meta, inside the
+ * workspace jail (add-browser-login-handover follow-up: the model reads its
+ * own capture back with read_file). A name with directory components or
+ * outside the shape is refused before any filesystem call; a well-shaped
+ * name with no file behind it is a not-found error. No other path is ever
+ * touched.
+ */
+export function BrowserScreenshot(
+  sessionID: string,
+  name: string
+): $CancellablePromise<$models.BrowserScreenshotContent> {
+  return $Call.ByID(276986657, sessionID, name);
 }
 
 /**
@@ -67,15 +92,33 @@ export function BrowserScreenshot(name: string): $CancellablePromise<$models.Bro
  * safe no-op.
  */
 export function Cancel(sessionID: string): $CancellablePromise<void> {
-    return $Call.ByID(4077287017, sessionID);
+  return $Call.ByID(4077287017, sessionID);
+}
+
+/**
+ * CancelInput ends the session's pending browser secret request with the
+ * user's cancel — the secret card's Cancel button. The parked submit_secret
+ * call unblocks on the cancelled result (the turn continues; the agent's
+ * fallback is plain chat or takeover), the child's protection freeze is
+ * released best-effort, and the receipt records the cancelled outcome only.
+ * A stale or already-resolved interrupt id fails with agents.ErrInputNotPending
+ * and changes nothing.
+ */
+export function CancelInput(
+  sessionID: string,
+  interruptID: string
+): $CancellablePromise<void> {
+  return $Call.ByID(4049569871, sessionID, interruptID);
 }
 
 /**
  * ContextUsage reports the session's context-window fill state (used tokens
  * against the model's declared limit) for the chat view's context indicator.
  */
-export function ContextUsage(sessionID: string): $CancellablePromise<agents$0.ContextUsage> {
-    return $Call.ByID(4047490113, sessionID);
+export function ContextUsage(
+  sessionID: string
+): $CancellablePromise<agents$0.ContextUsage> {
+  return $Call.ByID(4047490113, sessionID);
 }
 
 /**
@@ -83,8 +126,10 @@ export function ContextUsage(sessionID: string): $CancellablePromise<agents$0.Co
  * store.ErrNotFound when the agent does not exist. The runtime titles the
  * session from its first message.
  */
-export function CreateSession(agentID: string): $CancellablePromise<store$0.Session> {
-    return $Call.ByID(171308801, agentID);
+export function CreateSession(
+  agentID: string
+): $CancellablePromise<store$0.Session> {
+  return $Call.ByID(171308801, agentID);
 }
 
 /**
@@ -96,7 +141,7 @@ export function CreateSession(agentID: string): $CancellablePromise<store$0.Sess
  * agents.ErrTurnInProgress — its transcript is being written; cancel first.
  */
 export function DeleteSession(sessionID: string): $CancellablePromise<void> {
-    return $Call.ByID(3952910024, sessionID);
+  return $Call.ByID(3952910024, sessionID);
 }
 
 /**
@@ -112,8 +157,12 @@ export function DeleteSession(sessionID: string): $CancellablePromise<void> {
  * generation's home, never the file itself. A well-formed name with no file
  * in any location wraps store.ErrNotFound.
  */
-export function GeneratedDocument(agentID: string, sessionID: string, name: string): $CancellablePromise<$models.GeneratedDocumentContent> {
-    return $Call.ByID(4251336789, agentID, sessionID, name);
+export function GeneratedDocument(
+  agentID: string,
+  sessionID: string,
+  name: string
+): $CancellablePromise<$models.GeneratedDocumentContent> {
+  return $Call.ByID(4251336789, agentID, sessionID, name);
 }
 
 /**
@@ -121,8 +170,11 @@ export function GeneratedDocument(agentID: string, sessionID: string, name: stri
  * jailed like WorkspaceFile. relPath "" or "/" lists the workspace root; the
  * result is never nil.
  */
-export function ListWorkspace(agentID: string, relPath: string): $CancellablePromise<$models.WorkspaceEntry[] | null> {
-    return $Call.ByID(1296129900, agentID, relPath);
+export function ListWorkspace(
+  agentID: string,
+  relPath: string
+): $CancellablePromise<$models.WorkspaceEntry[] | null> {
+  return $Call.ByID(1296129900, agentID, relPath);
 }
 
 /**
@@ -134,8 +186,11 @@ export function ListWorkspace(agentID: string, relPath: string): $CancellablePro
  * streams live; Fails with agents.ErrTurnInProgress when the session is busy
  * or when the turn has no user message to re-run.
  */
-export function Regenerate(sessionID: string, turnID: string): $CancellablePromise<string> {
-    return $Call.ByID(2882076601, sessionID, turnID);
+export function Regenerate(
+  sessionID: string,
+  turnID: string
+): $CancellablePromise<string> {
+  return $Call.ByID(2882076601, sessionID, turnID);
 }
 
 /**
@@ -146,8 +201,56 @@ export function Regenerate(sessionID: string, turnID: string): $CancellablePromi
  * continues. A stale or already-resolved interrupt id fails with
  * agents.ErrApprovalNotPending and changes nothing.
  */
-export function ResolveApproval(sessionID: string, interruptID: string, approved: boolean): $CancellablePromise<void> {
-    return $Call.ByID(1097902642, sessionID, interruptID, approved);
+export function ResolveApproval(
+  sessionID: string,
+  interruptID: string,
+  approved: boolean
+): $CancellablePromise<void> {
+  return $Call.ByID(1097902642, sessionID, interruptID, approved);
+}
+
+/**
+ * ResolveInput submits the user-typed secret — and, when the card collected
+ * one, the username-or-email identifier — for the session's pending browser
+ * attention request (add-browser-login-handover design D3/D5). The value is
+ * never persisted: it is handed to the runtime's delivery channel only, and
+ * the transcript records a receipt. When saveLogin is set and the pending
+ * request names a secret with an origin and an account name, the value is
+ * vaulted first under a name derived from the origin host, addedBy the
+ * session's agent — a typed identifier overrides the agent-supplied username
+ * for the vault entry. A failed save is logged and does NOT block the
+ * sign-in; the runtime learns the save's outcome through
+ * (savedAs, savedLoginID). A stale or already-resolved interrupt id fails
+ * with agents.ErrInputNotPending and changes nothing.
+ */
+export function ResolveInput(
+  sessionID: string,
+  interruptID: string,
+  text: string,
+  identifier: string,
+  saveLogin: boolean
+): $CancellablePromise<void> {
+  return $Call.ByID(
+    1323307375,
+    sessionID,
+    interruptID,
+    text,
+    identifier,
+    saveLogin
+  );
+}
+
+/**
+ * ResolveTakeover ends the session's pending browser takeover with the
+ * user's outcome — the completed/cancelled vocabulary of the attention
+ * card (design D8). A stale id fails with agents.ErrInputNotPending.
+ */
+export function ResolveTakeover(
+  sessionID: string,
+  interruptID: string,
+  outcome: string
+): $CancellablePromise<void> {
+  return $Call.ByID(3546903096, sessionID, interruptID, outcome);
 }
 
 /**
@@ -156,7 +259,7 @@ export function ResolveApproval(sessionID: string, interruptID: string, approved
  * the frontend's boot-time sync. The result is never nil.
  */
 export function RunningSessions(): $CancellablePromise<string[] | null> {
-    return $Call.ByID(2157916803);
+  return $Call.ByID(2157916803);
 }
 
 /**
@@ -173,8 +276,13 @@ export function RunningSessions(): $CancellablePromise<string[] | null> {
  * rejected with the reason (attachments caps: at most 5 MB images, 20 MB
  * PDFs, 1 MB text; the per-message count cap rides the send path).
  */
-export function SaveAttachment(sessionID: string, name: string, mime: string, data: string): $CancellablePromise<sessions$0.Attachment> {
-    return $Call.ByID(2747322311, sessionID, name, mime, data);
+export function SaveAttachment(
+  sessionID: string,
+  name: string,
+  mime: string,
+  data: string
+): $CancellablePromise<sessions$0.Attachment> {
+  return $Call.ByID(2747322311, sessionID, name, mime, data);
 }
 
 /**
@@ -189,8 +297,12 @@ export function SaveAttachment(sessionID: string, name: string, mime: string, da
  * this host is ErrExportUnavailable — both bare, their messages being the
  * frontend contract. The workspace path never crosses the boundary.
  */
-export function SaveGeneratedDocumentAs(agentID: string, sessionID: string, name: string): $CancellablePromise<string> {
-    return $Call.ByID(3879792746, agentID, sessionID, name);
+export function SaveGeneratedDocumentAs(
+  agentID: string,
+  sessionID: string,
+  name: string
+): $CancellablePromise<string> {
+  return $Call.ByID(3879792746, agentID, sessionID, name);
 }
 
 /**
@@ -203,16 +315,22 @@ export function SaveGeneratedDocumentAs(agentID: string, sessionID: string, name
  * surfaces as a turn_completed, turn_error, or turn_cancelled event. Fails
  * with agents.ErrTurnInProgress when the session is busy.
  */
-export function Send(sessionID: string, message: string, attachmentKeys: string[] | null): $CancellablePromise<string> {
-    return $Call.ByID(3952313769, sessionID, message, attachmentKeys);
+export function Send(
+  sessionID: string,
+  message: string,
+  attachmentKeys: string[] | null
+): $CancellablePromise<string> {
+  return $Call.ByID(3952313769, sessionID, message, attachmentKeys);
 }
 
 /**
  * Sessions returns the agent's sessions, most recent activity first. The
  * result is never nil.
  */
-export function Sessions(agentID: string): $CancellablePromise<store$0.Session[] | null> {
-    return $Call.ByID(1120686558, agentID);
+export function Sessions(
+  agentID: string
+): $CancellablePromise<store$0.Session[] | null> {
+  return $Call.ByID(1120686558, agentID);
 }
 
 /**
@@ -221,8 +339,12 @@ export function Sessions(agentID: string): $CancellablePromise<store$0.Session[]
  * inherit. The next Send resolves the turn's effective configuration from
  * the row, so a rejected pair surfaces as that turn's turn_error event.
  */
-export function SetSessionOverrides(sessionID: string, model: string, effort: string): $CancellablePromise<void> {
-    return $Call.ByID(2785869964, sessionID, model, effort);
+export function SetSessionOverrides(
+  sessionID: string,
+  model: string,
+  effort: string
+): $CancellablePromise<void> {
+  return $Call.ByID(2785869964, sessionID, model, effort);
 }
 
 /**
@@ -232,7 +354,7 @@ export function SetSessionOverrides(sessionID: string, model: string, effort: st
  * Missed events (attached late) are recovered by reading Transcript.
  */
 export function Subscribe(sessionID: string): $CancellablePromise<void> {
-    return $Call.ByID(4267832241, sessionID);
+  return $Call.ByID(4267832241, sessionID);
 }
 
 /**
@@ -240,8 +362,10 @@ export function Subscribe(sessionID: string): $CancellablePromise<void> {
  * events (text and reasoning deltas) are absent; the durable forms
  * (assistant message, reasoning) stand in for them.
  */
-export function Transcript(sessionID: string): $CancellablePromise<sessions$0.Event[] | null> {
-    return $Call.ByID(964754345, sessionID);
+export function Transcript(
+  sessionID: string
+): $CancellablePromise<sessions$0.Event[] | null> {
+  return $Call.ByID(964754345, sessionID);
 }
 
 /**
@@ -252,15 +376,21 @@ export function Transcript(sessionID: string): $CancellablePromise<sessions$0.Ev
  * pages backward with "load earlier". A non-positive limit takes the
  * sessions package's default page size.
  */
-export function TranscriptPage(sessionID: string, beforeSeq: number, limit: number): $CancellablePromise<sessions$0.Event[] | null> {
-    return $Call.ByID(4244307658, sessionID, beforeSeq, limit);
+export function TranscriptPage(
+  sessionID: string,
+  beforeSeq: number,
+  limit: number
+): $CancellablePromise<sessions$0.Event[] | null> {
+  return $Call.ByID(4244307658, sessionID, beforeSeq, limit);
 }
 
 /**
  * TurnState reports whether the session has a turn in flight and its turn ID.
  */
-export function TurnState(sessionID: string): $CancellablePromise<$models.TurnStateResult> {
-    return $Call.ByID(457546513, sessionID);
+export function TurnState(
+  sessionID: string
+): $CancellablePromise<$models.TurnStateResult> {
+  return $Call.ByID(457546513, sessionID);
 }
 
 /**
@@ -268,7 +398,7 @@ export function TurnState(sessionID: string): $CancellablePromise<$models.TurnSt
  * the session is not subscribed.
  */
 export function Unsubscribe(sessionID: string): $CancellablePromise<void> {
-    return $Call.ByID(3235484520, sessionID);
+  return $Call.ByID(3235484520, sessionID);
 }
 
 /**
@@ -277,8 +407,11 @@ export function Unsubscribe(sessionID: string): $CancellablePromise<void> {
  * traversal, absolute paths, and symlink escapes are refused before the
  * open, and nothing outside the agent's workspace is ever served.
  */
-export function WorkspaceFile(agentID: string, relPath: string): $CancellablePromise<string> {
-    return $Call.ByID(975489858, agentID, relPath);
+export function WorkspaceFile(
+  agentID: string,
+  relPath: string
+): $CancellablePromise<string> {
+  return $Call.ByID(975489858, agentID, relPath);
 }
 
 /**
@@ -289,6 +422,9 @@ export function WorkspaceFile(agentID: string, relPath: string): $CancellablePro
  * `.pdf` (case-insensitive) is application/pdf, everything else
  * application/octet-stream.
  */
-export function WorkspaceFileBinary(agentID: string, relPath: string): $CancellablePromise<$models.WorkspaceFileBinaryContent> {
-    return $Call.ByID(2189896627, agentID, relPath);
+export function WorkspaceFileBinary(
+  agentID: string,
+  relPath: string
+): $CancellablePromise<$models.WorkspaceFileBinaryContent> {
+  return $Call.ByID(2189896627, agentID, relPath);
 }

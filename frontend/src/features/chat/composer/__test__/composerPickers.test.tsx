@@ -305,4 +305,23 @@ describe("the composer pickers (task 5.3)", () => {
         .sessions.find((s: Session): boolean => s.ID === "s1")?.AgentID
     ).toBe("a1");
   });
+
+  it("drops the whole picker rail while a group conversation is open (add-agent-groups D9)", async () => {
+    seedStore({
+      activeGroupID: "g1",
+      activeAgentID: null,
+      activeSessionID: null,
+    });
+    await renderComposer();
+
+    // A group send targets the group; agent/model/effort are session-surface
+    // controls with nothing to resolve against — the rail drops them.
+    expect(screen.queryByTestId("composer-pickers")).toBeNull();
+    expect(screen.queryByTestId("composer-agent-picker")).toBeNull();
+    expect(screen.queryByTestId("composer-model-picker")).toBeNull();
+    expect(screen.queryByTestId("composer-effort-picker")).toBeNull();
+
+    // The composer itself still renders for the group send.
+    expect(screen.getByTestId("chat-composer")).toBeTruthy();
+  });
 });

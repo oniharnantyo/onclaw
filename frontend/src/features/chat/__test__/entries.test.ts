@@ -12,7 +12,7 @@ import {
   ToolStatus,
   type Event as SessionEvent,
 } from "../../../../bindings/github.com/oniharnantyo/buddies/internal/sessions/models";
-import { applyEvent, type Entry } from "../entries";
+import { applyEvent, expireUnresolvedInputs, type Entry } from "../entries";
 
 function ev(
   kind: SessionEvent["kind"],
@@ -527,5 +527,55 @@ describe("artifact stamping (add-turn-artifacts tasks 6.1, design D4)", () => {
     expect(originalEntry).toMatchObject({ artifacts: original });
     expect(variantEntry).toMatchObject({ artifacts: variant });
     expect(originalEntry).not.toBe(variantEntry);
+  });
+});
+
+describe("input expiry normalization (add-browser-login-handover)", () => {
+  it("folds a still-pending input entry as an expired receipt", () => {
+    const pending = fold(
+      ev(Kind.KindInputRequired, {
+        turn_id: "t1",
+        id: "e1",
+        input: { interrupt_id: "int-1", prompt: "Enter the password" },
+      })
+    );
+
+    expect(pending[0]).toMatchObject({ kind: "input", resolved: false });
+
+    const expired = expireUnresolvedInputs(pending);
+
+    expect(expired[0]).toMatchObject({
+      kind: "input",
+      resolved: true,
+      outcome: "expired",
+    });
+  });
+
+  it("leaves entries carrying an input_resolved receipt untouched", () => {
+    const resolved = fold(
+      ev(Kind.KindInputRequired, {
+        turn_id: "t1",
+        id: "e1",
+        input: { interrupt_id: "int-1", prompt: "Enter the password" },
+      }),
+      ev(Kind.KindInputResolved, {
+        turn_id: "t1",
+        id: "e2",
+        input: { interrupt_id: "int-1", outcome: "completed", length: 12 },
+      })
+    );
+
+    const after = expireUnresolvedInputs(resolved);
+
+    expect(after).toEqual(resolved);
+    expect(after[0]).toMatchObject({ resolved: true, outcome: "completed" });
+  });
+
+  it("returns the same array when nothing is pending (identity preserved)", () => {
+    const entries = fold(
+      ev(Kind.KindUserMessage, { text: "hi", turn_id: "t1", id: "e1" })
+    );
+
+    expect(expireUnresolvedInputs(entries)).toBe(entries);
   });
 });

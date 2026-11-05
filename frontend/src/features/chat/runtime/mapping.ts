@@ -48,9 +48,11 @@ import type {
 import {
   asApproval,
   asEntry,
+  asInput,
   asRichUser,
   type ApprovalEntry,
   type ChatEntry,
+  type InputEntry,
 } from "../entries";
 import type {
   AssistantEntry,
@@ -70,6 +72,42 @@ type JsonValue =
 
 /** The object shape parsed tool-call arguments carry. */
 type JsonObject = { readonly [key: string]: JsonValue };
+
+/** The receipt an input resolution records (add-browser-login-handover,
+ * design D3): outcome, the redacted length, and the optional saved-login id.
+ * There is no value field — the mapping structurally cannot leak one. */
+export interface InputReceipt {
+  readonly outcome: string;
+  readonly length?: number;
+  readonly savedLoginId?: string;
+}
+
+/** The approval seam an input part rides, widened with the attention
+ * descriptor the attention cards read (design D6): the extra fields ride the
+ * part type declaration — the host reads them, the runtime ignores them. */
+export type InputApproval = NonNullable<ToolCallMessagePart["approval"]> & {
+  /** Which card renders: "secret" (display "text") or "takeover" (display
+   * "decision"). THE GATE (spec chat-approvals: "The runtime SHALL accept a
+   * text response only when a request declares it"): display "text" is set
+   * ONLY here, on input parts minted from input_required events — and the
+   * secret card submits through client.resolveInput directly, never through
+   * the assistant-ui approval-response machinery, so no other path can
+   * produce a text response. */
+  readonly attention: "secret" | "takeover";
+  /** password | otp | authenticator (secrets). */
+  readonly method?: string;
+  /** The OTP length the card renders digit boxes for. */
+  readonly digits?: number;
+  /** The HTTPS origin of the sign-in page. */
+  readonly origin?: string;
+  /** The account name the agent passed (secrets, optional). */
+  readonly username?: string;
+  /** The card also collects a username-or-email identifier (secrets whose
+   * request declared an identifierTarget). */
+  readonly identifier?: boolean;
+  /** Set once the input_resolved event folds: the receipt the card renders. */
+  readonly receipt?: InputReceipt;
+};
 
 /** The tool names the transcript never renders (subagent delegation
  * activity): the delegation call itself plus its output/stop bookkeeping
@@ -336,7 +374,7 @@ function turnContent(group: EntryGroup): ChatPart[] {
       continue;
     }
 
-    const part = turnPart(entry);
+    const part = turnPartCached(entry);
 
     if (part !== null) content.push(part);
   }
@@ -346,6 +384,29 @@ function turnContent(group: EntryGroup): ChatPart[] {
   if (artifacts !== null) content.push(artifacts);
 
   return content;
+}
+
+/**
+ * Per-entry part memo (task 5.2, design D4): an entry is immutable once
+ * minted — every reducer step replaces rather than mutates — so its
+ * converted part is cached forever under the entry's identity (WeakMap;
+ * unreachable entries are collected with it). The streaming tail's group
+ * re-converts per delta, but every unchanged member — the tool calls'
+ * parsed arguments above all — hands back the SAME part object instead of
+ * re-parsing. `null` is a legitimate cached value (the kinds a turn group
+ * never renders), so the cache answers on `get`, not on truthiness.
+ */
+const partMemo = new WeakMap<ChatEntry, ChatPart | null>();
+
+function turnPartCached(entry: ChatEntry): ChatPart | null {
+  const cached = partMemo.get(entry);
+
+  if (cached !== undefined) return cached;
+
+  const part = turnPart(entry);
+  partMemo.set(entry, part);
+
+  return part;
 }
 
 /** The trailing data-artifacts part of a turn group (add-turn-artifacts
@@ -404,6 +465,8 @@ function turnPart(entry: ChatEntry): ChatPart | null {
       return errorPart(entry);
     case "approval":
       return approvalPart(asApproval(asEntry(entry)));
+    case "input":
+      return inputPart(asInput(asEntry(entry)));
     default:
       // Unreachable: user and compaction entries never join a turn group.
       throw new Error(`entry kind "${entry.kind}" cannot join a turn`);
@@ -534,6 +597,70 @@ function approvalPart(entry: ApprovalEntry): ToolCallMessagePart {
   };
 }
 
+/** The turn's tool-call part for one input entry (add-browser-login-handover
+ * tasks 3.3/4.1, design D6): the parked request rides the approval seam —
+ * `approval: {id: interruptID, prompt, display}` with display "text" for
+ * secrets (the masked card) and "decision" for takeover — plus the
+ * attention descriptor (kind, method, digits, origin, username) the cards
+ * read. The part carries NO value field: there is nothing to leak (design
+ * D1 — the mapping structurally cannot receive a value; the typed text rides
+ * client.resolveInput's argument only, from the card's local state).
+ *
+ * A resolved entry renders the receipt: completed → the filled wording (with
+ * the saved-login id when the vault stored it), cancelled/expired/failed →
+ * their own wording. The prompt is receipt-safe by construction (composed by
+ * the runtime from the origin, never a value). */
+function inputPart(entry: InputEntry): ToolCallMessagePart {
+  const base = {
+    type: "tool-call",
+    toolCallId: entry.id,
+    toolName: "execute",
+    args: {},
+    argsText: entry.prompt,
+  } satisfies ToolCallMessagePart;
+
+  const display = entry.attention === "takeover" ? "decision" : "text";
+
+  const descriptor: InputApproval = {
+    id: entry.interruptID,
+    prompt: entry.prompt,
+    display,
+    attention: entry.attention ?? "secret",
+    ...(entry.method !== undefined ? { method: entry.method } : {}),
+    ...(entry.digits !== undefined ? { digits: entry.digits } : {}),
+    ...(entry.origin !== undefined ? { origin: entry.origin } : {}),
+    ...(entry.username !== undefined ? { username: entry.username } : {}),
+    ...(entry.identifier === true ? { identifier: true } : {}),
+  };
+
+  if (!entry.resolved) return { ...base, approval: descriptor };
+
+  const receipt: InputReceipt = {
+    outcome: entry.outcome ?? "",
+    ...(entry.length !== undefined ? { length: entry.length } : {}),
+    ...(entry.savedLoginId !== undefined
+      ? { savedLoginId: entry.savedLoginId }
+      : {}),
+  };
+
+  const resolvedDescriptor: InputApproval = { ...descriptor, receipt };
+
+  if (entry.outcome === "completed") {
+    return { ...base, approval: resolvedDescriptor };
+  }
+
+  if (entry.outcome === "cancelled" || entry.outcome === "expired") {
+    return {
+      ...base,
+      approval: { ...resolvedDescriptor, resolution: entry.outcome },
+    };
+  }
+
+  // failed (or any future outcome): the failed flag mirrors the shell
+  // approval's denied styling while the receipt wording stays exact.
+  return { ...base, approval: { ...resolvedDescriptor, approved: false } };
+}
+
 /** The message status of a turn: an outstanding approval pauses it
  * (requires-action), an inline error fails it, streaming entries keep it
  * running, and otherwise it is complete. */
@@ -545,6 +672,10 @@ function turnStatus(entries: readonly ChatEntry[]): MessageStatus {
   for (const entry of entries) {
     if (entry.kind === "approval") {
       if (!asApproval(asEntry(entry)).resolved) pendingApproval = true;
+    } else if (entry.kind === "input") {
+      // A parked browser-attention request pauses the turn the same way an
+      // approval does (add-browser-login-handover, design D3).
+      if (!asInput(asEntry(entry)).resolved) pendingApproval = true;
     } else if (entry.kind === "error") {
       failed = true;
     } else if (entry.kind === "assistant" || entry.kind === "reasoning") {

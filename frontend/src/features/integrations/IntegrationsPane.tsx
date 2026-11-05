@@ -321,7 +321,7 @@ function IntegrationTile({
             label={`Remove ${tile.label}`}
             size="sm"
             testId={`integrations-remove-${tile.serviceId}`}
-            className="text-danger hover:bg-[color-mix(in_oklab,var(--danger)_12%,transparent)] hover:text-danger"
+            className="text-dangertext hover:bg-[color-mix(in_oklab,var(--danger)_12%,transparent)] hover:text-dangertext"
             icon={<Icon name="trash" size={16} />}
             onClick={onRemove}
           />

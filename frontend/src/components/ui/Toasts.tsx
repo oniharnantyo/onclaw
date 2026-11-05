@@ -30,7 +30,7 @@ export function Toasts(): ReactElement {
           <span
             className={cn(
               "mt-0.5",
-              t.kind === "danger" ? "text-danger" : "text-accent"
+              t.kind === "danger" ? "text-dangertext" : "text-accenttext"
             )}
           >
             <Icon name={t.kind === "danger" ? "alert" : "check"} size={15} />

@@ -8,7 +8,10 @@
 
 // eslint-disable-next-line @typescript-eslint/ban-ts-comment
 // @ts-ignore: Unused imports
-import { Call as $Call, CancellablePromise as $CancellablePromise } from "@wailsio/runtime";
+import {
+  Call as $Call,
+  CancellablePromise as $CancellablePromise,
+} from "@wailsio/runtime";
 
 // eslint-disable-next-line @typescript-eslint/ban-ts-comment
 // @ts-ignore: Unused imports
@@ -18,5 +21,5 @@ import * as $models from "./models.js";
  * Get returns the application's name, version, and host capabilities.
  */
 export function Get(): $CancellablePromise<$models.Metadata> {
-    return $Call.ByID(3409163259);
+  return $Call.ByID(3409163259);
 }

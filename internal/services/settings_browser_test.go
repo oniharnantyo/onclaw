@@ -10,7 +10,8 @@ import (
 
 	"github.com/stretchr/testify/require"
 
-	"github.com/oniharnantyo/buddies/internal/agents/tools"
+	"github.com/oniharnantyo/buddies/internal/agents/mcp"
+	"github.com/oniharnantyo/buddies/internal/browseruse"
 	"github.com/oniharnantyo/buddies/internal/store/fake"
 )
 
@@ -24,14 +25,14 @@ func newBrowserSettings(t *testing.T) (*SettingsService, *fake.Store, string) {
 }
 
 // TestSettingsBrowser_ConfigDefaultsWhenUnset proves a fresh store yields
-// the defaults — the same values the runtime's config source resolves
-// (spec add-browser-tool "Browser settings and profile management").
+// the defaults — the same values the system server's config provider
+// resolves at spawn (browseruse.DefaultConfig).
 func TestSettingsBrowser_ConfigDefaultsWhenUnset(t *testing.T) {
 	svc, _, _ := newBrowserSettings(t)
 
 	cfg, err := svc.BrowserConfig(context.Background())
 	require.NoError(t, err)
-	def := tools.DefaultBrowserConfig()
+	def := browseruse.DefaultConfig()
 	require.Equal(t, BrowserConfig{
 		DefaultProfile:       def.DefaultProfile,
 		Headless:             def.Headless,
@@ -56,7 +57,7 @@ func TestSettingsBrowser_ConfigRoundTrip(t *testing.T) {
 		AllowPrivate:         true,
 	}))
 
-	raw, ok, err := fs.ToolSettings().Get(ctx, tools.NameBrowser)
+	raw, ok, err := fs.ToolSettings().Get(ctx, BrowserSettingsKey)
 	require.NoError(t, err)
 	require.True(t, ok)
 	var stored storedBrowserConfig
@@ -90,7 +91,7 @@ func TestSettingsBrowser_ConfigRoundTrip(t *testing.T) {
 	}))
 	cfg, err = svc.BrowserConfig(ctx)
 	require.NoError(t, err)
-	require.Equal(t, tools.DefaultBrowserProfile, cfg.DefaultProfile)
+	require.Equal(t, browseruse.DefaultBrowserProfile, cfg.DefaultProfile)
 }
 
 // TestSettingsBrowser_SaveRejectsInvalid covers the save validation: the
@@ -127,7 +128,7 @@ func TestSettingsBrowser_Profiles(t *testing.T) {
 
 	profiles, err := svc.BrowserProfiles(ctx)
 	require.NoError(t, err)
-	require.Equal(t, []BrowserProfile{{Name: tools.DefaultBrowserProfile}}, profiles)
+	require.Equal(t, []BrowserProfile{{Name: browseruse.DefaultBrowserProfile}}, profiles)
 
 	require.NoError(t, svc.CreateBrowserProfile(ctx, "work"))
 	require.NoError(t, svc.CreateBrowserProfile(ctx, "alpha"))
@@ -174,7 +175,7 @@ func TestSettingsBrowser_CreateDuplicate(t *testing.T) {
 // protected (spec add-browser-tool "Default profile is protected").
 func TestSettingsBrowser_DeleteRefusesDefault(t *testing.T) {
 	svc, _, _ := newBrowserSettings(t)
-	err := svc.DeleteBrowserProfile(context.Background(), tools.DefaultBrowserProfile)
+	err := svc.DeleteBrowserProfile(context.Background(), browseruse.DefaultBrowserProfile)
 	require.ErrorContains(t, err, "the default profile cannot be deleted")
 }
 
@@ -201,11 +202,11 @@ func TestSettingsBrowser_DeleteRemovesAndResets(t *testing.T) {
 	profiles, err := svc.BrowserProfiles(ctx)
 	require.NoError(t, err)
 	require.Len(t, profiles, 1)
-	require.Equal(t, tools.DefaultBrowserProfile, profiles[0].Name)
+	require.Equal(t, browseruse.DefaultBrowserProfile, profiles[0].Name)
 
 	cfg, err := svc.BrowserConfig(ctx)
 	require.NoError(t, err)
-	require.Equal(t, tools.DefaultBrowserProfile, cfg.DefaultProfile)
+	require.Equal(t, browseruse.DefaultBrowserProfile, cfg.DefaultProfile)
 }
 
 // TestSettingsBrowser_DeleteUnknownIsNoOp proves deleting a profile that
@@ -219,4 +220,98 @@ func TestSettingsBrowser_DeleteUnknownIsNoOp(t *testing.T) {
 
 	_, err := os.Stat(filepath.Join(dir, "profiles", "ghost"))
 	require.True(t, os.IsNotExist(err))
+}
+
+// TestSettingsBrowser_ImportBrowserProfile proves the import copies the
+// source directory into the profiles registry under a validated name,
+// leaves the source untouched, and suffixes a name collision instead of
+// overwriting (spec browser-use "Profile import": import copies and lists,
+// collision is suffixed, source stays intact).
+func TestSettingsBrowser_ImportBrowserProfile(t *testing.T) {
+	svc, _, dir := newBrowserSettings(t)
+
+	source := filepath.Join(t.TempDir(), "chrome-user-data")
+	require.NoError(t, os.MkdirAll(filepath.Join(source, "Default"), 0o700))
+	require.NoError(t, os.WriteFile(filepath.Join(source, "Default", "Cookies"), []byte("jar"), 0o600))
+
+	final, err := svc.ImportBrowserProfile(source, "work")
+	require.NoError(t, err)
+	require.Equal(t, "work", final)
+
+	copied, err := os.ReadFile(filepath.Join(dir, "profiles", "work", "Default", "Cookies"))
+	require.NoError(t, err)
+	require.Equal(t, "jar", string(copied))
+	kept, err := os.ReadFile(filepath.Join(source, "Default", "Cookies"))
+	require.NoError(t, err, "the source directory must stay intact")
+	require.Equal(t, "jar", string(kept))
+
+	// The imported profile lists like any other.
+	profiles, err := svc.BrowserProfiles(context.Background())
+	require.NoError(t, err)
+	require.Len(t, profiles, 2) // default + work
+
+	// A collision lands under a suffixed name instead of overwriting.
+	final, err = svc.ImportBrowserProfile(source, "work")
+	require.NoError(t, err)
+	require.Equal(t, "work-2", final)
+
+	// An invalid name is refused before any filesystem access.
+	_, err = svc.ImportBrowserProfile(source, "Not Valid")
+	require.Error(t, err)
+	_, err = os.Stat(filepath.Join(dir, "profiles", "Not Valid"))
+	require.True(t, os.IsNotExist(err))
+}
+
+// TestSettingsBrowser_DeleteCoordinatesSystemServer proves the
+// profile-delete flow honors "deleting a profile SHALL remove it after its
+// browser closes": a live (connected) system server is restarted — the
+// synchronous seam standing in for the child teardown that closes the
+// profile's browser — before the directory goes, while a failed or absent
+// server owns no browser and is left alone.
+func TestSettingsBrowser_DeleteCoordinatesSystemServer(t *testing.T) {
+	ctx := context.Background()
+
+	newCoordinatedSettings := func(dir string, state mcp.ServerState, supervised bool) (svc *SettingsService, restarts *int) {
+		fs := fake.New()
+		count := 0
+		svc = NewSettingsService(fs,
+			WithBrowserDir(dir),
+			WithSystemServerState(func() (mcp.ServerState, bool) { return state, supervised }),
+			WithSystemServerRestart(func() { count++ }))
+		return svc, &count
+	}
+
+	t.Run("connected server is restarted before removal", func(t *testing.T) {
+		dir := t.TempDir()
+		svc, restarts := newCoordinatedSettings(dir, mcp.ServerState{Status: mcp.StatusConnected}, true)
+		require.NoError(t, svc.CreateBrowserProfile(ctx, "work"))
+
+		require.NoError(t, svc.DeleteBrowserProfile(ctx, "work"))
+		require.Equal(t, 1, *restarts, "a live server's child must be torn down so the browser closes first")
+		_, err := os.Stat(filepath.Join(dir, "profiles", "work"))
+		require.True(t, os.IsNotExist(err), "the profile directory is removed after the browser closed")
+	})
+
+	t.Run("failed server is not restarted", func(t *testing.T) {
+		dir := t.TempDir()
+		svc, restarts := newCoordinatedSettings(dir,
+			mcp.ServerState{Status: mcp.StatusError, StatusError: "spawn failed"}, true)
+		require.NoError(t, svc.CreateBrowserProfile(ctx, "work"))
+
+		require.NoError(t, svc.DeleteBrowserProfile(ctx, "work"))
+		require.Zero(t, *restarts, "a failed server owns no live browser; the directory is removed directly")
+		_, err := os.Stat(filepath.Join(dir, "profiles", "work"))
+		require.True(t, os.IsNotExist(err))
+	})
+
+	t.Run("no supervised server is not restarted", func(t *testing.T) {
+		dir := t.TempDir()
+		svc, restarts := newCoordinatedSettings(dir, mcp.ServerState{}, false)
+		require.NoError(t, svc.CreateBrowserProfile(ctx, "work"))
+
+		require.NoError(t, svc.DeleteBrowserProfile(ctx, "work"))
+		require.Zero(t, *restarts)
+		_, err := os.Stat(filepath.Join(dir, "profiles", "work"))
+		require.True(t, os.IsNotExist(err))
+	})
 }

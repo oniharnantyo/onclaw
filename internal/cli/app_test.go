@@ -35,7 +35,7 @@ func TestAssemble_BuildsFullServiceSet(t *testing.T) {
 	ctx := context.Background()
 	emitter := &recordingEmitter{}
 
-	app, err := Assemble(ctx, emitter, services.NoBrowser{})
+	app, err := Assemble(ctx, emitter, services.NoBrowser{}, WithoutSystemBrowserUse())
 	require.NoError(t, err)
 	defer func() { require.NoError(t, app.Close()) }()
 
@@ -138,7 +138,7 @@ func TestAssemble_Close_StopsGatewayAndIsIdempotent(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
 	ctx := context.Background()
 
-	app, err := Assemble(ctx, &recordingEmitter{}, services.NoBrowser{})
+	app, err := Assemble(ctx, &recordingEmitter{}, services.NoBrowser{}, WithoutSystemBrowserUse())
 	require.NoError(t, err)
 
 	require.NoError(t, app.Services.Gateway.Start(ctx))
@@ -174,7 +174,7 @@ func TestRootCommand_Default_RunsGUIWithAssembledApp(t *testing.T) {
 	cmd := NewRootCommand(&recordingEmitter{}, services.NoBrowser{}, func(_ context.Context, app *App) error {
 		ran = app
 		return nil
-	})
+	}, WithoutSystemBrowserUse())
 
 	require.NoError(t, cmd.Run(context.Background(), []string{services.AppName}))
 	require.NotNil(t, ran)

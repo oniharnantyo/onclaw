@@ -10,6 +10,7 @@ import { Input } from "../../../components/ui/Input";
 import { Select } from "../../../components/ui/Select";
 import { client } from "../../../lib/client";
 import { cn } from "../../../lib/cn";
+import { useTablist } from "../../../lib/useTablist";
 import PresetEditor, {
   DOCXPresetEditor,
   TemplatePresetEditor,
@@ -255,6 +256,16 @@ export default function DocumentConfigDialog({
   const [loading, setLoading] = useState(true);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [generalError, setGeneralError] = useState<string | null>(null);
+
+  // The format strip rides the shared tablist grammar (fix-ui-audit-findings
+  // 3.2, design D7b): roving tabindex + arrow/Home/End movement (arrows stop
+  // at the ends), the preset list labelled by the active format tab.
+  const { tab, panel } = useTablist<FormatID>({
+    idPrefix: "document-format",
+    ids: FORMATS.map((f: (typeof FORMATS)[number]): FormatID => f.id),
+    active: format,
+    onChange: setFormat,
+  });
 
   const [editing, setEditing] = useState<Editor | null>(null);
   const [editorWarn, setEditorWarn] = useState<string | null>(null);
@@ -976,12 +987,11 @@ export default function DocumentConfigDialog({
               <button
                 key={f.id}
                 type="button"
-                role="tab"
-                aria-selected={format === f.id}
+                {...tab(f.id)}
                 data-testid={`document-tab-${f.id}`}
                 onClick={() => setFormat(f.id)}
                 className={cn(
-                  "-mb-px rounded-t-md border-b-2 px-3 py-1.5 text-[12px] font-medium transition-colors",
+                  "-mb-px rounded-t-md border-b px-3 py-1.5 text-[12px] font-medium transition-colors",
                   format === f.id
                     ? "border-accent text-fg"
                     : "border-transparent text-muted hover:text-fg"
@@ -992,223 +1002,227 @@ export default function DocumentConfigDialog({
             ))}
           </div>
 
-          {generalError ? (
-            <div role="alert">
-              <Alert tone="danger" testId="document-error">
-                {generalError}
-              </Alert>
-            </div>
-          ) : null}
+          <div {...panel(format)} className="space-y-4">
+            {generalError ? (
+              <div role="alert">
+                <Alert tone="danger" testId="document-error">
+                  {generalError}
+                </Alert>
+              </div>
+            ) : null}
 
-          {data.presets.length > 0 ? (
+            {data.presets.length > 0 ? (
+              <div>
+                <label
+                  className="mb-1.5 block text-[12px] font-medium text-fg2"
+                  htmlFor={`document-default-preset-${format}`}
+                >
+                  Default preset
+                </label>
+                <Select
+                  id={`document-default-preset-${format}`}
+                  data-testid={`document-default-preset-${format}`}
+                  className="h-8 w-48 text-[13px]"
+                  value={data.defaultName}
+                  onChange={(e: ChangeEvent<HTMLSelectElement>) =>
+                    void changeDefault(e.target.value)
+                  }
+                >
+                  <option value="">None (library defaults)</option>
+                  {data.presets.map((p: DocumentPresetEntry) => (
+                    <option key={p.id} value={p.name}>
+                      {p.name}
+                    </option>
+                  ))}
+                </Select>
+                <p className="mt-1 text-[11px] leading-4 text-muted">
+                  Used when a create_document call names no preset.
+                </p>
+              </div>
+            ) : null}
+
             <div>
-              <label
-                className="mb-1.5 block text-[12px] font-medium text-fg2"
-                htmlFor={`document-default-preset-${format}`}
-              >
-                Default preset
-              </label>
-              <Select
-                id={`document-default-preset-${format}`}
-                data-testid={`document-default-preset-${format}`}
-                className="h-8 w-48 text-[13px]"
-                value={data.defaultName}
-                onChange={(e: ChangeEvent<HTMLSelectElement>) =>
-                  void changeDefault(e.target.value)
-                }
-              >
-                <option value="">None (library defaults)</option>
-                {data.presets.map((p: DocumentPresetEntry) => (
-                  <option key={p.id} value={p.name}>
-                    {p.name}
-                  </option>
-                ))}
-              </Select>
+              <div className="flex items-center justify-between">
+                <span className="text-[12px] font-medium text-fg2">
+                  Presets
+                </span>
+                <div className="flex items-center gap-2">
+                  {format !== "pptx" ? (
+                    <Button
+                      variant="ghost"
+                      size="sm"
+                      data-testid={`document-preset-new-${format}`}
+                      onClick={() =>
+                        format === "pdf" ? openPdfEditor() : openDocxEditor()
+                      }
+                    >
+                      <Icon name="plus" size={13} /> New preset
+                    </Button>
+                  ) : null}
+                  {format !== "pdf" ? (
+                    <Button
+                      variant="ghost"
+                      size="sm"
+                      data-testid={`document-template-new-${format}`}
+                      onClick={() => openTemplateEditor(format)}
+                    >
+                      <Icon name="file" size={13} /> Upload template
+                    </Button>
+                  ) : null}
+                </div>
+              </div>
               <p className="mt-1 text-[11px] leading-4 text-muted">
-                Used when a create_document call names no preset.
+                {FORMAT_HINTS[format]}
               </p>
             </div>
-          ) : null}
 
-          <div>
-            <div className="flex items-center justify-between">
-              <span className="text-[12px] font-medium text-fg2">Presets</span>
-              <div className="flex items-center gap-2">
-                {format !== "pptx" ? (
-                  <Button
-                    variant="ghost"
-                    size="sm"
-                    data-testid={`document-preset-new-${format}`}
-                    onClick={() =>
-                      format === "pdf" ? openPdfEditor() : openDocxEditor()
-                    }
-                  >
-                    <Icon name="plus" size={13} /> New preset
-                  </Button>
-                ) : null}
-                {format !== "pdf" ? (
-                  <Button
-                    variant="ghost"
-                    size="sm"
-                    data-testid={`document-template-new-${format}`}
-                    onClick={() => openTemplateEditor(format)}
-                  >
-                    <Icon name="file" size={13} /> Upload template
-                  </Button>
-                ) : null}
-              </div>
-            </div>
-            <p className="mt-1 text-[11px] leading-4 text-muted">
-              {FORMAT_HINTS[format]}
-            </p>
-          </div>
+            {data.presets.length === 0 ? (
+              <p
+                className="rounded-md border border-dashed border-line px-3 py-4 text-center text-[12px] text-muted"
+                data-testid="document-presets-empty"
+              >
+                {FORMAT_EMPTY[format]}
+              </p>
+            ) : (
+              <div className="space-y-2">
+                {data.presets.map((entry: DocumentPresetEntry) => {
+                  const confirmingRow =
+                    confirming && confirming.id === entry.id
+                      ? confirming.action
+                      : null;
 
-          {data.presets.length === 0 ? (
-            <p
-              className="rounded-md border border-dashed border-line px-3 py-4 text-center text-[12px] text-muted"
-              data-testid="document-presets-empty"
-            >
-              {FORMAT_EMPTY[format]}
-            </p>
-          ) : (
-            <div className="space-y-2">
-              {data.presets.map((entry: DocumentPresetEntry) => {
-                const confirmingRow =
-                  confirming && confirming.id === entry.id
-                    ? confirming.action
-                    : null;
+                  const isDefault = entry.name === data.defaultName;
 
-                const isDefault = entry.name === data.defaultName;
-
-                return (
-                  <div
-                    key={entry.id}
-                    className="rounded-md border border-line bg-[color-mix(in_oklab,var(--fg)_2%,var(--surface))] px-3 py-2"
-                    data-testid={`document-preset-row-${entry.name}`}
-                  >
-                    {confirmingRow === null ? (
-                      <div className="flex items-center gap-2">
-                        <div className="min-w-0 flex-1">
-                          <p className="truncate text-[13px] font-medium text-fg">
-                            {entry.name}
-                            {isDefault ? (
-                              <span className="ml-2 font-sans text-[11px] font-normal text-muted">
-                                default
-                              </span>
-                            ) : null}
-                          </p>
-                          <p className="truncate text-[11px] text-muted">
-                            {presetMeta(entry)}
-                          </p>
-                        </div>
-                        <Button
-                          variant="ghost"
-                          size="sm"
-                          aria-label={`Edit preset ${entry.name}`}
-                          data-testid={`document-preset-edit-${entry.name}`}
-                          onClick={() => editPreset(entry)}
-                        >
-                          <Icon name="edit" size={12} /> Edit
-                        </Button>
-                        <Button
-                          variant="ghost"
-                          size="sm"
-                          aria-label={`Duplicate preset ${entry.name}`}
-                          data-testid={`document-preset-duplicate-${entry.name}`}
-                          onClick={() => armDuplicate(entry)}
-                        >
-                          <Icon name="copy" size={12} /> Duplicate
-                        </Button>
-                        <Button
-                          variant="ghost"
-                          size="sm"
-                          aria-label={`Delete preset ${entry.name}`}
-                          data-testid={`document-preset-delete-${entry.name}`}
-                          onClick={() =>
-                            setConfirming({ id: entry.id, action: "delete" })
-                          }
-                        >
-                          <Icon name="x" size={12} /> Delete
-                        </Button>
-                      </div>
-                    ) : confirmingRow === "delete" ? (
-                      <div className="flex items-center gap-2">
-                        <span className="flex-1 text-[11px] text-muted">
-                          Delete this preset?
-                        </span>
-                        <Button
-                          variant="destructive"
-                          size="sm"
-                          aria-label={`Confirm delete preset ${entry.name}`}
-                          data-testid={`document-preset-delete-${entry.name}`}
-                          onClick={() => void removePreset(entry)}
-                        >
-                          Delete
-                        </Button>
-                        <Button
-                          variant="ghost"
-                          size="sm"
-                          aria-label="Cancel delete"
-                          onClick={() => setConfirming(null)}
-                        >
-                          Cancel
-                        </Button>
-                      </div>
-                    ) : (
-                      <div className="space-y-1.5">
+                  return (
+                    <div
+                      key={entry.id}
+                      className="rounded-md border border-line bg-[color-mix(in_oklab,var(--fg)_2%,var(--surface))] px-3 py-2"
+                      data-testid={`document-preset-row-${entry.name}`}
+                    >
+                      {confirmingRow === null ? (
                         <div className="flex items-center gap-2">
-                          <label
-                            className="shrink-0 text-[11px] text-muted"
-                            htmlFor={`document-duplicate-name-${entry.id}`}
-                          >
-                            New name
-                          </label>
-                          <Input
-                            id={`document-duplicate-name-${entry.id}`}
-                            aria-label="Duplicate preset name"
-                            className="h-8 flex-1 text-[13px]"
-                            data-testid="document-duplicate-name"
-                            invalid={duplicateError !== null}
-                            value={duplicateName}
-                            onChange={(e: ChangeEvent<HTMLInputElement>) => {
-                              setDuplicateName(e.target.value);
-
-                              if (duplicateError) setDuplicateError(null);
-                            }}
-                          />
-                        </div>
-                        {duplicateError ? (
-                          <p
-                            className="text-[12px] text-dangertext"
-                            data-testid="document-duplicate-error"
-                          >
-                            {duplicateError}
-                          </p>
-                        ) : null}
-                        <div className="flex items-center justify-end gap-2">
+                          <div className="min-w-0 flex-1">
+                            <p className="truncate text-[13px] font-medium text-fg">
+                              {entry.name}
+                              {isDefault ? (
+                                <span className="ml-2 font-sans text-[11px] font-normal text-muted">
+                                  default
+                                </span>
+                              ) : null}
+                            </p>
+                            <p className="truncate text-[11px] text-muted">
+                              {presetMeta(entry)}
+                            </p>
+                          </div>
                           <Button
+                            variant="ghost"
                             size="sm"
-                            data-testid="document-duplicate-confirm"
-                            onClick={() => void runDuplicate()}
+                            aria-label={`Edit preset ${entry.name}`}
+                            data-testid={`document-preset-edit-${entry.name}`}
+                            onClick={() => editPreset(entry)}
                           >
-                            Duplicate
+                            <Icon name="edit" size={12} /> Edit
                           </Button>
                           <Button
                             variant="ghost"
                             size="sm"
-                            aria-label="Cancel duplicate"
+                            aria-label={`Duplicate preset ${entry.name}`}
+                            data-testid={`document-preset-duplicate-${entry.name}`}
+                            onClick={() => armDuplicate(entry)}
+                          >
+                            <Icon name="copy" size={12} /> Duplicate
+                          </Button>
+                          <Button
+                            variant="ghost"
+                            size="sm"
+                            aria-label={`Delete preset ${entry.name}`}
+                            data-testid={`document-preset-delete-${entry.name}`}
+                            onClick={() =>
+                              setConfirming({ id: entry.id, action: "delete" })
+                            }
+                          >
+                            <Icon name="x" size={12} /> Delete
+                          </Button>
+                        </div>
+                      ) : confirmingRow === "delete" ? (
+                        <div className="flex items-center gap-2">
+                          <span className="flex-1 text-[11px] text-muted">
+                            Delete this preset?
+                          </span>
+                          <Button
+                            variant="destructive"
+                            size="sm"
+                            aria-label={`Confirm delete preset ${entry.name}`}
+                            data-testid={`document-preset-delete-${entry.name}`}
+                            onClick={() => void removePreset(entry)}
+                          >
+                            Delete
+                          </Button>
+                          <Button
+                            variant="ghost"
+                            size="sm"
+                            aria-label="Cancel delete"
                             onClick={() => setConfirming(null)}
                           >
                             Cancel
                           </Button>
                         </div>
-                      </div>
-                    )}
-                  </div>
-                );
-              })}
-            </div>
-          )}
+                      ) : (
+                        <div className="space-y-1.5">
+                          <div className="flex items-center gap-2">
+                            <label
+                              className="shrink-0 text-[11px] text-muted"
+                              htmlFor={`document-duplicate-name-${entry.id}`}
+                            >
+                              New name
+                            </label>
+                            <Input
+                              id={`document-duplicate-name-${entry.id}`}
+                              aria-label="Duplicate preset name"
+                              className="h-8 flex-1 text-[13px]"
+                              data-testid="document-duplicate-name"
+                              invalid={duplicateError !== null}
+                              value={duplicateName}
+                              onChange={(e: ChangeEvent<HTMLInputElement>) => {
+                                setDuplicateName(e.target.value);
+
+                                if (duplicateError) setDuplicateError(null);
+                              }}
+                            />
+                          </div>
+                          {duplicateError ? (
+                            <p
+                              className="text-[12px] text-dangertext"
+                              data-testid="document-duplicate-error"
+                            >
+                              {duplicateError}
+                            </p>
+                          ) : null}
+                          <div className="flex items-center justify-end gap-2">
+                            <Button
+                              size="sm"
+                              data-testid="document-duplicate-confirm"
+                              onClick={() => void runDuplicate()}
+                            >
+                              Duplicate
+                            </Button>
+                            <Button
+                              variant="ghost"
+                              size="sm"
+                              aria-label="Cancel duplicate"
+                              onClick={() => setConfirming(null)}
+                            >
+                              Cancel
+                            </Button>
+                          </div>
+                        </div>
+                      )}
+                    </div>
+                  );
+                })}
+              </div>
+            )}
+          </div>
         </div>
       )}
     </ModalShell>

@@ -7,6 +7,8 @@
 import type {
   ChannelChangedEvent,
   ChannelStateEvent,
+  GroupEvent,
+  GroupsChangedEvent,
   KnowledgeChangedEvent,
   MCPOAuthCompletedEvent,
   SchedulesChangedEvent,
@@ -85,6 +87,29 @@ export type { KnowledgeChangedEvent };
  * type is registered for it.
  */
 export const SETTINGS_OPEN_EVENT = "settings:open";
+
+/**
+ * Event announcing any agent-group roster or list change (add-agent-groups
+ * design D9): every group mutation emits it with an empty payload, so the
+ * surfaces simply re-list; payload is GroupsChangedEvent.
+ */
+export const GROUPS_CHANGED_EVENT = "groups:changed";
+
+/** The generated payload of GROUPS_CHANGED_EVENT, re-exported so callers
+ * keep one import surface beside the constant. */
+export type { GroupsChangedEvent };
+
+/**
+ * Event announcing one agent-group's live transcript and task updates
+ * (add-agent-groups design D9); payload is GroupEvent, composed per group
+ * through groupEventName.
+ */
+export type { GroupEvent };
+
+/** Event name carrying one group's live transcript/task events; payload is services.GroupEvent. */
+export function groupEventName(groupID: string): string {
+  return `group:${groupID}:event`;
+}
 
 /** Event name carrying one session's live turn events; payload is sessions.Event. */
 export function sessionEventName(sessionID: string): string {

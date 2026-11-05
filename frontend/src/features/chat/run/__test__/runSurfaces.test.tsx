@@ -12,7 +12,7 @@
  * row opens its trajectory as a tab in the right panel (design D3,
  * spec merge-right-bar-previews); rows without a transcript path are inert.
  */
-import { act } from "react";
+import { act, Profiler } from "react";
 import { fireEvent, screen } from "@testing-library/dom";
 import { beforeEach, describe, expect, it } from "vite-plus/test";
 
@@ -511,6 +511,62 @@ describe("RunSurfaces (task 3.5)", () => {
     });
 
     expect(useChatStore.getState().panelTabs).toEqual([]);
+
+    await unmount();
+  });
+
+  it("a streaming text delta does not re-render the island (task 5.4 selector stability)", async () => {
+    await act(async () => {
+      useChatStore.setState({
+        entries: foldOf(planEvent(planTasks), runningTask, {
+          kind: Kind.KindTextDelta,
+          occurred_at: "2026-01-01T00:00:00Z",
+          turn_id: "t1",
+          text: "a",
+        }),
+      });
+    });
+
+    let commits = 0;
+
+    const onRender = (): void => {
+      commits += 1;
+    };
+
+    const { unmount } = await renderUI(
+      <Profiler id="run-surfaces" onRender={onRender}>
+        <RunSurfaces />
+      </Profiler>
+    );
+
+    expect(screen.getByTestId("run-card")).not.toBeNull();
+
+    const mounted = commits;
+
+    // A text delta into the same streaming assistant entry replaces only
+    // that entry — the plan snapshot and the task-entry slice keep their
+    // identity, so the island does not commit.
+    await act(async () => {
+      useChatStore.setState((state) => ({
+        entries: applyEvent(state.entries, {
+          kind: Kind.KindTextDelta,
+          occurred_at: "2026-01-01T00:00:00Z",
+          turn_id: "t1",
+          text: " longer",
+        }),
+      }));
+    });
+
+    expect(commits).toBe(mounted);
+
+    // The underlying slice changes: the task reaches a terminal record.
+    await act(async () => {
+      useChatStore.setState({
+        entries: foldOf(planEvent(planTasks), runningTask, completedTask),
+      });
+    });
+
+    expect(commits).toBeGreaterThan(mounted);
 
     await unmount();
   });

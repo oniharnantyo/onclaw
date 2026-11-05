@@ -34,6 +34,7 @@ import { ToolStatus } from "../../../../bindings/github.com/oniharnantyo/buddies
 import { cn } from "../../../lib/cn";
 import { client } from "../../../lib/client";
 import { toolRenderers } from "../tools/aui";
+import { BrowserTool, BROWSER_USE_PREFIX } from "../tools/aui/renderers";
 import { ToolCard } from "../tools/aui/ToolCallFrame";
 import { FallbackBody } from "../tools/aui/fallbackBody";
 import { parseArgs } from "../tools/parse";
@@ -705,7 +706,12 @@ function TrajectoryToolView({
   running: boolean;
 }): ReactElement {
   const part = trajectoryToolPart(block, running);
-  const Renderer = toolRenderers[block.toolName];
+
+  // Exact registry entry first; `mcp__browser-use__*` names route to the
+  // browser card (design D6); anything else keeps the panel's own fallback.
+  const Renderer =
+    toolRenderers[block.toolName] ??
+    (block.toolName.startsWith(BROWSER_USE_PREFIX) ? BrowserTool : undefined);
 
   return (
     <div className="my-2" data-testid="trajectory-step-tool">

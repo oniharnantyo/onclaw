@@ -268,40 +268,21 @@ describe("ToolsPane", () => {
     );
   });
 
-  it("opens the Browser dialog from the row's gear", async () => {
-    tools.push(
-      {
-        Name: "read_file",
-        DisplayName: "Read File",
-        IconKey: "file",
-        Description: "",
-        Enabled: true,
-      },
-      {
-        Name: "browser",
-        DisplayName: "Browser",
-        IconKey: "globe",
-        Description: "Automate Chromium",
-        Enabled: true,
-      }
-    );
-    const user = userEvent.setup();
+  it("carries no gear for the retired browser tool (it moved to the Browser Use pane)", async () => {
+    // The browser tool left the catalog (rebrand-browser-use-system-mcp
+    // 5.4): a stale catalog row renders without the config gear, and no
+    // browser config dialog exists anywhere.
+    tools.push({
+      Name: "browser",
+      DisplayName: "Browser",
+      IconKey: "globe",
+      Description: "Automate Chromium",
+      Enabled: true,
+    });
+    const { findByTestId, queryByTestId } = await renderUI(<ToolsPane />);
 
-    const { getByTestId, findByTestId, queryByTestId } = await renderUI(
-      <ToolsPane />
-    );
-
-    // Only browser and web_search carry the gear.
-    expect(queryByTestId("btn-tool-config-read_file")).toBeNull();
-    const gear = await findByTestId("btn-tool-config-browser");
-    expect(gear.getAttribute("aria-label")).toBe("Configure Browser");
-
-    await user.click(gear);
-
-    await findByTestId("browser-config-dialog");
-    expect(getByTestId("browser-profile-row-default").textContent).toContain(
-      "default"
-    );
+    expect(await findByTestId("tool-browser")).toBeTruthy();
+    expect(queryByTestId("btn-tool-config-browser")).toBeNull();
   });
 
   it("opens the Document preset manager from the create_document row's gear", async () => {

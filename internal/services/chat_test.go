@@ -3,6 +3,7 @@ package services
 import (
 	"context"
 	"errors"
+	"fmt"
 	"sync"
 	"testing"
 	"time"
@@ -65,16 +66,23 @@ type fakeAgentManager struct {
 	cancelErr        error
 	resolveErr       error
 
+	resolveInputErr     error
+	beginTakeoverErr    error
+	resolveAttentionErr error
+
 	contextUsage    agents.ContextUsage
 	contextUsageErr error
 
-	cancelled       []string
-	resolvedApprove []string
-	resolvedDeny    []string
-	resolvedIDs     []string
-	regenerated     []string
-	busy            map[string]bool
-	running         []string
+	cancelled         []string
+	resolvedApprove   []string
+	resolvedDeny      []string
+	resolvedIDs       []string
+	regenerated       []string
+	resolvedInputs    []string // "session|interrupt|text|identifier|savedAs|savedLoginID"
+	begunTakeovers    []string // "session|interrupt"
+	resolvedAttention []string // "session|interrupt|outcome"
+	busy              map[string]bool
+	running           []string
 }
 
 func newFakeAgentManager() *fakeAgentManager {
@@ -100,6 +108,17 @@ func (m *fakeAgentManager) Submit(_ context.Context, _ agents.SendRequest) (*age
 		return nil, m.sendErr
 	}
 	return nil, errors.New("fakeAgentManager: successful Submit not supported; use the real runtime")
+}
+
+// SubmitGroup and SummarizeText are no-op interface fillers: the session
+// registry and subscription paths under test never group-dispatch or
+// summarize.
+func (m *fakeAgentManager) SubmitGroup(_ context.Context, _ agents.GroupTurnRequest) (*agents.Turn, error) {
+	return nil, nil
+}
+
+func (m *fakeAgentManager) SummarizeText(_ context.Context, _, _, _ string) (string, error) {
+	return "", nil
 }
 
 func (m *fakeAgentManager) Regenerate(_ context.Context, sessionID, turnID string) (*agents.Turn, error) {
@@ -173,6 +192,37 @@ func (m *fakeAgentManager) ResolveApproval(_ context.Context, sessionID, interru
 	return nil
 }
 
+func (m *fakeAgentManager) ResolveInput(_ context.Context, sessionID, interruptID, text, identifier string, savedAs bool, savedLoginID string) error {
+	if m.resolveInputErr != nil {
+		return m.resolveInputErr
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.resolvedInputs = append(m.resolvedInputs,
+		fmt.Sprintf("%s|%s|%s|%s|%t|%s", sessionID, interruptID, text, identifier, savedAs, savedLoginID))
+	return nil
+}
+
+func (m *fakeAgentManager) BeginTakeover(_ context.Context, sessionID, interruptID string) error {
+	if m.beginTakeoverErr != nil {
+		return m.beginTakeoverErr
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.begunTakeovers = append(m.begunTakeovers, sessionID+"|"+interruptID)
+	return nil
+}
+
+func (m *fakeAgentManager) ResolveAttention(_ context.Context, sessionID, interruptID, outcome string) error {
+	if m.resolveAttentionErr != nil {
+		return m.resolveAttentionErr
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.resolvedAttention = append(m.resolvedAttention, sessionID+"|"+interruptID+"|"+outcome)
+	return nil
+}
+
 // emit delivers ev to every subscription of the session.
 func (m *fakeAgentManager) emit(sessionID string, ev sessions.Event) {
 	m.mu.Lock()
@@ -197,6 +247,9 @@ func (m *fakeAgentManager) subscriptionAt(t *testing.T, sessionID string, i int)
 // the store fake.
 type fakeSessionsService struct {
 	store store.Store
+	// events, when non-nil, replaces the default transcript the Events
+	// returns — the browser-attention tests stage input_required payloads.
+	events []sessions.Event
 }
 
 func (s *fakeSessionsService) CreateSession(ctx context.Context, agentID, title string) (sessions.Session, error) {
@@ -244,6 +297,9 @@ func (s *fakeSessionsService) Append(_ context.Context, _ string, _ []sessions.E
 }
 
 func (s *fakeSessionsService) Events(_ context.Context, sessionID string) ([]sessions.Event, error) {
+	if s.events != nil {
+		return s.events, nil
+	}
 	return []sessions.Event{{
 		ID:         "ev1",
 		TurnID:     "turn1",

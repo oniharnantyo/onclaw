@@ -50,6 +50,8 @@ func (s *Store) WithTx(ctx context.Context, fn func(store.Store) error) error {
 		templates:   s.templates,
 		models:      &providerModelStore{tx},
 		memory:      &memoryStore{tx},
+		groups:      &agentGroupStore{tx},
+		vault:       &vaultItemStore{tx},
 	}
 
 	if err := fn(txStore); err != nil {

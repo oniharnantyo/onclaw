@@ -4,12 +4,15 @@ import (
 	"context"
 	"encoding/base64"
 	"fmt"
+	"log/slog"
+	"net/url"
 	"sync"
 
 	"github.com/oniharnantyo/buddies/internal/agents"
 	"github.com/oniharnantyo/buddies/internal/attachments"
 	"github.com/oniharnantyo/buddies/internal/sessions"
 	"github.com/oniharnantyo/buddies/internal/store"
+	"github.com/oniharnantyo/buddies/internal/vault"
 	"github.com/oniharnantyo/buddies/internal/workspaces"
 )
 
@@ -27,13 +30,17 @@ type ChatService struct {
 	// (add-artifact-save-as design D1); NoSaveDialog on hosts without one.
 	saves SaveDialog
 	// store resolves the agent rows the workspace reader jails against;
-	// attachments and workspaces back the attachment and preview surfaces.
+	// attachments and workspaces back the attachment and preview surfaces,
+	// and workspaces also roots the screenshot read (the browser tool writes
+	// captures into the calling session's workspace, design D6).
 	store       store.Store
 	attachments *attachments.Store
 	workspaces  *workspaces.Manager
-	// browserDir is the browser tool's home directory the screenshot read
-	// serves from (design D6): screenshots live at <browserDir>/screenshots.
-	browserDir string
+	// vault backs the save-to-vault path of ResolveInput
+	// (add-browser-login-handover design D5). Nil until WithChatVault wires
+	// it: a save-to-vault request then resolves unsaved, and the sign-in
+	// still proceeds (a failed save never blocks the delivery).
+	vault *vault.Service
 
 	mu   sync.Mutex
 	subs map[string]agents.Subscription
@@ -43,8 +50,7 @@ type ChatService struct {
 // service, forwarding runtime events through emitter. The store, attachment
 // store, and workspace manager back the attachment and workspace-preview
 // surfaces; all dependencies are required. Options carry the optional
-// surfaces (the browser-screenshot read's directory, design D6; the Save As
-// dialog, add-artifact-save-as design D1).
+// surfaces (the Save As dialog, add-artifact-save-as design D1).
 func NewChatService(turns agents.Manager, sessions sessions.Service, emitter Emitter, store store.Store, atts *attachments.Store, ws *workspaces.Manager, opts ...ChatOption) *ChatService {
 	s := &ChatService{
 		turns:       turns,
@@ -249,6 +255,143 @@ func (s *ChatService) ResolveApproval(ctx context.Context, sessionID, interruptI
 		return fmt.Errorf("resolve approval: %w", err)
 	}
 	return nil
+}
+
+// ResolveInput submits the user-typed secret — and, when the card collected
+// one, the username-or-email identifier — for the session's pending browser
+// attention request (add-browser-login-handover design D3/D5). The value is
+// never persisted: it is handed to the runtime's delivery channel only, and
+// the transcript records a receipt. When saveLogin is set and the pending
+// request names a secret with an origin and an account name, the value is
+// vaulted first under a name derived from the origin host, addedBy the
+// session's agent — a typed identifier overrides the agent-supplied username
+// for the vault entry. A failed save is logged and does NOT block the
+// sign-in; the runtime learns the save's outcome through
+// (savedAs, savedLoginID). A stale or already-resolved interrupt id fails
+// with agents.ErrInputNotPending and changes nothing.
+func (s *ChatService) ResolveInput(ctx context.Context, sessionID, interruptID, text, identifier string, saveLogin bool) error {
+	savedAs, savedLoginID := s.savePendingLogin(ctx, sessionID, interruptID, text, identifier, saveLogin)
+	if err := s.turns.ResolveInput(ctx, sessionID, interruptID, text, identifier, savedAs, savedLoginID); err != nil {
+		return fmt.Errorf("resolve input: %w", err)
+	}
+	return nil
+}
+
+// CancelInput ends the session's pending browser secret request with the
+// user's cancel — the secret card's Cancel button. The parked submit_secret
+// call unblocks on the cancelled result (the turn continues; the agent's
+// fallback is plain chat or takeover), the child's protection freeze is
+// released best-effort, and the receipt records the cancelled outcome only.
+// A stale or already-resolved interrupt id fails with agents.ErrInputNotPending
+// and changes nothing.
+func (s *ChatService) CancelInput(ctx context.Context, sessionID, interruptID string) error {
+	if err := s.turns.ResolveAttention(ctx, sessionID, interruptID, sessions.InputCancelled); err != nil {
+		return fmt.Errorf("cancel input: %w", err)
+	}
+	return nil
+}
+
+// BeginBrowserTakeover approves the session's pending browser takeover
+// request (design D8): the parent signals the child to relaunch that
+// profile's browser headed and focused, and the session is held for the
+// user. A stale id fails with agents.ErrInputNotPending.
+func (s *ChatService) BeginBrowserTakeover(ctx context.Context, sessionID, interruptID string) error {
+	if err := s.turns.BeginTakeover(ctx, sessionID, interruptID); err != nil {
+		return fmt.Errorf("begin takeover: %w", err)
+	}
+	return nil
+}
+
+// ResolveTakeover ends the session's pending browser takeover with the
+// user's outcome — the completed/cancelled vocabulary of the attention
+// card (design D8). A stale id fails with agents.ErrInputNotPending.
+func (s *ChatService) ResolveTakeover(ctx context.Context, sessionID, interruptID, outcome string) error {
+	if err := s.turns.ResolveAttention(ctx, sessionID, interruptID, outcome); err != nil {
+		return fmt.Errorf("resolve takeover: %w", err)
+	}
+	return nil
+}
+
+// savePendingLogin vaults the typed value when saveLogin is set and the
+// pending secret names an origin and username. Every failure — an unwired
+// vault, an unreadable session log, a missing payload, a vault write
+// error — is logged and answered with (false, ""): the sign-in proceeds
+// unsaved, never blocked by the save (spec settings; design D5).
+func (s *ChatService) savePendingLogin(ctx context.Context, sessionID, interruptID, text, identifier string, saveLogin bool) (bool, string) {
+	if !saveLogin {
+		return false, ""
+	}
+	if s.vault == nil {
+		slog.WarnContext(ctx, "resolve input: save-to-vault requested but the vault is unavailable",
+			"session_id", sessionID, "interrupt_id", interruptID)
+		return false, ""
+	}
+	events, err := s.sessions.Events(ctx, sessionID)
+	if err != nil {
+		slog.WarnContext(ctx, "resolve input: vault save skipped, session log unreadable",
+			"session_id", sessionID, "interrupt_id", interruptID, "error", err)
+		return false, ""
+	}
+	var pending *sessions.Input
+	for i := range events {
+		ev := events[i]
+		if ev.Kind == sessions.KindInputRequired && ev.Input != nil && ev.Input.InterruptID == interruptID {
+			pending = ev.Input // keep the last pending payload
+		}
+	}
+	if pending == nil || pending.AttentionKind != sessions.AttentionSecret || pending.Origin == "" {
+		return false, ""
+	}
+	// The typed identifier (username or email) wins for the vault entry;
+	// the agent-supplied username is the fallback.
+	username := identifier
+	if username == "" {
+		username = pending.Username
+	}
+	if username == "" {
+		return false, ""
+	}
+
+	name := originHostName(pending.Origin)
+	if u, err := url.Parse(pending.Origin); err == nil && u.Hostname() != "" {
+		name = u.Hostname()
+	}
+	addedBy := s.sessionAgentName(ctx, sessionID)
+	view, err := s.vault.SaveLogin(ctx, pending.Origin, username, text, name, addedBy)
+	if err != nil {
+		// The value must never reach a log line: the error carries vault
+		// context only.
+		slog.WarnContext(ctx, "resolve input: vault save failed; the sign-in continues unsaved",
+			"session_id", sessionID, "interrupt_id", interruptID, "error", err)
+		return false, ""
+	}
+	return true, view.ID
+}
+
+// sessionAgentName resolves the session's agent's display name for the
+// vault's addedBy record; any resolution failure falls back to the agent id.
+func (s *ChatService) sessionAgentName(ctx context.Context, sessionID string) string {
+	sess, err := s.sessions.Session(ctx, sessionID)
+	if err != nil {
+		return sessionID
+	}
+	agent, err := s.store.Agents().ByID(ctx, sess.AgentID)
+	if err != nil || agent.Name == "" {
+		return sess.AgentID
+	}
+	return agent.Name
+}
+
+// WithChatVault supplies the vault service the resolve-input save-to-vault
+// path uses (add-browser-login-handover design D5). A nil service is
+// ignored — the unwired default stands, where save requests resolve
+// unsaved (mirrors WithChatBrowserDir).
+func WithChatVault(v *vault.Service) ChatOption {
+	return func(s *ChatService) {
+		if v != nil {
+			s.vault = v
+		}
+	}
 }
 
 // SetSessionOverrides rewrites the session's model and reasoning-effort

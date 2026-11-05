@@ -8,15 +8,15 @@
  * completed turn's final input plus its output — not a billing figure.
  */
 export interface ContextUsage {
-    "used": number;
-    "limit": number;
+  used: number;
+  limit: number;
 
-    /**
-     * LastInput and LastOutput are the last completed turn's input and
-     * output token counts (design D7) — read from the same usage block Used
-     * derives from, so the chat view can show the last turn's cost. Both
-     * zero before any completed turn.
-     */
-    "last_input": number;
-    "last_output": number;
+  /**
+   * LastInput and LastOutput are the last completed turn's input and
+   * output token counts (design D7) — read from the same usage block Used
+   * derives from, so the chat view can show the last turn's cost. Both
+   * zero before any completed turn.
+   */
+  last_input: number;
+  last_output: number;
 }

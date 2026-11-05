@@ -211,6 +211,13 @@ func (m *manager) ResolveApproval(ctx context.Context, sessionID, interruptID st
 		// design D3): a turn can pause and resume more than once.
 		resumed.artifactsBefore = rt.artifactsBefore
 		resumed.artifactsSince = rt.artifactsSince
+		// The lane claim and the agent id survive the resume (design D6): the
+		// resumed run is the same group dispatch, and a group turn whose
+		// ordinary surface carries the shell gate
+		// (fix-agent-group-member-tools design D2) can park while holding the
+		// claim — the terminal release below needs both to re-open the lane.
+		resumed.agentID = rt.agentID
+		resumed.laneClaimed = rt.laneClaimed
 	} else {
 		for _, ev := range events {
 			if ev.TurnID == pend.turnID && ev.VariantOf != "" {
@@ -371,11 +378,17 @@ func (m *manager) resumeTurn(ctx context.Context, rt *runningTurn, pend *pending
 	err = m.executeTurnRun(ctx, recordCtx, rt, record, fail, hookChain, hookBase, *agent, run)
 	if errors.Is(err, errTurnParked) {
 		// The resumed run parked on another approval: the session stays busy
-		// and the Turn stays open, exactly like the first pause.
+		// and the Turn stays open, exactly like the first pause. A claimed
+		// lane stays claimed — the resolve or cancel of the new approval
+		// owns the release.
 		return
 	}
 	m.clearBusy(rt)
 	rt.turn.finish(err)
+	// The terminal release (design D6): a resumed group turn still holds its
+	// agent's lane claim; groupLaneTurnDone is a no-op for records without
+	// one.
+	m.groupLaneTurnDone(rt)
 }
 
 // failResume ends a resume whose setup failed before the run could take the
@@ -394,6 +407,9 @@ func (m *manager) failResume(rt *runningTurn, recordCtx context.Context, hookCha
 	}
 	m.clearBusy(rt)
 	rt.turn.finish(err)
+	// Same terminal release as resumeTurn: a failed resume of a claimed
+	// group turn must re-open the lane.
+	m.groupLaneTurnDone(rt)
 }
 
 // clearBusy removes the session's busy record and announces the transition
@@ -410,7 +426,7 @@ func (m *manager) clearBusy(rt *runningTurn) {
 // cold resume rebuilds the turn's composition from the store — model,
 // persona documents, tool surface, delegated-task space, skills, MCP —
 // mirroring runTurn's phases 3 and 5 through the 9-merge.
-func (m *manager) composeResumeRun(ctx context.Context, rt *runningTurn, sess sessions.Session, agent store.Agent, pend *pendingApproval, approved bool, hookChain *hooks.Resolved, hookBase hooks.Event, _ recordFn) (turnRun, error) {
+func (m *manager) composeResumeRun(ctx context.Context, rt *runningTurn, sess sessions.Session, agent store.Agent, pend *pendingApproval, approved bool, hookChain *hooks.Resolved, hookBase hooks.Event, record recordFn) (turnRun, error) {
 	deny := func() map[string]any {
 		if approved {
 			return nil
@@ -537,8 +553,10 @@ func (m *manager) composeResumeRun(ctx context.Context, rt *runningTurn, sess se
 	}
 
 	// Phases 8.5 and 9-merge: the delegation tools and the MCP tools join
-	// the surface exactly as a fresh turn resolves them.
-	mcpTools, err := m.resolveMCPTools(ctx, agent)
+	// the surface exactly as a fresh turn resolves them — including the
+	// attention scope (add-browser-login-handover design D3/D7), so a
+	// browser attention request parks the resumed turn on its card.
+	mcpTools, err := m.resolveMCPTools(ctx, agent, attentionScope{sessionID: rt.sessionID, turnID: rt.turn.id, record: record})
 	if err != nil {
 		return turnRun{}, err
 	}

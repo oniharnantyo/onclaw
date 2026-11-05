@@ -23,7 +23,7 @@ import { TaskTool } from "../TaskTool";
 import { TodoWriteTool } from "../TodoTool";
 import { WebSearchTool } from "../WebTools";
 import { partProps } from "./harness";
-import { toolRenderers } from "../renderers";
+import { BrowserTool, resolveToolRenderer, toolRenderers } from "../renderers";
 
 vi.mock("../../../../../lib/client", () => ({
   client: {
@@ -619,7 +619,6 @@ describe("the renderer catalogue", () => {
       "todo_read",
       "web_fetch",
       "web_search",
-      "browser",
       "task",
       "agent",
       "task_output",
@@ -634,6 +633,33 @@ describe("the renderer catalogue", () => {
 
     // The fallback is the only entry an unknown name reaches.
     expect(toolRenderers.fallback).toBeDefined();
+  });
+
+  it("routes every mcp__browser-use__* name — the action suffix included — to the browser card", () => {
+    for (const name of [
+      "mcp__browser-use__navigate",
+      "mcp__browser-use__snapshot",
+      "mcp__browser-use__click",
+      "mcp__browser-use__type",
+      "mcp__browser-use__press_key",
+      "mcp__browser-use__scroll",
+      "mcp__browser-use__back",
+      "mcp__browser-use__screenshot",
+      "mcp__browser-use__cookies",
+      "mcp__browser-use__read",
+      "mcp__browser-use__wait",
+    ]) {
+      expect(resolveToolRenderer(name)).toBe(BrowserTool);
+    }
+  });
+
+  it("the retired built-in browser name falls back like any unknown MCP name", () => {
+    // Historical transcripts carry the old mega-tool name; it renders the
+    // generic fallback card (design D6: no transitional second surface).
+    expect(resolveToolRenderer("browser")).toBe(toolRenderers.fallback);
+    expect(resolveToolRenderer("mcp__other-server__tool")).toBe(
+      toolRenderers.fallback
+    );
   });
 
   it("the delegation card marks a cancelled, a failed and a legacy task", async () => {

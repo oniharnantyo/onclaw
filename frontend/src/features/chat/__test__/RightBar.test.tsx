@@ -23,6 +23,7 @@
  */
 import { act } from "react";
 import { fireEvent, screen, waitFor } from "@testing-library/dom";
+import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vite-plus/test";
 
 import { Kind } from "../../../../bindings/github.com/oniharnantyo/buddies/internal/sessions/models";
@@ -407,6 +408,50 @@ describe("RightBar", () => {
     await clearTabs();
   });
 
+  it("moves the preview tab selection with the arrow keys and labels the panel by the active tab", async () => {
+    const user = userEvent.setup();
+    const { unmount } = await renderUI(<RightBar />);
+    await openFileTab("notes.md");
+    await openFileTab("todo.md");
+
+    const first = tabButton(0);
+    const second = tabButton(1);
+
+    // The last opened tab is active; only it is in the tab order.
+    expect(second.getAttribute("aria-selected")).toBe("true");
+    expect(second.getAttribute("tabindex")).toBe("0");
+    expect(first.getAttribute("aria-selected")).toBe("false");
+    expect(first.getAttribute("tabindex")).toBe("-1");
+
+    second.focus();
+    await user.keyboard("{ArrowLeft}");
+
+    expect(first.getAttribute("aria-selected")).toBe("true");
+    expect(first.getAttribute("tabindex")).toBe("0");
+    expect(second.getAttribute("aria-selected")).toBe("false");
+    expect(document.activeElement).toBe(first);
+
+    // The content surface is the panel labelled by the selected tab.
+    const panel = screen.getByTestId("panel-surface");
+
+    expect(panel.getAttribute("role")).toBe("tabpanel");
+    expect(panel.getAttribute("aria-labelledby")).toBe(first.id);
+
+    // The preview tabs live inside the tablist; the pinned identity button
+    // is aria-current, not a tab, and stays outside it.
+    const tablist = screen.getByRole("tablist");
+
+    expect(tablist.getAttribute("aria-label")).toBe("Preview tabs");
+    expect(tablist.contains(first)).toBe(true);
+    expect(tablist.contains(second)).toBe(true);
+    expect(tablist.contains(screen.getByTestId("panel-identity-tab"))).toBe(
+      false
+    );
+
+    await unmount();
+    await clearTabs();
+  });
+
   it("deduplicates re-opens of the same file", async () => {
     const { unmount } = await renderUI(<RightBar />);
     await openFileTab("notes.md");
@@ -634,6 +679,46 @@ describe("RightBar", () => {
     });
 
     expect(localStorage.getItem("buddies.chatSidebarWidth")).toBe("220");
+
+    await unmount();
+  });
+
+  it("resizes by the 4px step with the arrow keys, clamps with Home/End, and persists like a drag", async () => {
+    stubLocalStorage({ "buddies.chatSidebarWidth": "300" });
+
+    const { unmount } = await renderUI(<RightBar />);
+    const handle = screen.getByTestId("sidebar-resize");
+
+    // The handle is a focusable separator reporting the bar's width.
+    expect(handle.getAttribute("role")).toBe("separator");
+    expect(handle.getAttribute("tabindex")).toBe("0");
+    expect(handle.getAttribute("aria-valuenow")).toBe("300");
+
+    // The handle rides the bar's left edge: ArrowLeft grows, ArrowRight
+    // shrinks, by the same 4px step the drag uses.
+    await act(async () => {
+      fireEvent.keyDown(handle, { key: "ArrowLeft" });
+    });
+    expect(handle.getAttribute("aria-valuenow")).toBe("304");
+    expect(localStorage.getItem("buddies.chatSidebarWidth")).toBe("304");
+
+    await act(async () => {
+      fireEvent.keyDown(handle, { key: "ArrowRight" });
+    });
+    expect(localStorage.getItem("buddies.chatSidebarWidth")).toBe("300");
+
+    // Home/End jump to the clamps.
+    await act(async () => {
+      fireEvent.keyDown(handle, { key: "Home" });
+    });
+    expect(handle.getAttribute("aria-valuenow")).toBe("220");
+    expect(localStorage.getItem("buddies.chatSidebarWidth")).toBe("220");
+
+    await act(async () => {
+      fireEvent.keyDown(handle, { key: "End" });
+    });
+    expect(handle.getAttribute("aria-valuenow")).toBe("560");
+    expect(localStorage.getItem("buddies.chatSidebarWidth")).toBe("560");
 
     await unmount();
   });

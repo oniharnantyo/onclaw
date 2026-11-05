@@ -7,10 +7,10 @@
  * valid, the parse error when not.
  */
 export interface Preview {
-    "ok": boolean;
-    "error"?: string;
-    "description"?: string;
-    "next"?: string[] | null;
+  ok: boolean;
+  error?: string;
+  description?: string;
+  next?: string[] | null;
 }
 
 /**
@@ -19,11 +19,11 @@ export interface Preview {
  * surface never sends a Go time.Time (add-scheduler design D13).
  */
 export interface ScheduleInput {
-    "name": string;
-    "agentId": string;
-    "prompt": string;
-    "cron": string;
-    "enabled": boolean;
+  name: string;
+  agentId: string;
+  prompt: string;
+  cron: string;
+  enabled: boolean;
 }
 
 /**
@@ -33,30 +33,30 @@ export interface ScheduleInput {
  * NextFireAt and LastRunAt are null when unset.
  */
 export interface ScheduleView {
-    "id": string;
-    "name": string;
-    "agentId": string;
-    "prompt": string;
-    "cron": string;
-    "description": string;
-    "enabled": boolean;
+  id: string;
+  name: string;
+  agentId: string;
+  prompt: string;
+  cron: string;
+  description: string;
+  enabled: boolean;
 
-    /**
-     * NextFireAt is the persisted due slot; nil when disabled or not yet
-     * computed. LastRunAt is nil until the schedule's first fire or miss.
-     */
-    "nextFireAt": string | null;
-    "lastRunAt": string | null;
+  /**
+   * NextFireAt is the persisted due slot; nil when disabled or not yet
+   * computed. LastRunAt is nil until the schedule's first fire or miss.
+   */
+  nextFireAt: string | null;
+  lastRunAt: string | null;
 
-    /**
-     * LastRunStatus is "" (never fired) or one of the store.ScheduleRunStatus
-     * constants (ran, failed, missed); LastRunError carries the failure
-     * reason when the status is failed, and LastRunSessionID locates the
-     * session a ran fire produced.
-     */
-    "lastRunStatus": string;
-    "lastRunError": string;
-    "lastRunSessionId": string;
-    "createdAt": string;
-    "updatedAt": string;
+  /**
+   * LastRunStatus is "" (never fired) or one of the store.ScheduleRunStatus
+   * constants (ran, failed, missed); LastRunError carries the failure
+   * reason when the status is failed, and LastRunSessionID locates the
+   * session a ran fire produced.
+   */
+  lastRunStatus: string;
+  lastRunError: string;
+  lastRunSessionId: string;
+  createdAt: string;
+  updatedAt: string;
 }

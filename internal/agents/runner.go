@@ -232,12 +232,23 @@ func (m *manager) runTurn(ctx context.Context, rt *runningTurn, sess sessions.Se
 		return failTurn(err)
 	}
 
-	// 6. Resolve the turn's tool surface through the three-way gate: catalog
-	// × global enable × agent allowlist (spec agent-tools "Tool gate"),
-	// workspace-rooted tools rooted at the agent's workspace.
+	// 6. Resolve the turn's tool surface through the three-way gate (catalog ×
+	// global enable × agent allowlist, spec agent-tools "Tool gate"),
+	// workspace-rooted tools rooted at the agent's workspace. A group turn
+	// resolves the SAME ordinary surface — the member's tools behave as in any
+	// ordinary session (spec agent-groups "Member threads and context
+	// packets") — and the source-provided in-channel group tools are appended
+	// beside it (fix-agent-group-member-tools design D1): the packet replaces
+	// the session history, and group_history is the shared room's only reader.
 	surface, err := m.resolveTurnTools(ctx, agent, rt.sessionID)
 	if err != nil {
 		return failTurn(err)
+	}
+	if rt.group != nil {
+		surface.tools, err = mergeGroupTools(surface, rt.group.tools)
+		if err != nil {
+			return failTurn(err)
+		}
 	}
 
 	// 7. Delegated-task space and skill capability (design D3/D6). The task
@@ -313,21 +324,34 @@ func (m *manager) runTurn(ctx context.Context, rt *runningTurn, sess sessions.Se
 		}
 	}
 
-	instruction, inputMsgs, err := assembleTurnInput(
-		persona{identity: identity, soul: soul, bootstrap: bootstrap}, checkpoint, events, req,
-		turnComposer{
-			providerType: providerType,
-			model:        effModel,
-			atts:         m.attachments,
-			caps:         caps,
-			hasCaps:      true,
-			knowledge:    surface.knowledge != nil,
-			skills:       skillBackend != nil,
-			presets:      m.presetGuidance(ctx, surface.createDocument),
-			memory:       m.memoryBlock(ctx, agent),
-			uploads:      uploads,
-			sessionRel:   workspaces.SessionRel(rt.sessionID, ""),
-		})
+	composer := turnComposer{
+		providerType: providerType,
+		model:        effModel,
+		atts:         m.attachments,
+		caps:         caps,
+		hasCaps:      true,
+		knowledge:    surface.knowledge != nil,
+		skills:       skillBackend != nil,
+		presets:      m.presetGuidance(ctx, surface.createDocument),
+		memory:       m.memoryBlock(ctx, agent),
+		uploads:      uploads,
+		sessionRel:   workspaces.SessionRel(rt.sessionID, ""),
+	}
+	var instruction string
+	var inputMsgs []*schema.AgenticMessage
+	if rt.group != nil {
+		// The member's ordinary session-relative workspace paths ride the
+		// group turn exactly as they ride a session turn
+		// (fix-agent-group-member-tools design D2): the uploads mirror ran
+		// above (surface.agentDir is set) and the environment block names the
+		// session directory; only the packet's transcript rows replace the
+		// session replay.
+		instruction, inputMsgs, err = assembleGroupTurnInput(
+			persona{identity: identity, soul: soul, bootstrap: bootstrap}, checkpoint, rt.group.packet, req, composer)
+	} else {
+		instruction, inputMsgs, err = assembleTurnInput(
+			persona{identity: identity, soul: soul, bootstrap: bootstrap}, checkpoint, events, req, composer)
+	}
 	if err != nil {
 		return failTurn(err)
 	}
@@ -402,7 +426,10 @@ func (m *manager) runTurn(ctx context.Context, rt *runningTurn, sess sessions.Se
 
 	// 8.5 Subagents (spec agent-subagents, design D3, D4): when the agent has the
 	// capability enabled, the turn is offered the delegation tools via eino middlewares.
-	mcpTools, err := m.resolveMCPTools(ctx, agent)
+	// The attention scope (add-browser-login-handover design D3/D7) binds the
+	// intercepted submit_secret/request_takeover to this turn's session and
+	// recorder, so a browser attention request parks this turn on its card.
+	mcpTools, err := m.resolveMCPTools(ctx, agent, attentionScope{sessionID: sess.ID, turnID: turnID, record: record})
 	if err != nil {
 		return failTurn(err)
 	}

@@ -34,7 +34,8 @@ import {
 } from "@/components/assistant-ui/elements/tool-timeline";
 
 import { setOpen as setCollapseOpen } from "../collapse";
-import { toolRenderers } from "./renderers";
+import { resolveToolRenderer, toolRenderers } from "./renderers";
+import type { ToolRenderer } from "./renderers";
 import { changeStats, toolChip, toolIcon, toolVerb } from "./traceRows";
 
 /** A run of consecutive tool-call parts as `MessagePrimitive.GroupedParts`
@@ -95,9 +96,23 @@ function collectCalls(
 }
 
 /** The components one part renders through when the fold opens its card on
- * demand (the same registry the transcript wires). */
+ * demand (the same registry the transcript wires). The by_name lookup rides
+ * a proxy so the `mcp__browser-use__*` names resolve to the browser card —
+ * assistant-ui keys it by exact name only. */
 const ROW_COMPONENTS = {
-  tools: { by_name: toolRenderers, Fallback: toolRenderers.fallback },
+  tools: {
+    by_name: new Proxy(toolRenderers, {
+      get(
+        target: typeof toolRenderers,
+        prop: string | symbol
+      ): ToolRenderer | undefined {
+        if (typeof prop !== "string") return Reflect.get(target, prop);
+
+        return resolveToolRenderer(prop);
+      },
+    }),
+    Fallback: toolRenderers.fallback,
+  },
 };
 
 /** One clickable trace row: icon, verb, target chip — activating it opens
@@ -333,14 +348,10 @@ function FoldRun({
                 >
                   <span>{stat.file}</span>
                   {stat.added !== undefined ? (
-                    <span className="text-emerald-600 dark:text-emerald-400">
-                      +{stat.added}
-                    </span>
+                    <span className="text-successtext">+{stat.added}</span>
                   ) : null}
                   {stat.removed !== undefined ? (
-                    <span className="text-red-600 dark:text-red-400">
-                      −{stat.removed}
-                    </span>
+                    <span className="text-dangertext">−{stat.removed}</span>
                   ) : null}
                 </span>
               ))}

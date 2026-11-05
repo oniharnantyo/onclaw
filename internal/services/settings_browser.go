@@ -10,16 +10,24 @@ import (
 	"sort"
 	"time"
 
-	"github.com/oniharnantyo/buddies/internal/agents/tools"
+	"github.com/oniharnantyo/buddies/internal/agents/mcp"
+	"github.com/oniharnantyo/buddies/internal/browseruse"
 )
 
-// The browser tool methods on SettingsService: the Tools pane's Browser
-// dialog — config read/save plus profile management (spec add-browser-tool
-// D9/D10). The config persists as the runtime's own browser config JSON under
-// tool key browser in tool_settings, so the tool's config source
-// (agents.storeBrowserConfigSource) consumes exactly what this service
-// writes. Profiles are filesystem-backed (design D3): the profile registry
-// is the directory listing under <browserDir>/profiles.
+// The Browser Use methods on SettingsService: the settings pane's config
+// read/save plus profile management (rebrand-browser-use-system-mcp, spec
+// browser-use "Profile import" and the settings delta's Browser Use pane).
+// The config persists as the server's own config JSON under the browser key
+// in tool_settings — the same document the system server's config provider
+// decodes at every spawn boundary (browseruse.DecodeStoredConfig, design
+// D8). Profiles are filesystem-backed (design D3): the profile registry is
+// the directory listing under <browserDir>/profiles.
+
+// BrowserSettingsKey is the tool_settings key the Browser Use configuration
+// persists under. It is the retired browser tool's storage key, kept
+// verbatim: the stored document outlives the tool that named it, and the
+// system server's config provider reads the same key.
+const BrowserSettingsKey = "browser"
 
 // Browser save-time limits: a timeout of zero would disable the idle reaper
 // or hang actions forever, and an unbounded one would hide a wedged browser.
@@ -28,14 +36,15 @@ const (
 	browserActionTimeoutMax = 600  // ten minutes
 )
 
-// BrowserConfig is the persisted browser tool configuration, as bound to the
-// frontend for the Tools pane's Browser dialog. The JSON field names are the
-// stored document's — the same names the runtime's config source decodes
-// (agents' browserConfigJSON) — so this is one document, surfaced for
-// editing.
+// BrowserConfig is the persisted Browser Use configuration, as bound to the
+// frontend for the Browser Use settings pane. The JSON field names are the
+// stored document's — the same names the system server's config provider
+// decodes (browseruse.DecodeStoredConfig) — so this is one document,
+// surfaced for editing.
 type BrowserConfig struct {
 	// DefaultProfile is the profile actions run in when the model passes
-	// none. Empty means the default profile (tools.DefaultBrowserProfile).
+	// none. Empty means the default profile
+	// (browseruse.DefaultBrowserProfile).
 	DefaultProfile string `json:"defaultProfile"`
 	// Headless launches Chromium without a window; the default is on.
 	Headless bool `json:"headless"`
@@ -62,8 +71,9 @@ type BrowserProfile struct {
 
 // storedBrowserConfig is the tool_settings document's shape. Pointer fields
 // separate a key that is missing (keep the default) from one stored
-// explicitly (even at its zero value). It mirrors agents' browserConfigJSON —
-// the two must stay in step; they cannot share the type across packages.
+// explicitly (even at its zero value). It mirrors browseruse.storedConfigJSON
+// — the single decode site for the spawned server — so this is one document,
+// surfaced for editing.
 type storedBrowserConfig struct {
 	DefaultProfile       *string `json:"defaultProfile"`
 	Headless             *bool   `json:"headless"`
@@ -72,15 +82,15 @@ type storedBrowserConfig struct {
 	AllowPrivate         *bool   `json:"allowPrivate"`
 }
 
-// BrowserConfig returns the persisted browser tool configuration. A missing
+// BrowserConfig returns the persisted Browser Use configuration. A missing
 // row — or stored keys left out — falls back to the defaults, exactly as the
-// runtime's config source resolves them (spec add-browser-tool D9).
+// system server's config provider resolves them (browseruse.DefaultConfig).
 func (s *SettingsService) BrowserConfig(ctx context.Context) (BrowserConfig, error) {
-	raw, ok, err := s.store.ToolSettings().Get(ctx, tools.NameBrowser)
+	raw, ok, err := s.store.ToolSettings().Get(ctx, BrowserSettingsKey)
 	if err != nil {
 		return BrowserConfig{}, fmt.Errorf("get browser config: %w", err)
 	}
-	def := tools.DefaultBrowserConfig()
+	def := browseruse.DefaultConfig()
 	cfg := BrowserConfig{
 		DefaultProfile:       def.DefaultProfile,
 		Headless:             def.Headless,
@@ -113,16 +123,21 @@ func (s *SettingsService) BrowserConfig(ctx context.Context) (BrowserConfig, err
 	return cfg, nil
 }
 
-// SaveBrowserConfig create-or-replaces the browser tool configuration. The
+// SaveBrowserConfig create-or-replaces the Browser Use configuration. The
 // default profile must be a valid profile name (empty means the default
 // profile), the idle timeout must sit between 1 and 3600 seconds, and the
 // action timeout between 1 and 600 seconds.
+//
+// The change takes effect at the server's next spawn boundary (design D8):
+// the supervisor fetches this document fresh on every supervision tick and
+// at every spawn, and restarts the child at the next idle boundary — never
+// mid-action — so no separate notification is needed.
 func (s *SettingsService) SaveBrowserConfig(ctx context.Context, cfg BrowserConfig) error {
 	name := cfg.DefaultProfile
 	if name == "" {
-		name = tools.DefaultBrowserProfile
+		name = browseruse.DefaultBrowserProfile
 	}
-	if err := tools.ValidateBrowserProfile(name); err != nil {
+	if err := browseruse.ValidateBrowserProfile(name); err != nil {
 		return fmt.Errorf("save browser config: %w", err)
 	}
 	if cfg.IdleTimeoutSeconds < 1 || cfg.IdleTimeoutSeconds > browserIdleTimeoutMax {
@@ -144,7 +159,7 @@ func (s *SettingsService) SaveBrowserConfig(ctx context.Context, cfg BrowserConf
 	if err != nil {
 		return fmt.Errorf("encode browser config: %w", err)
 	}
-	if err := s.store.ToolSettings().Set(ctx, tools.NameBrowser, string(raw)); err != nil {
+	if err := s.store.ToolSettings().Set(ctx, BrowserSettingsKey, string(raw)); err != nil {
 		return fmt.Errorf("save browser config: %w", err)
 	}
 	return nil
@@ -152,9 +167,9 @@ func (s *SettingsService) SaveBrowserConfig(ctx context.Context, cfg BrowserConf
 
 // BrowserProfiles lists the browser profiles sorted by name. The default
 // profile is always listed — even before its directory exists (first use
-// creates it, spec add-browser-tool D3). A profile's size is the sum of its
-// files' sizes; unreadable entries are skipped so the listing stays usable.
-// The result is never nil.
+// creates it, spec browser-use "Persistent browser profiles"). A profile's
+// size is the sum of its files' sizes; unreadable entries are skipped so the
+// listing stays usable. The result is never nil.
 func (s *SettingsService) BrowserProfiles(_ context.Context) ([]BrowserProfile, error) {
 	dir, err := s.browserProfilesDir()
 	if err != nil {
@@ -164,9 +179,9 @@ func (s *SettingsService) BrowserProfiles(_ context.Context) ([]BrowserProfile, 
 	if err != nil {
 		return nil, fmt.Errorf("list browser profiles: %w", err)
 	}
-	profiles := []BrowserProfile{{Name: tools.DefaultBrowserProfile}}
+	profiles := []BrowserProfile{{Name: browseruse.DefaultBrowserProfile}}
 	for _, entry := range entries {
-		if !entry.IsDir() || entry.Name() == tools.DefaultBrowserProfile {
+		if !entry.IsDir() || entry.Name() == browseruse.DefaultBrowserProfile {
 			continue // the default profile is seeded above
 		}
 		info, err := entry.Info()
@@ -184,9 +199,10 @@ func (s *SettingsService) BrowserProfiles(_ context.Context) ([]BrowserProfile, 
 }
 
 // CreateBrowserProfile creates a profile's directory (mode 0700). An error
-// naming the profile when it already exists.
+// naming the profile when it already exists. The spawned server discovers
+// profiles on demand — no runtime call is needed.
 func (s *SettingsService) CreateBrowserProfile(_ context.Context, name string) error {
-	if err := tools.ValidateBrowserProfile(name); err != nil {
+	if err := browseruse.ValidateBrowserProfile(name); err != nil {
 		return fmt.Errorf("create browser profile: %w", err)
 	}
 	dir, err := s.browserProfilesDir()
@@ -205,24 +221,32 @@ func (s *SettingsService) CreateBrowserProfile(_ context.Context, name string) e
 	return nil
 }
 
-// DeleteBrowserProfile removes a profile: it closes the profile's live
-// browser (if any), deletes its directory, and — when the persisted config
-// named it the default profile — resets the config's default profile to
+// DeleteBrowserProfile removes a profile. When the system server is live,
+// its child is torn down first (supervisor restart, re-armed): the child's
+// stdin-close shutdown exports the cookie jar and closes every profile
+// browser, so the directory is removed only after its browser has closed
+// (spec browser-use "Persistent browser profiles"; the settings delta's
+// "deleting a profile SHALL remove it after its browser closes"). A
+// not-running (errored or still starting) server owns no browser; the
+// directory is removed directly. Deletion also — when the persisted config
+// named the profile the default — resets the config's default profile to
 // "default". The default profile itself cannot be deleted. Deleting an
 // unknown profile is a no-op: the end state (no such profile) already holds.
 func (s *SettingsService) DeleteBrowserProfile(ctx context.Context, name string) error {
-	if name == tools.DefaultBrowserProfile {
+	if name == browseruse.DefaultBrowserProfile {
 		return errors.New("the default profile cannot be deleted")
 	}
-	if err := tools.ValidateBrowserProfile(name); err != nil {
+	if err := browseruse.ValidateBrowserProfile(name); err != nil {
 		return fmt.Errorf("delete browser profile: %w", err)
 	}
-	profileDir, err := tools.BrowserProfileDir(s.browserDir, name)
+	profileDir, err := browseruse.ProfileDir(s.browserDir, name)
 	if err != nil {
 		return fmt.Errorf("delete browser profile: %w", err)
 	}
-	if err := tools.ShutdownBrowserProfile(name); err != nil {
-		return fmt.Errorf("delete browser profile %s: %w", name, err)
+	if s.systemServerRestart != nil && s.systemServerState != nil {
+		if state, ok := s.systemServerState(); ok && state.Status == mcp.StatusConnected {
+			s.systemServerRestart() // closes the child (and with it the profile's browser)
+		}
 	}
 	if err := os.RemoveAll(profileDir); err != nil {
 		return fmt.Errorf("delete browser profile %s: %w", name, err)
@@ -232,12 +256,27 @@ func (s *SettingsService) DeleteBrowserProfile(ctx context.Context, name string)
 		return fmt.Errorf("delete browser profile: %w", err)
 	}
 	if cfg.DefaultProfile == name {
-		cfg.DefaultProfile = tools.DefaultBrowserProfile
+		cfg.DefaultProfile = browseruse.DefaultBrowserProfile
 		if err := s.SaveBrowserConfig(ctx, cfg); err != nil {
 			return fmt.Errorf("delete browser profile: %w", err)
 		}
 	}
 	return nil
+}
+
+// ImportBrowserProfile copies an existing Chrome/Chromium profile directory
+// into the profiles registry (spec browser-use "Profile import"): the
+// source's contents are copied — never moved — into <browserDir>/profiles/,
+// the name is validated before any filesystem access, and a collision
+// appends a disambiguating suffix. The returned finalName is the registry
+// name the data actually landed under; the source directory is left
+// untouched either way.
+func (s *SettingsService) ImportBrowserProfile(sourcePath, name string) (finalName string, err error) {
+	finalName, err = browseruse.ImportProfile(sourcePath, filepath.Join(s.browserDir, "profiles"), name)
+	if err != nil {
+		return "", fmt.Errorf("import browser profile: %w", err)
+	}
+	return finalName, nil
 }
 
 // browserProfilesDir returns <browserDir>/profiles, creating it on demand:

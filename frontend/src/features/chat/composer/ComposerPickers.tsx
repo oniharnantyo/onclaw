@@ -373,8 +373,15 @@ function EffortPicker(): ReactElement | null {
 /** The three rail controls in rail order (design D9). min-w-0 keeps the
  * squeeze chain unbroken from the composer toolbar down to each trigger, so
  * the labels truncate instead of wrapping the rail (live 1100px regression:
- * the rail's content overflowed its box by 212px). */
-export function ComposerPickers(): ReactElement {
+ * the rail's content overflowed its box by 212px). With a group open the
+ * rail drops entirely (add-agent-groups D9): a group send targets the group,
+ * every member runs its own configured model and effort, and there is no
+ * single agent to switch to — the pickers are session-surface controls. */
+export function ComposerPickers(): ReactElement | null {
+  const activeGroupID = useChatStore((s: ChatStore) => s.activeGroupID);
+
+  if (activeGroupID !== null) return null;
+
   return (
     <div
       className="flex min-w-0 items-center gap-1"

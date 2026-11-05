@@ -796,7 +796,7 @@ export function CreateAgentModal({
                           type="button"
                           data-testid="btn-reset-context-window"
                           onClick={resetContextWindow}
-                          className="text-[11px] font-medium text-accent transition-colors hover:text-[var(--accent-hover)]"
+                          className="text-[11px] font-medium text-accenttext transition-colors hover:text-[var(--accent-hover)]"
                         >
                           Reset to auto
                         </button>

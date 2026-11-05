@@ -25,8 +25,9 @@
  * back. The expansion is view state only — the sections stay store-derived
  * either way.
  */
-import { useState } from "react";
+import { useMemo, useState } from "react";
 import type { ReactElement, ReactNode } from "react";
+import { useShallow } from "zustand/react/shallow";
 import {
   ArrowRightIcon,
   CheckIcon,
@@ -47,10 +48,10 @@ import {
   agentCounts,
   agentRows,
   planGroups,
+  taskEntries,
   type AgentRow,
 } from "./islandModel";
 import { useChatStore, type ExtendedChatStore } from "../store";
-import type { Entry, PlanEntry } from "../types";
 
 /** One "N running" segment of the pill; zero tallies render nothing. */
 function CountSegment({
@@ -178,13 +179,30 @@ function PlanGroup({
  * card once expanded. Progress reads the plan snapshot, Agents the delegated
  * task entries. */
 export function RunSurfaces(): ReactElement | null {
-  const entries = useChatStore((s: ExtendedChatStore) => s.entries);
+  // Task 5.4 (design D5): the island never subscribes to the whole entries
+  // array. The plan snapshot rides its own reference (one entry per session)
+  // and the Agents rows ride a shallow task-entry slice — a streaming text
+  // delta replaces only the assistant tail, so both slices keep their
+  // identity and the derivations below do not re-run per token.
+  const planTasks = useChatStore((s: ExtendedChatStore) => {
+    for (const entry of s.entries) {
+      if (entry.kind === "plan") return entry.plan?.tasks ?? null;
+    }
+
+    return null;
+  });
+
+  const tasks = useChatStore(
+    useShallow((s: ExtendedChatStore) => taskEntries(s.entries))
+  );
+
   const activeAgentID = useChatStore((s: ExtendedChatStore) => s.activeAgentID);
   const openPanelTab = useChatStore((s: ExtendedChatStore) => s.openPanelTab);
   const [expanded, setExpanded] = useState(false);
 
-  const rows = agentRows(entries);
+  const rows = useMemo(() => agentRows(tasks), [tasks]);
   const counts = agentCounts(rows);
+  const groups = useMemo(() => planGroups(planTasks), [planTasks]);
 
   /** Design D3: activating an Agents row opens its trajectory as a tab in
    * the right panel — pure store state, the island itself never re-layouts.
@@ -200,12 +218,6 @@ export function RunSurfaces(): ReactElement | null {
       trajectoryTab(activeAgentID, row.id, row.transcriptPath, row.name)
     );
   };
-
-  const planEntry = entries.find(
-    (e: Entry): e is PlanEntry => e.kind === "plan"
-  );
-
-  const groups = planGroups(planEntry?.plan?.tasks);
 
   const planVisible = groups.total > 0;
   const tasksVisible = rows.length > 0;
@@ -229,7 +241,7 @@ export function RunSurfaces(): ReactElement | null {
       return (
         <CheckIcon
           aria-hidden={true}
-          className="size-3.5 shrink-0 text-emerald-500"
+          className="size-3.5 shrink-0 text-successtext"
         />
       );
     }
@@ -242,7 +254,7 @@ export function RunSurfaces(): ReactElement | null {
       className={cn(
         "absolute right-3 top-3 z-20",
         expanded &&
-          "max-h-[30rem] w-84 max-w-[calc(100%-1.5rem)] overflow-y-auto rounded-xl border border-line/80 bg-surface/95 backdrop-blur-xl p-3.5 shadow-xl transition-all"
+          "max-h-[30rem] w-84 max-w-[calc(100%-1.5rem)] overflow-y-auto rounded-xl border border-line/80 bg-surface/95 p-3.5 shadow-xl transition-opacity"
       )}
       data-testid="run-card"
     >
@@ -286,12 +298,12 @@ export function RunSurfaces(): ReactElement | null {
             <CountSegment
               count={counts.completed}
               label="done"
-              className="text-emerald-600 dark:text-emerald-400"
+              className="text-successtext"
             />
             <CountSegment
               count={counts.failed}
               label="failed"
-              className="text-red-600 dark:text-red-400"
+              className="text-dangertext"
             />
             <CountSegment
               count={counts.stopped}

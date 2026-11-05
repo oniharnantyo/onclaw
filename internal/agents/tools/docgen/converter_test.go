@@ -252,7 +252,7 @@ func TestConverter_MissingChromeErrorAndRelaunch(t *testing.T) {
 
 	browserDead = true
 	_, err := c.Convert(context.Background(), "md", dest, nil)
-	require.ErrorContains(t, err, "start chromium (set CHROME_PATH to skip rod's lookup/download)")
+	require.ErrorContains(t, err, "start chromium (set CHROME_PATH to a valid browser binary)")
 
 	browserDead = false
 	res, err := c.Convert(context.Background(), "md", dest, nil)

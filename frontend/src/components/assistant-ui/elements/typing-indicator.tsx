@@ -4,8 +4,6 @@ import type { ComponentProps } from "react";
 import { cn } from "@/lib/utils";
 import { paper } from "./surfaces";
 
-const DOT_DELAYS = ["-0.32s", "-0.16s", "0s"];
-
 export function TypingIndicator({
   variant = "bubble",
   className,
@@ -16,13 +14,10 @@ export function TypingIndicator({
 > & {
   variant?: "bubble" | "bare";
 }) {
-  const dots = DOT_DELAYS.map((delay) => (
-    <span
-      key={delay}
-      aria-hidden
-      className="bg-foreground/40 size-1.5 animate-bounce rounded-full motion-reduce:animate-none"
-      style={{ animationDelay: delay, animationDuration: "1.1s" }}
-    />
+  // The kit's `.od-dot` dots (styles.css): the nth-child rules stagger the
+  // bounce, so the per-dot animation styles live there — no Tailwind here.
+  const dots = [0, 1, 2].map((i) => (
+    <span key={i} aria-hidden className="od-dot" />
   ));
 
   if (variant === "bare") {

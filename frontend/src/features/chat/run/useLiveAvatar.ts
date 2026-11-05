@@ -2,8 +2,10 @@
  * The identity avatar's live props (spec chat-panels "Identity view live
  * avatar", add-live-agent-avatar design D4–D8): a thin hook beside the pure
  * selector that pairs avatarState's level derivation (D3) with the fork's
- * imperative edges. It reads { entries, activeTurnID, dispatching,
- * lastTurnOutcome } through store selectors, and runs two effects — D4's
+ * imperative edges. The level rides a scalar phase selector over the active
+ * turn's status (task 5.4, design D5) — text deltas never re-render the
+ * face — while the effects read activeTurnID, dispatching, and
+ * lastTurnOutcome through their own selectors. It runs two effects — D4's
  * one-shot reactions on a live terminal outcome (the store mints a fresh
  * object per terminal on the ingest path, so reactions are edges of the
  * object's identity; a reaction landing while the face is unmounted is
@@ -27,7 +29,7 @@ import type { LiveAvatarProps } from "../../../components/ui/Avatar";
 import { useChatStore } from "../store";
 import type { ExtendedChatStore, TurnOutcome } from "../store";
 import { useReducedMotion } from "../tools/useReducedMotion";
-import { deriveAvatarState } from "./avatarState";
+import { avatarPhase, phaseToAvatarState } from "./avatarState";
 
 /** How long a reaction's badge fx (sparkle, sweat) stays up (design D4). */
 export const FX_DURATION_MS = 2000;
@@ -39,7 +41,6 @@ export const SLEEP_AFTER_MS = 120_000;
 /** The identity view's live avatar props, or undefined when the face must
  * render static (reduced motion, design D7). */
 export function useLiveAvatar(): LiveAvatarProps | undefined {
-  const entries = useChatStore((s: ExtendedChatStore) => s.entries);
   const activeTurnID = useChatStore((s: ExtendedChatStore) => s.activeTurnID);
   const dispatching = useChatStore((s: ExtendedChatStore) => s.dispatching);
 
@@ -47,13 +48,15 @@ export function useLiveAvatar(): LiveAvatarProps | undefined {
     (s: ExtendedChatStore) => s.lastTurnOutcome
   );
 
+  // The level state (design D3, task 5.4): a SCALAR phase card-carrying the
+  // active turn's status edge. A text delta replaces the streaming entry
+  // (and the entries array) but leaves the phase — and therefore this
+  // subscriber — untouched; only a real state change re-renders the face.
+  const phase = useChatStore((s: ExtendedChatStore) => avatarPhase(s));
+
   const reduced = useReducedMotion();
 
-  // The level state (design D3): pure over the three store inputs.
-  const level = useMemo(
-    () => deriveAvatarState({ entries, activeTurnID, dispatching }),
-    [entries, activeTurnID, dispatching]
-  );
+  const level = useMemo(() => phaseToAvatarState(phase), [phase]);
 
   // The fork's imperative handle; the callback is stable so the Avatar's
   // ref never re-fires on unrelated renders.

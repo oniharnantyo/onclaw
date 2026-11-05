@@ -19,10 +19,11 @@ import (
 
 // The built-in tool catalog: the tools every agent turn may draw on — the
 // two workspace-free utilities, the jailed workspace filesystem and shell,
-// the plantask tools, web access, the browser, the scheduler, the
-// knowledge save_document tool, and the create_document PDF renderer (spec
-// agent-tools; spec add-browser-tool; spec add-scheduler; spec
-// add-knowledge-corpus; spec add-create-document). A tool reaches
+// the plantask tools, web access, the scheduler, the knowledge save_document
+// tool, and the create_document PDF renderer (spec agent-tools; spec
+// add-scheduler; spec add-knowledge-corpus; spec add-create-document). The
+// browser capability rides the system MCP server instead
+// (rebrand-browser-use-system-mcp) — no catalog entry. A tool reaches
 // the model only when all three gate conditions hold
 // (resolveTurnTools in gate.go): it is in the catalog, it is globally enabled
 // (store.ToolStates — absence of a row means enabled), and the agent opted in
@@ -66,7 +67,6 @@ const (
 	ToolTaskList   = "task_list"
 	ToolWebFetch   = tools.NameWebFetch
 	ToolWebSearch  = tools.NameWebSearch
-	ToolBrowser    = tools.NameBrowser
 )
 
 // plantaskToolNames are the plantask middleware's tools in stable order; the gate
@@ -155,7 +155,6 @@ var catalogEntries = []catalogEntry{
 	{meta: ToolMeta{Name: ToolTaskList, DisplayName: "List Tasks", IconKey: "list", Description: "List all tasks in the workspace task plan."}, kind: toolMiddleware, workspaceScoped: true},
 	{meta: ToolMeta{Name: ToolWebFetch, DisplayName: "Web Fetch", IconKey: "link", Description: "Fetch a URL over HTTP(S) and return its readable text content."}},
 	{meta: ToolMeta{Name: ToolWebSearch, DisplayName: "Web Search", IconKey: "search", Description: "Search the web through the configured provider chain (configured in Tools settings)."}},
-	{meta: ToolMeta{Name: ToolBrowser, DisplayName: "Browser", IconKey: "globe", Description: "Drive a real Chromium browser with persistent named profiles: navigate, snapshot, click, type, screenshot, manage cookies. Logins persist across sessions."}},
 	{meta: ToolMeta{Name: ToolScheduler, DisplayName: "Scheduler", IconKey: "calendar-clock", Description: "Create, list, update and delete cron schedules that run an agent on a prompt unattended; times are local."}},
 	{meta: ToolMeta{Name: ToolSaveDocument, DisplayName: "Save document", IconKey: "file-plus", Description: "Save a chat attachment or inline text as a durable knowledge document in this agent's scope; a descriptive filename and description help future discovery."}},
 	{meta: ToolMeta{Name: ToolCreateDocument, DisplayName: "Create Document", IconKey: "file-text", Description: "Render markdown into a styled PDF document under artifacts/ in your workspace; presentation comes from the user's presets, referenced by name."}, workspaceScoped: true},
@@ -237,14 +236,6 @@ func (m *manager) buildDirectTool(name string, scope toolScope) (tool.BaseTool, 
 		// The persisted provider chain resolves lazily on first invocation
 		// (design D8); the tool_settings-backed adapter supplies it.
 		return tools.NewWebSearch(tools.WithSearchConfigSource(&storeSearchConfigSource{settings: m.store.ToolSettings()}))
-	case ToolBrowser:
-		// The persisted browser config resolves lazily per launch (spec
-		// add-browser-tool D9) through the tool_settings-backed adapter;
-		// profiles and screenshots root at the layout's browser directory
-		// (D10).
-		return tools.NewBrowser(
-			tools.WithBrowserConfigSource(&storeBrowserConfigSource{settings: m.store.ToolSettings()}),
-			tools.WithBrowserDir(m.browserDir))
 	case ToolScheduler:
 		// A thin client over the runtime's schedule service (add-scheduler
 		// design D1), defaulted to the calling agent (D8).

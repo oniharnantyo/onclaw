@@ -144,7 +144,7 @@ function DocumentChip({
       {failed ? (
         <TriangleAlert
           aria-hidden="true"
-          className="size-4 shrink-0 text-danger"
+          className="size-4 shrink-0 text-dangertext"
         />
       ) : (
         <FileText aria-hidden="true" className="size-4 shrink-0 text-muted" />

@@ -1,11 +1,14 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import type { ChangeEvent, ReactElement } from "react";
 
+import { PaneHeader } from "../../components";
+import BrowserUsePane from "./components/BrowserUsePane";
 import { Icon } from "../../components/ui/Icon";
 import { Input } from "../../components/ui/Input";
 import { MicroLabel } from "../../components/ui/MicroLabel";
 import { cn } from "../../lib/cn";
-import { useNavStore } from "../../stores/nav";
+import { useTablist } from "../../lib/useTablist";
+import { useNavStore, type SettingsPaneRequest } from "../../stores/nav";
 import IntegrationsPane from "../integrations/IntegrationsPane";
 import ChannelsPane from "./components/ChannelsPane";
 import HooksPane from "./components/HooksPane";
@@ -50,6 +53,13 @@ export const settingsPaneSections: SettingsPaneSection[] = [
         icon: "message",
         description:
           "Connect the Telegram bot — token, pairing approvals, and per-chat behavior.",
+      },
+      {
+        key: "browseruse",
+        label: "Browser Use",
+        icon: "monitor",
+        description:
+          "The built-in Browser Use MCP server — engine settings, profiles, and profile import.",
       },
     ],
   },
@@ -98,6 +108,7 @@ const paneComponents: Record<
   providers: ProvidersPane,
   integrations: IntegrationsPane,
   channels: ChannelsPane,
+  browseruse: BrowserUsePane,
   skills: SkillsPane,
   tools: ToolsPane,
   hooks: HooksPane,
@@ -146,12 +157,34 @@ const NAV_ROW_IDLE =
 // SettingsView is the settings menu as a full-bleed page in onclaw-v2's
 // layout: an explicit Back header (the shell renders nothing else around
 // it), a grouped w-56 section nav with a label filter over a hairline, and
-// a centered max-w-5xl content column whose h2 names the active pane. Only
-// the active pane mounts; panes render their own section headers and bodies
-// below the h2.
+// a centered max-w-5xl content column whose PaneHeader names the active
+// pane in the shared view-header style. Only the active pane mounts; panes
+// render their own section headers and bodies below it.
 export default function SettingsView(): ReactElement {
   const [active, setActive] = useState<PaneKey>("providers");
   const [query, setQuery] = useState<string>("");
+
+  // A cross-menu open request (e.g. the MCP pane's "open settings" on the
+  // Browser Use row) names one pane; the nonce lets the view apply each
+  // request exactly once without consuming shared state.
+  const requestedPane = useNavStore(
+    (state: { settingsPaneRequest: SettingsPaneRequest | null }) =>
+      state.settingsPaneRequest
+  );
+
+  const appliedRequest = useRef<number | null>(null);
+
+  useEffect(() => {
+    if (requestedPane === null) return;
+
+    // Apply each request exactly once per pane navigation (the nonce makes
+    // re-opening the same pane re-apply, and stale mounted settings views
+    // applying the same request is harmless — they are hidden).
+    if (appliedRequest.current === requestedPane.nonce) return;
+
+    appliedRequest.current = requestedPane.nonce;
+    setActive(requestedPane.pane as PaneKey);
+  }, [requestedPane]);
 
   // SAFETY: `active` is always one of the static config keys, so the lookup
   // below never misses.
@@ -160,6 +193,19 @@ export default function SettingsView(): ReactElement {
   ) as SettingsPaneConfig;
 
   const visibleSections = filterSections(settingsPaneSections, query);
+
+  // The nav is a real tablist (fix-ui-audit-findings 3.2, design D7b): the
+  // shared pattern gives each pane row a roving tabindex and arrow/Home/End
+  // movement (arrows stop at the ends; Home/End jump), and the active pane
+  // body is the labelled panel.
+  const { tab, panel } = useTablist<PaneKey>({
+    idPrefix: "settings-nav",
+    ids: visibleSections.flatMap((section: SettingsPaneSection): PaneKey[] =>
+      section.panes.map((pane: SettingsPaneConfig): PaneKey => pane.key)
+    ),
+    active,
+    onChange: setActive,
+  });
 
   // The store records the focused pane's label for cross-menu consumers.
   // The label is derived from `active`, so the effect follows it.
@@ -214,8 +260,7 @@ export default function SettingsView(): ReactElement {
                 <button
                   key={entry.key}
                   type="button"
-                  role="tab"
-                  aria-selected={isActive}
+                  {...tab(entry.key)}
                   data-testid={`settings-nav-item-${entry.key}`}
                   className={cn(
                     NAV_ROW,
@@ -226,7 +271,7 @@ export default function SettingsView(): ReactElement {
                   <Icon
                     name={entry.icon}
                     size={15}
-                    className={isActive ? "text-accent" : "text-muted"}
+                    className={isActive ? "text-accenttext" : "text-muted"}
                   />
                   <span className="whitespace-nowrap">{entry.label}</span>
                 </button>
@@ -236,24 +281,22 @@ export default function SettingsView(): ReactElement {
         ))}
       </nav>
 
-      {/* Content column: the pane body reads on the page surface; the h2
-          names the pane and the muted line carries its description, per the
-          settings-nav spec. */}
+      {/* Content column: the pane body reads on the page surface; the header
+          names the pane in the shared PaneHeader treatment — the same style
+          as the knowledge/scheduler views — and the muted line carries its
+          description. */}
       <div className="od-scroll min-w-0 flex-1 overflow-y-auto p-4 md:p-6 lg:p-8 lg:pt-10">
         <div className="mx-auto max-w-5xl">
           <div className="mb-6">
-            <h2
-              className="text-xl font-semibold text-fg"
-              data-testid="settings-pane-title"
-            >
-              {activePane.label}
-            </h2>
-            <p className="mt-1 text-[13px] text-muted">
-              {activePane.description}
-            </p>
+            <PaneHeader
+              title={activePane.label}
+              description={activePane.description}
+            />
           </div>
 
-          <ActivePane pane={activePane} />
+          <div {...panel(active)}>
+            <ActivePane pane={activePane} />
+          </div>
         </div>
       </div>
     </div>
