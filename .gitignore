@@ -22,3 +22,7 @@ build/android/gen/
 
 # impeccable runtime state (hook cache, critique records)
 .impeccable/
+
+# local agent tool state
+.openidea/
+.tasks/
