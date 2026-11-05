@@ -1,0 +1,196 @@
+# Spec Delta
+
+## MODIFIED Requirements
+
+### Requirement: Interactive state semantics
+
+Interactive rows and list items SHALL convey selection and expansion state
+semantically, not only visually: the selected row SHALL set `aria-current`,
+an expandable row SHALL set `aria-expanded` to its open state, and the
+state attributes used SHALL be valid for the element's role — a toggle-like
+selectable row (a card list, a provider list) SHALL expose its selection
+through `aria-pressed` or a selectable-role pattern, never through
+`aria-selected` on a role that does not support it. A tab strip SHALL
+associate each tab with its panel (paired ids with `aria-controls` /
+`aria-labelledby` and a `tabpanel` role on the panel), the active tab SHALL
+be exposed as the selected one, and the arrow keys SHALL move tab
+selection within the strip. A colored status indicator (a status dot)
+SHALL expose its state as accessible text — a label or visually-hidden
+text — not only through a pointer-hover title. A draggable panel separator
+that advertises a separator role SHALL also be keyboard-operable: it SHALL
+be focusable, the arrow keys SHALL adjust the panel by the same step a
+drag increment does, and the adjusted width SHALL persist exactly as a
+dragged width does. Visual state alone MUST NOT be the only carrier of
+selection, expansion, tab selection, or status. A standalone icon control
+SHALL present a pointer target of at least 24 by 24 CSS pixels; where the
+glyph is smaller, the clickable target extends beyond it.
+
+#### Scenario: Selected row announces itself
+
+- **WHEN** a screen reader lists the chat rail's session rows
+- **THEN** the active session's row is exposed as the current one, and
+  inactive rows are not
+
+#### Scenario: Accordion header announces expansion
+
+- **WHEN** the user expands or collapses a session group header
+- **THEN** the header's `aria-expanded` flips between true and false
+
+#### Scenario: Icon controls meet the target floor
+
+- **WHEN** a row carries a 20px icon-only control such as delete
+- **THEN** the clickable target is at least 24 by 24 CSS pixels
+
+#### Scenario: Toggle-like rows use selection attributes their role supports
+
+- **WHEN** the user selects an agent card or a provider row in a
+  button-role list
+- **THEN** the selected row exposes its selection through a state attribute
+  the button role supports (such as `aria-pressed`), and screen readers
+  announce the selection instead of dropping it
+
+#### Scenario: Tabs are wired to their panels and reached by arrows
+
+- **WHEN** the user focuses a tab in the settings tab strip, the agent
+  config tabs, or the right bar's preview tabs and presses the arrow keys
+- **THEN** selection moves between tabs, the active tab is exposed as
+  selected, and its panel is associated with it so a screen reader can name
+  which panel belongs to which tab
+
+#### Scenario: Status dot announces its state
+
+- **WHEN** a screen reader reaches a session row or schedule row with a
+  colored status dot
+- **THEN** the dot's state (running, needs attention) is exposed as text,
+  without requiring a pointer hover
+
+#### Scenario: Separator resizes from the keyboard
+
+- **WHEN** the user focuses the sessions-list resize handle and presses the
+  arrow keys
+- **THEN** the panel width adjusts by the drag increment step and the new
+  width persists like a dragged width
+
+### Requirement: Status text contrast
+
+Status and percentage text that color themselves by state — the
+context-ring's percentage label and tier text among them — SHALL draw from
+the theme's lifted text tiers, `accenttext`, `warntext`, and `dangertext`,
+not from the raw `accent`, `warn`, and `danger` fills. Each lifted tier
+SHALL meet at least 4.5:1 contrast against its surface in both the light
+and dark themes, and each lifted tier SHALL be a defined color token in
+both theme palettes — a tier MUST NOT resolve by inheriting the fill color
+it lifts. Graphic strokes that mark the same state (a ring's arc, a
+border) SHALL stay on the raw fill tokens. The same grammar governs every
+status-colored surface in the app, vendored message-element surfaces
+included: status-colored text and graphics SHALL draw from the contract's
+status tokens and their lifted text tiers, and general palette utilities
+(emerald, red, amber, blue families) MUST NOT encode status hues in
+component classes — a status hue reaches the screen only through a status
+token. The success status SHALL have the same lifted text tier grammar as
+accent, warn, and danger where success-colored text renders.
+
+#### Scenario: Dark-theme ring label receives the lifted accent tier
+
+- **WHEN** the context ring renders its percentage label in the dark theme
+- **THEN** the label draws from the lifted `accenttext` tier, not the raw
+  `accent` fill, and meets at least 4.5:1 against the ring's surface
+
+#### Scenario: The warn tier is a real lifted token
+
+- **WHEN** status text renders in the warn state in either theme
+- **THEN** `warntext` resolves to a defined lifted token in that theme's
+  palette rather than inheriting the warn fill, and the text meets at
+  least 4.5:1 against its surface
+
+#### Scenario: Danger follows the same grammar
+
+- **WHEN** status text renders in the danger state in either theme
+- **THEN** it draws from the lifted `dangertext` tier, not the raw
+  `danger` fill, while any accompanying stroke stays on the raw fill
+
+#### Scenario: Composer warnings are legible in the light theme
+
+- **WHEN** the composer renders its capability or connector warning line in
+  the light theme
+- **THEN** the warning text draws from the lifted `warntext` tier and meets
+  at least 4.5:1 against the composer surface
+
+#### Scenario: Message-element status rides the tokens
+
+- **WHEN** a tool row, run card, or diff header renders success or danger
+  status text and icons in the light theme
+- **THEN** the color comes from the contract's status tokens and lifted
+  text tiers, not from palette utilities, and the small status text meets
+  at least 4.5:1
+
+## ADDED Requirements
+
+### Requirement: Form control labeling
+
+Every field control — text input, textarea, select, and the field-style
+pickers inside a larger editor — SHALL present an accessible name through
+an associated label, `aria-label`, or `aria-labelledby`; a placeholder
+alone MUST NOT be the control's only name, and the name MUST survive the
+user typing into the field. Options inside a picker that is itself a set
+of fields (a color swatch grid, an avatar trait select) SHALL carry
+human-readable names and SHALL expose which option is chosen.
+
+#### Scenario: Optional text input keeps its name after typing
+
+- **WHEN** the user types into an optional input that shows only a
+  placeholder at rest, such as the knowledge upload description
+- **THEN** the input still exposes an accessible name to assistive
+  technology
+
+#### Scenario: Avatar trait selects are announced by trait
+
+- **WHEN** a screen reader reaches the avatar customizer's hair, eyes, or
+  mouth selects
+- **THEN** each select is announced by its trait name, not as an unnamed
+  menu
+
+#### Scenario: Swatch announces its color and choice
+
+- **WHEN** the user activates a color swatch in the avatar customizer
+- **THEN** the swatch exposes a human-readable color name and the chosen
+  state, not a raw value as its only name
+
+### Requirement: Text field focus treatment
+
+A text input or textarea that opts out of the global focus outline — the
+design contract's input exception — SHALL still present a visible focus
+treatment: the containing field's focus-within accent border, per the
+contract. A text field MUST NOT be left with no focus indication beyond
+the text caret.
+
+#### Scenario: Composer textarea shows its focus treatment
+
+- **WHEN** the user focuses the message composer's textarea
+- **THEN** a visible accent focus treatment appears on the field beyond
+  the caret itself
+
+#### Scenario: Combobox search shows its focus treatment
+
+- **WHEN** the user focuses the search input inside an open combobox
+  popover
+- **THEN** the input shows a visible focus treatment
+
+### Requirement: View headings
+
+Each primary view — chat, agents, schedules, knowledge, and each settings
+pane — SHALL expose its title as a heading element reachable by heading
+navigation; the chat view's conversation title SHALL be a heading, not a
+styled span. Heading levels within a view SHALL NOT skip a level between
+parent and child sections.
+
+#### Scenario: Chat view has a heading
+
+- **WHEN** a screen reader navigates the chat view by headings
+- **THEN** the conversation title is reachable as a heading
+
+#### Scenario: Config pane levels do not skip
+
+- **WHEN** the user walks the headings of the agent config pane or the
+  channels pane
+- **THEN** no heading jumps a level below its parent section heading

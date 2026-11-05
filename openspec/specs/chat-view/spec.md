@@ -36,12 +36,16 @@ Each group row's new-session control SHALL create a session for that agent
 and immediately open it — from collapsed and expanded rows alike — and the
 control MUST NOT require the agent to be active first.
 
-The unfiltered expanded list SHALL show the agent's four most recent
+The unfiltered expanded list SHALL show the agent's five most recent
 sessions — plus the active session when it is older than those — behind a
 progressive "Load more sessions" control: each activation SHALL append the
 next batch of that agent's older sessions, and the control SHALL retire
 when the agent's sessions are exhausted. A non-empty search SHALL list
 every match regardless of the load-more state.
+
+An expanded group's list SHALL grow to its content — the column scrolls
+as one — and MUST NOT reserve an empty region for an inner scroll beneath
+a list shorter than the column.
 
 Each session entry SHALL offer a delete affordance that removes the session
 and its transcript only after an explicit confirmation; deleting MUST NOT
@@ -135,17 +139,17 @@ restarts within sane bounds.
 
 #### Scenario: Older sessions behind an expander
 
-- **WHEN** an agent has more than four sessions and no search text is
+- **WHEN** an agent has more than five sessions and no search text is
   entered
-- **THEN** the expanded group shows the four most recent sessions and a
+- **THEN** the expanded group shows the five most recent sessions and a
   "Load more sessions" control; each activation appends the next batch of
   that agent's older sessions, and the control retires once every session
   of the agent is listed
 
 #### Scenario: Active older session stays visible
 
-- **WHEN** the active session is not among its agent's four most recent
-- **THEN** it is listed alongside the four most recent while the list is
+- **WHEN** the active session is not among its agent's five most recent
+- **THEN** it is listed alongside the five most recent while the list is
   capped
 
 #### Scenario: Search lifts the cap
@@ -567,8 +571,16 @@ A fenced block whose language is `mermaid` SHALL render as a diagram once its me
 Partial markdown rendered mid-stream MUST NOT produce transient artifacts
 that misrepresent the text: an unclosed code fence MUST NOT swallow the
 following text as code, and an unclosed emphasis marker MUST NOT style the
-remainder of the message. The completed message SHALL render identically to
-the same text rendered without streaming.
+remainder of the message. The completed message SHALL render identically
+to the same text rendered without streaming. Per-delta rendering work
+SHALL stay bounded so streaming paint latency does not grow with session
+or message length: text-delta store updates SHALL be coalesced to at most
+one store commit per frame window before they reach the render path,
+message-to-view conversion SHALL reuse each entry's converted result so a
+delta does not re-map messages that did not change, and the per-token
+markdown stabilization SHALL NOT rescan the whole rendered message for
+every delta. These bounds MUST NOT change the completed-render invariant
+above.
 
 #### Scenario: Unclosed fence mid-stream
 
@@ -582,6 +594,20 @@ the same text rendered without streaming.
 - **WHEN** a streamed message completes
 - **THEN** its rendering is identical to rendering the same complete text in
   one pass
+
+#### Scenario: Long-session streaming stays flat
+
+- **WHEN** text deltas arrive for a turn in a session containing hundreds
+  of messages
+- **THEN** the per-delta work does not re-map the whole transcript, and
+  paint latency per chunk stays bounded as the session grows
+
+#### Scenario: Long answer keeps painting
+
+- **WHEN** a single streamed answer grows to thousands of characters of
+  markdown
+- **THEN** continued deltas keep painting without per-token cost that
+  compounds with the message length
 
 ### Requirement: Session re-entry keeps a running turn visible
 
@@ -641,9 +667,13 @@ running indicator, and its turn lifecycle without requiring another switch.
 
 ### Requirement: Turn attribution
 
-Each assistant turn in the transcript SHALL open with the session agent's
-identity: the agent's avatar rendered small and static beside the agent's
-name, so the conversation always shows who is speaking. Attribution MUST
+Each assistant turn in an ordinary session's transcript SHALL open with the
+session agent's identity: the agent's avatar rendered small and static beside
+the agent's name, so the conversation always shows who is speaking. In a
+group conversation, each entry SHALL instead be attributed to its own
+author: a member agent's entry opens with that member's avatar and name, and
+a coordinator entry renders as a system assignment line without agent
+attribution. Attribution MUST
 NOT mount a second live animated avatar instance: the right bar's identity
 face SHALL remain the transcript's only live avatar, and the attribution
 stub renders statically under every motion setting. Compaction markers and
@@ -653,9 +683,21 @@ tool card, never in the turn attribution.
 
 #### Scenario: Assistant turn names its agent
 
-- **WHEN** the transcript renders an assistant turn
+- **WHEN** the transcript renders an assistant turn in an ordinary session
 - **THEN** the turn opens with the session agent's avatar and name above
   its content
+
+#### Scenario: Group entry names its author
+
+- **WHEN** the transcript renders a member's reply in a group conversation
+- **THEN** the entry opens with that member's avatar and name, not the
+  lead's and not a session agent's
+
+#### Scenario: Coordinator line renders as a system row
+
+- **WHEN** the transcript renders an assignment note in a group conversation
+- **THEN** it renders as a system row naming the assignee without agent
+  attribution
 
 #### Scenario: Attribution stays static
 
@@ -749,3 +791,25 @@ trigger and the model line SHALL remain.
 - **THEN** the provider name and family label truncate with an ellipsis
   rather than wrapping mid-token, and hovering the line shows the full
   model id
+
+### Requirement: Transcript live announcements
+
+The transcript viewport SHALL be exposed to assistive technology as a live
+log region so streamed assistant text and running tool/turn activity are
+announced without requiring focus. While a session's messages are loading,
+the transcript SHALL expose a busy state that assistive technology
+announces, instead of carrying the state on a label attached to a generic
+element.
+
+#### Scenario: Streamed text reaches screen readers
+
+- **WHEN** an assistant turn streams text into the transcript
+- **THEN** the transcript's live log region exposes the growing message
+  text so screen-reader users receive the streamed content without
+  navigating
+
+#### Scenario: Loading a session announces itself
+
+- **WHEN** the user opens a session and its messages are still loading
+- **THEN** the transcript exposes a busy state that assistive technology
+  announces, and the state clears when the messages arrive
