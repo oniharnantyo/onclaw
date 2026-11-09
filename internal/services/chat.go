@@ -231,6 +231,19 @@ func (s *ChatService) Regenerate(ctx context.Context, sessionID, turnID string) 
 	return turn.TurnID(), nil
 }
 
+// Resync re-fires the session's composite in-flight snapshot to every live
+// subscriber (enhance-resumable-streams design D5): the bound call the
+// frontend's resync triggers land on — a detected delta gap (the beacon's
+// counter comparison, design D6), a reconnect that kept its subscription, or
+// a focus regain while the session is busy. Idle or unknown sessions are a
+// safe no-op.
+func (s *ChatService) Resync(ctx context.Context, sessionID string) error {
+	if err := s.turns.Resync(ctx, sessionID); err != nil {
+		return fmt.Errorf("resync session: %w", err)
+	}
+	return nil
+}
+
 // Cancel stops the session's in-flight turn (spec agent-runtime "Turn
 // cancellation"): streaming and tool activity stop, a terminal
 // turn_cancelled event lands with the partial output retained, and the

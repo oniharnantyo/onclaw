@@ -30,7 +30,7 @@ func TestMemorySmoke(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
 	defer cancel()
 
-	app, err := Assemble(ctx, services.Noop{}, services.NoBrowser{}, WithoutSystemBrowserUse())
+	app, err := Assemble(ctx, services.Noop{}, services.NoBrowser{}, nil, WithoutSystemBrowserUse())
 	require.NoError(t, err)
 	defer func() { require.NoError(t, app.Close()) }()
 

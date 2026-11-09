@@ -137,6 +137,10 @@ func RunServerHost(ctx context.Context, host *App, emitter services.Emitter, ass
 		application.NewService(host.Services.Schedule),
 		application.NewService(host.Services.Knowledge),
 		application.NewService(host.Services.Channels),
+		// The notifications service serves get/save settings and focus
+		// reports in server mode (add-desktop-notifications design D5, spec
+		// host-parity): sends themselves are the host's no-op notifier.
+		application.NewService(host.Services.Notifications),
 		application.NewService(services.NewClipboardService()),
 	}
 	bound = append(bound, extras...)

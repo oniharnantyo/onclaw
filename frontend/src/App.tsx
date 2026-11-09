@@ -21,6 +21,7 @@ import SettingsView from "./features/settings";
 import SchedulesView from "./features/scheduler";
 import { subscribeFileDropGuard } from "./fileDropGuard";
 import { cn } from "./lib/cn";
+import { subscribeNotificationOpen } from "./notificationOpen";
 import { subscribeSettingsShortcut } from "./settingsShortcut";
 import { useNavStore, type Menu } from "./stores/nav";
 import { usePlatformStore } from "./stores/platform";
@@ -264,6 +265,11 @@ function Shell(): ReactElement {
   // The native menu's Settings… item (⌘,) navigates here through the shared
   // nav store (design D5); the shell owns the subscription's lifetime.
   useEffect(() => subscribeSettingsShortcut(), []);
+
+  // Clicked-notification deep links (add-desktop-notifications design D5,
+  // task 6.3) navigate to the session/group they concern — the same nav
+  // store, so an open settings view is left for the chat layer.
+  useEffect(() => subscribeNotificationOpen(), []);
 
   // Window-level file-drop navigation guard (design D4): drops outside the
   // chat column can never navigate the webview to a file; Files-gated so

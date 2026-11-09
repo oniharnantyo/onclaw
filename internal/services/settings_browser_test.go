@@ -276,8 +276,8 @@ func TestSettingsBrowser_DeleteCoordinatesSystemServer(t *testing.T) {
 		count := 0
 		svc = NewSettingsService(fs,
 			WithBrowserDir(dir),
-			WithSystemServerState(func() (mcp.ServerState, bool) { return state, supervised }),
-			WithSystemServerRestart(func() { count++ }))
+			WithSystemServerState(func(id string) (mcp.ServerState, bool) { return state, supervised }),
+			WithSystemServerRestart(func(id string) { count++ }))
 		return svc, &count
 	}
 

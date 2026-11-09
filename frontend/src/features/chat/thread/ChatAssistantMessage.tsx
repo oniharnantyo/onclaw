@@ -40,7 +40,12 @@ import {
   useRef,
   useState,
 } from "react";
-import type { ComponentPropsWithoutRef, ReactElement, ReactNode } from "react";
+import type {
+  ComponentPropsWithoutRef,
+  PropsWithChildren,
+  ReactElement,
+  ReactNode,
+} from "react";
 import Markdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import type { Components } from "react-markdown";
@@ -56,6 +61,8 @@ import {
 
 import {
   type AssistantState,
+  type GroupByContext,
+  type PartState,
   BranchPickerPrimitive,
   MessagePrimitive,
   groupPartByType,
@@ -90,7 +97,15 @@ import { toWorkspaceRel } from "../toolPaths";
 import { workspaceFileTab } from "../components/panelRenderers";
 import { ArtifactsView } from "../components/ArtifactsView";
 import { PLAIN_DOC_NAME, exportGeneratedDocument } from "../exportDocument";
-import { ChatToolGroup, resolveToolRenderer } from "../tools/aui";
+import {
+  ChatToolGroup,
+  resolveToolRenderer,
+  type ToolGroupPart,
+} from "../tools/aui";
+import {
+  computerUseApprovalActionOf,
+  isComputerUseTool,
+} from "../tools/aui/ComputerTool";
 import { authorOfMessage } from "../../groups/groupEntries";
 import { GroupAttribution } from "../../groups/GroupAttribution";
 import { AgentAvatar } from "../../../components";
@@ -98,12 +113,59 @@ import { DayGate, MessageTime, useDayBoundary } from "./DayDivider";
 
 /** Adjacent reasoning parts fold behind one disclosure; adjacent tool calls
  * group behind the 2B fold; everything else renders standalone (the
- * thread.aui.tsx reference composition, minus the chain-of-thought tier). */
-const GROUP_BY = groupPartByType({
-  reasoning: ["group-reasoning"],
-  "tool-call": ["group-tool"],
-  "standalone-tool-call": [],
-});
+ * thread.aui.tsx reference composition, minus the chain-of-thought tier).
+ * Computer-use runs sit one tier above (add-computer-use design D8, user
+ * feedback): the run's calls AND the reasoning narrating between them share
+ * the `group-computer-run` prefix, so adjacent-coalescing keeps one
+ * trajectory card per run instead of a card per call — the reasoning the
+ * run absorbs is stream-of-thought, the footer steps carry the actions. */
+/** Whether one tool-call part joins a computer-use run: a
+ * `mcp__computer-use__*` call, or the "execute"-named approval part the
+ * gate parks for one (payload names the computer-use action, design D7). */
+function joinsComputerRunPart(part: { type: string }): boolean {
+  if (part.type !== "tool-call") return false;
+
+  const call = part as { toolName?: string; argsText?: string };
+
+  return (
+    isComputerUseTool(call.toolName ?? "") ||
+    (call.toolName === "execute" &&
+      computerUseApprovalActionOf(call.argsText ?? "") !== null)
+  );
+}
+
+/** The message's groupBy: the base scheme, with computer-run members and
+ * every reasoning part lifted under the shared `group-computer-run` prefix.
+ * Parts the base leaves standalone keep their standalone path. Recomputed
+ * per message render (no memo fingerprint — the tree is small and streams),
+ * which keeps the helper's registry-driven standalone resolution intact. */
+function useMessageGroupBy() {
+  return useMemo(
+    (): ((
+      part: PartState,
+      context: GroupByContext
+    ) => readonly `group-${string}`[]) => {
+      const base = groupPartByType({
+        reasoning: ["group-reasoning"],
+        "tool-call": ["group-tool"],
+        "standalone-tool-call": [],
+      });
+
+      return (part, context): readonly `group-${string}`[] => {
+        const path = base(part, context);
+
+        if (path.length === 0) return path;
+
+        if (joinsComputerRunPart(part) || part.type === "reasoning") {
+          return ["group-computer-run", ...path];
+        }
+
+        return path;
+      };
+    },
+    []
+  );
+}
 
 /** Schemes/fragments that make a markdown href an external navigation
  * target rather than a workspace path (covers http:, mailto:, #anchors,
@@ -645,6 +707,40 @@ function TurnAttribution(): ReactElement | null {
 }
 
 /** One assistant turn. A compaction message renders as the divider alone. */
+/** One `group-computer-run` outer group (add-computer-use design D8, user
+ * feedback): when the run carries computer-use calls it renders as ONE
+ * trajectory card over the whole span — the reasoning the run bridges rides
+ * inside, unrendered, instead of splitting the card per call. A run with no
+ * computer-use calls (reasoning beside other tools) renders its children
+ * exactly as the base scheme would have. */
+function ComputerRunGroup({
+  group,
+  children,
+}: PropsWithChildren<{ group: ToolGroupPart }>): ReactElement {
+  const parts = useAuiState((s: AssistantState) => s.message.content);
+
+  const hasComputer = useMemo((): boolean => {
+    for (const index of group.indices) {
+      const part = parts[index] as { type?: string; toolName?: string } | undefined;
+
+      if (
+        part?.type === "tool-call" &&
+        joinsComputerRunPart(part as { type: string })
+      ) {
+        return true;
+      }
+    }
+
+    return false;
+  }, [group.indices, parts]);
+
+  if (!hasComputer) {
+    return <>{children}</>;
+  }
+
+  return <ChatToolGroup group={group}>{children}</ChatToolGroup>;
+}
+
 export function ChatAssistantMessage(): ReactElement {
   const content = useAuiState((s: AssistantState) => s.message.content);
   const lead = content[0];
@@ -662,6 +758,8 @@ export function ChatAssistantMessage(): ReactElement {
     );
   }
 
+  const groupBy = useMessageGroupBy();
+
   return (
     <div className="group/msg group/answer relative">
       <DayGate />
@@ -672,7 +770,7 @@ export function ChatAssistantMessage(): ReactElement {
         data-role="assistant"
         className="text-sm leading-relaxed text-fg wrap-break-word"
       >
-        <MessagePrimitive.GroupedParts groupBy={GROUP_BY} indicator="never">
+        <MessagePrimitive.GroupedParts groupBy={groupBy} indicator="never">
           {({
             part,
             children,
@@ -709,6 +807,8 @@ export function ChatAssistantMessage(): ReactElement {
 
               case "group-tool":
                 return <ChatToolGroup group={part}>{children}</ChatToolGroup>;
+              case "group-computer-run":
+                return <ComputerRunGroup group={part}>{children}</ComputerRunGroup>;
               case "text":
                 return part.status?.type === "running" ? (
                   <StreamedMarkdown text={part.text} />

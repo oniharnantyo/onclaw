@@ -13,10 +13,7 @@
 
 // eslint-disable-next-line @typescript-eslint/ban-ts-comment
 // @ts-ignore: Unused imports
-import {
-  Call as $Call,
-  CancellablePromise as $CancellablePromise,
-} from "@wailsio/runtime";
+import { Call as $Call, CancellablePromise as $CancellablePromise } from "@wailsio/runtime";
 
 // eslint-disable-next-line @typescript-eslint/ban-ts-comment
 // @ts-ignore: Unused imports
@@ -38,10 +35,8 @@ import * as $models from "./models.js";
  * (empty name, invalid slug, empty brief, unknown provider, duplicate slug)
  * reject without leaving a row.
  */
-export function Create(
-  input: $models.CreateAgentInput
-): $CancellablePromise<store$0.Agent> {
-  return $Call.ByID(3195157535, input);
+export function Create(input: $models.CreateAgentInput): $CancellablePromise<store$0.Agent> {
+    return $Call.ByID(3195157535, input);
 }
 
 /**
@@ -60,7 +55,7 @@ export function Create(
  * never fails the delete, design D11 / add-knowledge-corpus D9).
  */
 export function Delete(id: string): $CancellablePromise<void> {
-  return $Call.ByID(1602241156, id);
+    return $Call.ByID(1602241156, id);
 }
 
 /**
@@ -69,18 +64,15 @@ export function Delete(id: string): $CancellablePromise<void> {
  * is untouched. A nonexistent skill name is a not-found error. The runtime
  * must have a skills capability; the skill name must be a DNS label.
  */
-export function DeleteWorkspaceSkill(
-  agentID: string,
-  name: string
-): $CancellablePromise<void> {
-  return $Call.ByID(797806666, agentID, name);
+export function DeleteWorkspaceSkill(agentID: string, name: string): $CancellablePromise<void> {
+    return $Call.ByID(797806666, agentID, name);
 }
 
 /**
  * Get returns the agent with the given ID; store.ErrNotFound when absent.
  */
 export function Get(id: string): $CancellablePromise<store$0.Agent> {
-  return $Call.ByID(3083764897, id);
+    return $Call.ByID(3083764897, id);
 }
 
 /**
@@ -89,17 +81,15 @@ export function Get(id: string): $CancellablePromise<store$0.Agent> {
  * with Exists=false — the normal state of an agent whose generation failed
  * or never ran.
  */
-export function GetPromptDocuments(
-  agentID: string
-): $CancellablePromise<$models.PromptDocuments> {
-  return $Call.ByID(4088931307, agentID);
+export function GetPromptDocuments(agentID: string): $CancellablePromise<$models.PromptDocuments> {
+    return $Call.ByID(4088931307, agentID);
 }
 
 /**
  * List returns all agents, oldest first. The result is never nil.
  */
 export function List(): $CancellablePromise<store$0.Agent[] | null> {
-  return $Call.ByID(1080143935);
+    return $Call.ByID(1080143935);
 }
 
 /**
@@ -111,10 +101,8 @@ export function List(): $CancellablePromise<store$0.Agent[] | null> {
  * workspace) lists empty. Unlike promote and delete this only reads the
  * workspace tier, so it needs no skills capability.
  */
-export function ListWorkspaceSkills(
-  agentID: string
-): $CancellablePromise<$models.WorkspaceSkill[] | null> {
-  return $Call.ByID(3613308014, agentID);
+export function ListWorkspaceSkills(agentID: string): $CancellablePromise<$models.WorkspaceSkill[] | null> {
+    return $Call.ByID(3613308014, agentID);
 }
 
 /**
@@ -126,11 +114,8 @@ export function ListWorkspaceSkills(
  * library stays untouched (design D3). The runtime must have a skills
  * capability; the skill name must be a DNS label.
  */
-export function PromoteWorkspaceSkill(
-  agentID: string,
-  name: string
-): $CancellablePromise<void> {
-  return $Call.ByID(3808501743, agentID, name);
+export function PromoteWorkspaceSkill(agentID: string, name: string): $CancellablePromise<void> {
+    return $Call.ByID(3808501743, agentID, name);
 }
 
 /**
@@ -142,11 +127,8 @@ export function PromoteWorkspaceSkill(
  * failed, and a generation failure commits the sanitized reason and comes
  * back wrapped in ErrPromptGeneration with the existing documents untouched.
  */
-export function RegeneratePrompts(
-  agentID: string,
-  instruction: string
-): $CancellablePromise<void> {
-  return $Call.ByID(1034608356, agentID, instruction);
+export function RegeneratePrompts(agentID: string, instruction: string): $CancellablePromise<void> {
+    return $Call.ByID(1034608356, agentID, instruction);
 }
 
 /**
@@ -155,12 +137,8 @@ export function RegeneratePrompts(
  * backed up to <name>.bak first. Unknown document names and absent agents
  * are errors (store.ErrNotFound for the latter).
  */
-export function SavePromptDocument(
-  agentID: string,
-  doc: string,
-  content: string
-): $CancellablePromise<void> {
-  return $Call.ByID(242204697, agentID, doc, content);
+export function SavePromptDocument(agentID: string, doc: string, content: string): $CancellablePromise<void> {
+    return $Call.ByID(242204697, agentID, doc, content);
 }
 
 /**
@@ -171,7 +149,7 @@ export function SavePromptDocument(
  * are untouched, and no row is left in generating.
  */
 export function SweepInterruptedGenerations(): $CancellablePromise<void> {
-  return $Call.ByID(3874066756);
+    return $Call.ByID(3874066756);
 }
 
 /**
@@ -184,8 +162,6 @@ export function SweepInterruptedGenerations(): $CancellablePromise<void> {
  * model combination supports; the empty effort clears back to inherit. The
  * row is addressed by agent.ID; store.ErrNotFound when absent.
  */
-export function Update(
-  agent: store$0.Agent
-): $CancellablePromise<store$0.Agent> {
-  return $Call.ByID(2251002406, agent);
+export function Update(agent: store$0.Agent): $CancellablePromise<store$0.Agent> {
+    return $Call.ByID(2251002406, agent);
 }

@@ -82,6 +82,19 @@ type manager struct {
 	// add-grouped-session-rail design D2); nil (the default) means
 	// transitions go unobserved.
 	onTransition func(sessionID string, busy bool)
+	// onTurnFinished is the turn-terminal callback (WithTurnFinished,
+	// add-desktop-notifications design D2); nil (the default) means finished
+	// turns go unobserved.
+	onTurnFinished func(sessionID string, origin hooks.Origin, outcome TurnOutcome, turnID string)
+	// onSessionParked is the park callback (WithSessionParked,
+	// add-desktop-notifications design D2) carrying the park's interrupt id
+	// beside the kind and detail; nil (the default) means parks go
+	// unobserved.
+	onSessionParked func(sessionID string, kind ParkKind, interruptID, detail string)
+	// beaconInterval is the liveness beacon's period (enhance-resumable-
+	// streams design D4, streamBeaconInterval). Non-positive values fall
+	// back to the constant; tests shorten it.
+	beaconInterval time.Duration
 	// groupTurns is the late-binding group turn source holder (WithGroupTurns,
 	// add-agent-groups design D3); nil (the default) means group dispatching
 	// is unavailable.
@@ -219,20 +232,50 @@ type runningTurn struct {
 	// A second Cancel is a no-op; the drain consults it to record the
 	// cancelled terminal instead of an error.
 	cancelRequested atomic.Bool
-	// toolMu guards partial and runningTools against concurrent access
-	// between the drain and Subscribe catch-up snapshots.
+	// toolMu guards the in-flight stream state — the partials, the delta
+	// count, and runningTools — against concurrent access between the drain
+	// and the snapshot builders (Subscribe catch-up, Resync, the liveness
+	// beacon).
 	toolMu       sync.Mutex
 	runningTools map[string]inFlightTool
 	// partial carries the in-flight model call's streamed text across an
 	// abrupt end (design D3: a cancelled turn keeps its partial output); the
 	// drain updates it, the cancelled terminal persists it.
 	partial string
+	// reasoning carries the in-flight model call's streamed reasoning,
+	// mirroring partial (enhance-resumable-streams design D3): the drain's
+	// reasoning deltas feed it and the durable reasoning record — the
+	// builder's per-call terminal — resets it, so a reattaching subscriber
+	// reconstructs mid-reasoning instead of a blank stream.
+	reasoning string
+	// deltas is the turn's monotonic count of KindTextDelta emissions
+	// (enhance-resumable-streams design D4): the comparison basis the
+	// client's beacon check uses to detect missed deltas. Incremented by the
+	// same tap that feeds partial; the beacon only reads it.
+	deltas int64
+	// tasks is the session's delegated-task space (enhance-resumable-streams
+	// design D3): recorded when the busy slot is claimed and re-recorded when
+	// runTurn installs the registry, so the snapshot builder reads the
+	// session's running tasks. Nil until the session's first task-capable
+	// turn.
+	tasks *subagents.TaskRegistry
 	// variantOf is the turn's regeneration marker (design D7): recorders
 	// that bypass the runTurn record closure (the cancelled terminal, the
 	// resumed run) still stamp it so the variant grouping survives.
 	variantOf string
 	// pending is non-nil while the run is parked on an unresolved approval.
 	pending *pendingApproval
+
+	// beaconStop and beaconDone carry the liveness beacon's lifecycle
+	// (enhance-resumable-streams design D4): the ticker goroutine exits when
+	// beaconStop closes, and beaconDone makes the terminal's stop
+	// deterministic — stopBeacon returns only after the goroutine exited, so
+	// no ping can follow the turn's terminal. Both are armed by
+	// startStreamBeacon (startTurn and the approval resume) and stopped at
+	// every path where the record leaves the running set.
+	beaconStop chan struct{}
+	beaconDone chan struct{}
+	beaconOnce sync.Once
 }
 
 func (rt *runningTurn) appendPartial(text string) {
@@ -245,6 +288,42 @@ func (rt *runningTurn) resetPartial() {
 	rt.toolMu.Lock()
 	rt.partial = ""
 	rt.toolMu.Unlock()
+}
+
+// setPartial overwrites the text partial under the same lock the drain's tap
+// appends through (runner.go stores the drain's local builder back after the
+// run ends).
+func (rt *runningTurn) setPartial(text string) {
+	rt.toolMu.Lock()
+	rt.partial = text
+	rt.toolMu.Unlock()
+}
+
+func (rt *runningTurn) appendReasoning(text string) {
+	rt.toolMu.Lock()
+	rt.reasoning += text
+	rt.toolMu.Unlock()
+}
+
+func (rt *runningTurn) resetReasoning() {
+	rt.toolMu.Lock()
+	rt.reasoning = ""
+	rt.toolMu.Unlock()
+}
+
+// addDelta counts one KindTextDelta emission (enhance-resumable-streams
+// design D4) under the same lock the tap feeds partial through.
+func (rt *runningTurn) addDelta() {
+	rt.toolMu.Lock()
+	rt.deltas++
+	rt.toolMu.Unlock()
+}
+
+// deltaCount reads the turn's text-delta count (the beacon's payload).
+func (rt *runningTurn) deltaCount() int64 {
+	rt.toolMu.Lock()
+	defer rt.toolMu.Unlock()
+	return rt.deltas
 }
 
 func (rt *runningTurn) addTool(callID, name, args string) {
@@ -262,14 +341,30 @@ func (rt *runningTurn) removeTool(callID string) {
 	rt.toolMu.Unlock()
 }
 
-func (rt *runningTurn) snapshot() (string, map[string]inFlightTool) {
+// streamState snapshots the turn's in-flight stream state under one lock
+// acquisition (enhance-resumable-streams design D2): both partials, the
+// delta count, and the running tool calls.
+func (rt *runningTurn) streamState() (string, string, int64, map[string]inFlightTool) {
 	rt.toolMu.Lock()
 	defer rt.toolMu.Unlock()
 	toolsCopy := make(map[string]inFlightTool, len(rt.runningTools))
 	for k, v := range rt.runningTools {
 		toolsCopy[k] = v
 	}
-	return rt.partial, toolsCopy
+	return rt.partial, rt.reasoning, rt.deltas, toolsCopy
+}
+
+// stopBeacon ends the turn's liveness beacon deterministically: the stop
+// channel closes exactly once and the call returns only after the ticker
+// goroutine exited, so no ping can follow the turn's terminal. A record
+// whose beacon was never armed (it cannot happen on the real paths) is a
+// no-op.
+func (rt *runningTurn) stopBeacon() {
+	if rt.beaconStop == nil {
+		return
+	}
+	rt.beaconOnce.Do(func() { close(rt.beaconStop) })
+	<-rt.beaconDone
 }
 
 // pendingApproval is a parked run's unresolved approval: the interrupt and
@@ -298,11 +393,17 @@ func (m *manager) sessionTaskRegistry(sessionID string, record recordFn) *subage
 			_ = record(&ev, durable)
 		})
 		m.sessionTasks[sessionID] = reg
-		return reg
+	} else {
+		reg.SetRecord(func(ev sessions.Event, durable bool) {
+			_ = record(&ev, durable)
+		})
 	}
-	reg.SetRecord(func(ev sessions.Event, durable bool) {
-		_ = record(&ev, durable)
-	})
+	// The registry rides the running record (enhance-resumable-streams
+	// design D3) so the snapshot builder reads the session's running tasks
+	// — including a task a previous turn delegated and is still running.
+	if rt := m.running[sessionID]; rt != nil {
+		rt.tasks = reg
+	}
 	return reg
 }
 
@@ -702,7 +803,7 @@ func (m *manager) SummarizeText(ctx context.Context, agentID, instruction, text 
 	if err != nil {
 		return "", fmt.Errorf("summarize text: %w", err)
 	}
-	mdl, err := m.registry.Build(ctx, *agent, ModelOverride{})
+	mdl, err := m.registry.Build(ctx, *agent, ModelOverride{}, observationContext{})
 	if err != nil {
 		return "", fmt.Errorf("summarize text: %w", err)
 	}
@@ -766,9 +867,17 @@ func (m *manager) startTurn(sessionID, agentID, origin string, turn *Turn) (*run
 		cancel:       cancel,
 		usage:        &sessions.Usage{},
 		runningTools: make(map[string]inFlightTool),
+		// An earlier turn's task space carries over (enhance-resumable-
+		// streams design D3): its background tasks may still be running.
+		tasks: m.sessionTasks[sessionID],
 	}
 	m.running[sessionID] = rt
 	m.mu.Unlock()
+	// The liveness beacon rides the record from the claim to the terminal
+	// (enhance-resumable-streams design D4) — it stops at finishTurn,
+	// discardPending, or the resume path's clearBusy, and keeps pinging
+	// through an approval park.
+	m.startStreamBeacon(rt)
 	m.notifyTransition(sessionID, true)
 	return rt, nil
 }
@@ -787,7 +896,12 @@ func (m *manager) finishTurn(sessionID string, rt *runningTurn, err error) {
 	m.mu.Lock()
 	delete(m.running, sessionID)
 	m.mu.Unlock()
+	// The record left the running set — the beacon's terminal (enhance-
+	// resumable-streams design D4): stopped (and waited out) before the Turn
+	// completes, so no ping can follow the terminal event.
+	rt.stopBeacon()
 	m.notifyTransition(sessionID, false)
+	m.notifyTurnFinished(sessionID, rt, err)
 	rt.turn.finish(err)
 	m.groupLaneTurnDone(rt)
 }
@@ -858,6 +972,53 @@ func (m *manager) notifyTransition(sessionID string, busy bool) {
 	cb := m.onTransition
 	if cb != nil {
 		cb(sessionID, busy)
+	}
+}
+
+// notifyTurnFinished fires the WithTurnFinished callback for a dispatched
+// turn's terminal outcome (add-desktop-notifications design D2), outside the
+// manager lock, at the turn-terminal sites where the busy record cleared. The
+// outcome derives from the terminal error (turnOutcomeOf) and the origin from
+// the dispatch — an empty origin (a cold resume lost the record) reads as the
+// user default, the same normalization the hook base event applies. Group
+// turns never fire: their task-level terminal is the group report, and a
+// turn-level report would double-notify. A no-op when no callback was
+// configured.
+func (m *manager) notifyTurnFinished(sessionID string, rt *runningTurn, err error) {
+	if rt.group != nil || rt.laneClaimed {
+		return
+	}
+	cb := m.onTurnFinished
+	if cb == nil {
+		return
+	}
+	cb(sessionID, dispatchOrigin(rt.origin), turnOutcomeOf(err), rt.turn.id)
+}
+
+// notifySessionParked fires the WithSessionParked callback for one park
+// install (add-desktop-notifications design D2), outside the manager lock,
+// with the park's interrupt id (design D5's park:<sessionID>:<interruptID>
+// notification id's key). Parks fire no transition — the turn stays busy
+// throughout — so this is the only signal a parked approval or attention
+// request emits. A no-op when no callback was configured.
+func (m *manager) notifySessionParked(sessionID string, kind ParkKind, interruptID, detail string) {
+	cb := m.onSessionParked
+	if cb != nil {
+		cb(sessionID, kind, interruptID, detail)
+	}
+}
+
+// turnOutcomeOf maps a terminal error onto the TurnOutcome vocabulary
+// (add-desktop-notifications design D2): nil is a completion, the cancelled
+// sentinel is a cancellation, and everything else is a failure.
+func turnOutcomeOf(err error) TurnOutcome {
+	switch {
+	case err == nil:
+		return TurnCompleted
+	case errors.Is(err, ErrTurnCancelled):
+		return TurnCancelled
+	default:
+		return TurnFailed
 	}
 }
 
@@ -949,10 +1110,59 @@ func (m *manager) discardPending(sessionID string, rt *runningTurn) error {
 	m.mu.Lock()
 	delete(m.running, sessionID)
 	m.mu.Unlock()
+	// The discarded park is a terminal — the beacon stops with the record
+	// (enhance-resumable-streams design D4).
+	rt.stopBeacon()
 	m.notifyTransition(sessionID, false)
+	m.notifyTurnFinished(sessionID, rt, ErrTurnCancelled)
 	rt.turn.finish(ErrTurnCancelled)
 	m.groupLaneTurnDone(rt)
 	return nil
+}
+
+// streamSyncEvent serializes the running turn's full in-flight state into the
+// ONE composite, live-only snapshot event (enhance-resumable-streams design
+// D2): the current model call's text and reasoning partials, the running
+// tool calls, the session's running delegated tasks, and the turn's
+// text-delta count so far. Its synthetic id is unique per emission
+// (`snap-<turn>-sync-<n>`, process-wide counter) so a client's seenEventIDs
+// dedupe never swallows a re-fire. The caller holds m.mu — the record and its
+// task registry are map state. It never persists: the subscribe catch-up
+// sends it to the new subscriber alone, Resync broadcasts it.
+func (m *manager) streamSyncEvent(rt *runningTurn) sessions.Event {
+	text, reasoning, deltas, runningTools := rt.streamState()
+	ids := make([]string, 0, len(runningTools))
+	for callID := range runningTools {
+		ids = append(ids, callID)
+	}
+	sort.Strings(ids)
+	tools := make([]sessions.ToolActivity, 0, len(runningTools))
+	for _, callID := range ids {
+		t := runningTools[callID]
+		tools = append(tools, sessions.ToolActivity{
+			CallID:    callID,
+			Name:      t.Name,
+			Arguments: t.Arguments,
+			Status:    sessions.ToolStatusRunning,
+		})
+	}
+	var tasks []sessions.TaskActivity
+	if rt.tasks != nil {
+		tasks = rt.tasks.RunningTasks()
+	}
+	return sessions.Event{
+		ID:     fmt.Sprintf("snap-%s-sync-%d", rt.turn.id, snapshotSeq.Add(1)),
+		TurnID: rt.turn.id,
+		Kind:   sessions.KindStreamSync,
+		Stream: &sessions.StreamSnapshot{
+			Text:      text,
+			Reasoning: reasoning,
+			Tools:     tools,
+			Tasks:     tasks,
+			Deltas:    deltas,
+		},
+		OccurredAt: now(),
+	}
 }
 
 func (m *manager) Subscribe(ctx context.Context, sessionID string) (Subscription, error) {
@@ -970,43 +1180,37 @@ func (m *manager) Subscribe(ctx context.Context, sessionID string) (Subscription
 	}
 	m.subs[sessionID][id] = sub
 
-	// Catch-up snapshot (design D5): emit in-flight state to the new subscription.
-	// Synthetic IDs ensure deduplication safety; direct channel send avoids persisting.
+	// Catch-up snapshot (enhance-resumable-streams design D2/D5): the
+	// running turn's full in-flight state rides ONE composite live-only event
+	// to the new subscription — direct channel send, never m.broadcast (the
+	// catch-up is per-new-sub; Resync is the broadcast variant) and never a
+	// persist.
 	if rt, ok := m.running[sessionID]; ok && rt != nil && rt.turn != nil {
-		turnID := rt.turn.id
-		partial, runningTools := rt.snapshot()
-		if partial != "" {
-			sub.send(sessions.Event{
-				ID:         fmt.Sprintf("snap-%s-partial", turnID),
-				TurnID:     turnID,
-				Kind:       sessions.KindTextDelta,
-				Text:       partial,
-				OccurredAt: now(),
-			})
-		}
-		toolKeys := make([]string, 0, len(runningTools))
-		for callID := range runningTools {
-			toolKeys = append(toolKeys, callID)
-		}
-		sort.Strings(toolKeys)
-		for _, callID := range toolKeys {
-			t := runningTools[callID]
-			sub.send(sessions.Event{
-				ID:     fmt.Sprintf("snap-%s-tool-%s", turnID, callID),
-				TurnID: turnID,
-				Kind:   sessions.KindToolActivity,
-				Tool: &sessions.ToolActivity{
-					CallID:    callID,
-					Name:      t.Name,
-					Arguments: t.Arguments,
-					Status:    sessions.ToolStatusRunning,
-				},
-				OccurredAt: now(),
-			})
-		}
+		sub.send(m.streamSyncEvent(rt))
 	}
 
 	return &sessionSubscription{m: m, sessionID: sessionID, id: id, sub: sub}, nil
+}
+
+// Resync re-fires the session's composite in-flight snapshot to ALL of its
+// live subscribers (enhance-resumable-streams design D5): the re-fire path
+// for a surface that detected a missed delta (the beacon's counter
+// comparison, D6) or reconnected without dropping the subscription. The
+// snapshot is built fresh via the same builder the subscribe catch-up uses
+// and broadcast on the session's event channel, so every attached surface
+// reconciles at once. Idle or unknown sessions are a safe no-op; Resync
+// never persists and never touches the running turn.
+func (m *manager) Resync(_ context.Context, sessionID string) error {
+	m.mu.Lock()
+	rt, ok := m.running[sessionID]
+	if !ok || rt == nil || rt.turn == nil {
+		m.mu.Unlock()
+		return nil
+	}
+	ev := m.streamSyncEvent(rt)
+	m.mu.Unlock()
+	m.broadcast(sessionID, ev)
+	return nil
 }
 
 func (m *manager) ContextUsage(ctx context.Context, sessionID string) (ContextUsage, error) {
@@ -1105,6 +1309,56 @@ func (s *sessionSubscription) Close() {
 // measured against, design D5). A variable so tests can drive a
 // deterministic clock.
 var now = func() time.Time { return time.Now().UTC() }
+
+// streamBeaconInterval is the liveness beacon's period (enhance-resumable-
+// streams design D4): while a turn is in flight, a per-turn ticker broadcasts
+// a live-only KindStreamPing carrying the turn's monotonic text-delta count,
+// so a client can both prove the pipe alive through model/tool silence and
+// detect missed deltas exactly. The frontend's staleness window mirrors this
+// at twice the interval (design D6: a busy session hearing no beacon for 2×
+// the interval triggers a resync) — the two constants move together.
+const streamBeaconInterval = 5 * time.Second
+
+// snapshotSeq numbers the composite snapshot ids process-wide (enhance-
+// resumable-streams design D2): a client's seenEventIDs dedupe would swallow
+// every re-fire after the first if emissions shared an id, so each one mints
+// a fresh `snap-<turn>-sync-<n>`.
+var snapshotSeq atomic.Int64
+
+// startStreamBeacon arms the record's beacon channels and runs its ticker
+// until the turn's terminal (the stop channel closes exactly once at every
+// path where the record leaves the running set — finishTurn, discardPending,
+// clearBusy — or the approval resume rebinds it to the resumed record). A
+// parked approval pauses the deltas, not the beacon: pings keep flowing with
+// a static count through the park, which is the silence-proof liveness the
+// design wants (enhance-resumable-streams design D4). The interval is the
+// manager's beaconInterval, injectable for tests.
+func (m *manager) startStreamBeacon(rt *runningTurn) {
+	rt.beaconStop = make(chan struct{})
+	rt.beaconDone = make(chan struct{})
+	interval := m.beaconInterval
+	if interval <= 0 {
+		interval = streamBeaconInterval
+	}
+	go func() {
+		defer close(rt.beaconDone)
+		ticker := time.NewTicker(interval)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-rt.beaconStop:
+				return
+			case <-ticker.C:
+				m.broadcast(rt.sessionID, sessions.Event{
+					TurnID:     rt.turn.id,
+					Kind:       sessions.KindStreamPing,
+					Deltas:     rt.deltaCount(),
+					OccurredAt: now(),
+				})
+			}
+		}
+	}()
+}
 
 // newTurnID returns a random 128-bit hex turn id, mirroring the store's id
 // convention.

@@ -191,8 +191,11 @@ func (m *manager) runTurn(ctx context.Context, rt *runningTurn, sess sessions.Se
 	// caller resolved them from the session row). Unconfigured providers and
 	// rejected overrides fail the turn with a typed error; the turn_error
 	// event persisted above carries the message to the chat UI (spec: clear
-	// error instead of silently failing).
-	mdl, err := m.registry.Build(ctx, agent, override)
+	// error instead of silently failing). The session context turns on the
+	// observation image lane (add-computer-use design D5) for this calling
+	// session — group members included: a group turn is a real turn on the
+	// member's session.
+	mdl, err := m.registry.Build(ctx, agent, override, m.observationContextFor(agent, rt.sessionID))
 	if err != nil {
 		return failTurn(err)
 	}
@@ -428,8 +431,18 @@ func (m *manager) runTurn(ctx context.Context, rt *runningTurn, sess sessions.Se
 	// capability enabled, the turn is offered the delegation tools via eino middlewares.
 	// The attention scope (add-browser-login-handover design D3/D7) binds the
 	// intercepted submit_secret/request_takeover to this turn's session and
-	// recorder, so a browser attention request parks this turn on its card.
-	mcpTools, err := m.resolveMCPTools(ctx, agent, attentionScope{sessionID: sess.ID, turnID: turnID, record: record})
+	// recorder, so a browser attention request parks this turn on its card —
+	// and carries the agent's browser profile binding
+	// (add-per-agent-browser-profiles design D4), so the takeover and secret
+	// channel lands on the agent's own profile.
+	profileDir, profileName := m.agentProfileBinding(agent)
+	mcpTools, err := m.resolveMCPTools(ctx, agent, attentionScope{
+		sessionID:   sess.ID,
+		turnID:      turnID,
+		record:      record,
+		profileDir:  profileDir,
+		profileName: profileName,
+	})
 	if err != nil {
 		return failTurn(err)
 	}
@@ -604,7 +617,7 @@ func (m *manager) executeTurnRun(ctx context.Context, recordCtx context.Context,
 	// failure path: the partial output persists on a cancelled terminal
 	// (design D3) and the call-argument memory seeds a resumed run's terminal
 	// tool records (the interrupted run's announcements were live-only).
-	rt.partial = res.partialText
+	rt.setPartial(res.partialText)
 	rt.args = res.args
 	if drainErr != nil {
 		return failTurn(drainErr)
@@ -810,6 +823,25 @@ func drainTurn(iter *adk.AsyncIterator[*adk.TypedAgentEvent[*schema.AgenticMessa
 			partial.WriteString(ev.Text)
 			if rt != nil {
 				rt.appendPartial(ev.Text)
+				// The delta counter rides the same tap (enhance-resumable-
+				// streams design D4): one increment per KindTextDelta
+				// emission — the pinned comparison basis the turn's beacon
+				// carries.
+				rt.addDelta()
+			}
+		case ev.Kind == sessions.KindReasoningDelta:
+			// The reasoning partial mirrors the text one (enhance-resumable-
+			// streams design D3): the drain's reasoning deltas feed the
+			// in-flight builder the snapshot serializes.
+			if rt != nil {
+				rt.appendReasoning(ev.Text)
+			}
+		case ev.Kind == sessions.KindReasoning && durable:
+			// The durable reasoning record is the reasoning builder's
+			// per-call terminal (enhance-resumable-streams design D3),
+			// exactly like the assistant message below is for text.
+			if rt != nil {
+				rt.resetReasoning()
 			}
 		case ev.Kind == sessions.KindAssistantMessage && durable:
 			// The model call completed durably; only a later in-flight call

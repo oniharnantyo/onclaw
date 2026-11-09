@@ -39,6 +39,40 @@ func TestTaskRegistry_AllocateAndFinish(t *testing.T) {
 	reg.Close()
 }
 
+// TestTaskRegistry_RunningTasksTracksRunningState covers the running-state
+// accessor the snapshot builder reads (enhance-resumable-streams design D3):
+// a registered task shows up running with its description, progress rides
+// the record, and finishing it empties the accessor — derived from the
+// register/finish bookkeeping alone.
+func TestTaskRegistry_RunningTasksTracksRunningState(t *testing.T) {
+	reg := NewTaskRegistry("turn-1", nil)
+
+	// Nothing registered: empty, never nil.
+	assert.NotNil(t, reg.RunningTasks())
+	assert.Empty(t, reg.RunningTasks())
+
+	id := reg.AllocateTask()
+	reg.RegisterTask(id, "Research fires\nmore detail", ".tasks/call-1.output", t.TempDir(), "turn-1", true)
+
+	running := reg.RunningTasks()
+	require.Len(t, running, 1)
+	assert.Equal(t, id, running[0].TaskID)
+	assert.Equal(t, "Research fires", running[0].Description)
+	assert.Equal(t, TaskStatusRunning, running[0].Status)
+	assert.True(t, running[0].Background)
+
+	// Live progress is visible while the task runs.
+	reg.Progress(id, []byte(`{"step":"tool","content":"call web_fetch {\"url\":\"https://example.org\"}"}`))
+	running = reg.RunningTasks()
+	require.Len(t, running, 1)
+	assert.NotEmpty(t, running[0].Progress)
+	assert.Positive(t, running[0].Steps)
+
+	// The finish clears the running state; a terminal record never appears.
+	reg.Finish(id, TaskStatusCompleted, "done")
+	assert.Empty(t, reg.RunningTasks())
+}
+
 func TestTaskRegistry_ProgressBroadcastsRunningSnapshot(t *testing.T) {
 	var events []sessions.Event
 	var durables []bool

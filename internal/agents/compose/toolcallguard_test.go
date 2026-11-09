@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"testing"
 
 	"github.com/cloudwego/eino/adk"
@@ -267,4 +268,65 @@ func blockText(t *testing.T, msg *schema.AgenticMessage) string {
 		}
 	}
 	return text
+}
+
+// failingProbe is an invokable tool whose Fn fails with a Go error — the
+// fs middleware's shape (a jail refusal): the error must convert to a
+// readable result on EVERY endpoint flavor, the enhanced one included
+// (the agentic ToolsNode routes through it; the live /tmp/openbot_check.png
+// read_file refusal escaped there and killed the turn).
+type failingProbe struct {
+	tool.BaseTool
+}
+
+func (t *failingProbe) Info(context.Context) (*schema.ToolInfo, error) {
+	return &schema.ToolInfo{Name: "read_file", Desc: "fails like the jailed fs tools"}, nil
+}
+
+func (t *failingProbe) InvokableRun(context.Context, string, ...tool.Option) (string, error) {
+	return "", fmt.Errorf("absolute path is outside jail roots: %q resolves to %q", "/tmp/x.png", "/private/tmp/x.png")
+}
+
+func TestToolErrorResult_EnhancedFlavorFailureFeedsBackAndTurnContinues(t *testing.T) {
+	mdl := &scriptedModel{replies: []*schema.AgenticMessage{
+		callReply(&schema.FunctionToolCall{CallID: "call_jail", Name: "read_file", Arguments: `{"path":"/tmp/x.png"}`}),
+		textReply("the refusal came back, carrying on"),
+	}}
+	probe := &failingProbe{}
+	agent, toolErrors, err := ComposeTurnAgent(t.Context(), &ComposeConfig{
+		Name:          "enhanced-failure",
+		ChatModel:     mdl,
+		Tools:         []tool.BaseTool{probe},
+		MaxIterations: 5,
+	})
+	require.NoError(t, err)
+
+	user := &schema.AgenticMessage{
+		Role: schema.AgenticRoleTypeUser,
+		ContentBlocks: []*schema.ContentBlock{
+			schema.NewContentBlock(&schema.UserInputText{Text: "go"}),
+		},
+	}
+	iter := agent.Run(t.Context(), &adk.TypedAgentInput[*schema.AgenticMessage]{Messages: []*schema.AgenticMessage{user}})
+	var last *schema.AgenticMessage
+	for {
+		ev, ok := iter.Next()
+		if !ok {
+			break
+		}
+		require.NoError(t, ev.Err, "a failing tool must never fail the run")
+		if ev.Output != nil && ev.Output.MessageOutput != nil && ev.Output.MessageOutput.Message != nil {
+			last = ev.Output.MessageOutput.Message
+		}
+	}
+
+	// The turn survived to the final text reply, the model read the refusal
+	// as its tool result, and the failure is registered for the drain.
+	require.Equal(t, 2, mdl.calls)
+	require.Equal(t, "the refusal came back, carrying on", blockText(t, last))
+	text := resultTextOf(t, mdl.inputs[1], "call_jail")
+	require.Contains(t, text, "outside jail roots")
+	require.Contains(t, text, "read_file")
+	_, recorded := toolErrors.FailureOf("call_jail")
+	require.True(t, recorded, "the failure is recorded for the drain's terminal record")
 }

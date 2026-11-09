@@ -363,3 +363,84 @@ func TestService_AppendRejectsRunningTaskActivity(t *testing.T) {
 	require.Len(t, events, 1)
 	require.Equal(t, sessions.ToolStatusCompleted, events[0].Task.Status)
 }
+
+// TestService_AppendRejectsLiveOnlyStreamEvents pins the live-only rule for
+// the stream sync and ping kinds (enhance-resumable-streams design D2/D4):
+// Append refuses to persist either — the composite in-flight state and the
+// delta count exist only on the stream — and nothing from a rejected batch
+// lands in the transcript.
+func TestService_AppendRejectsLiveOnlyStreamEvents(t *testing.T) {
+	ctx := context.Background()
+	svc, _ := newService(t)
+
+	sess, err := svc.CreateSession(ctx, "agent-1", "")
+	require.NoError(t, err)
+
+	for _, ev := range []sessions.Event{
+		{
+			Kind:   sessions.KindStreamSync,
+			TurnID: "turn-1",
+			Stream: &sessions.StreamSnapshot{
+				Text:      "partial answer",
+				Reasoning: "thinking",
+				Tools: []sessions.ToolActivity{
+					{CallID: "call-1", Name: "execute", Status: sessions.ToolStatusRunning},
+				},
+				Tasks: []sessions.TaskActivity{
+					{TaskID: "task-1", Description: "search", Status: sessions.ToolStatusRunning, Progress: "reading"},
+				},
+				Deltas: 3,
+			},
+		},
+		{
+			Kind:   sessions.KindStreamPing,
+			TurnID: "turn-1",
+			Deltas: 7,
+		},
+	} {
+		err := svc.Append(ctx, sess.ID, []sessions.Event{
+			{Kind: sessions.KindUserMessage, Text: "go"},
+			ev,
+		})
+		require.Error(t, err, "%s must never persist", ev.Kind)
+		require.ErrorContains(t, err, "live-only")
+
+		events, err := svc.Events(ctx, sess.ID)
+		require.NoError(t, err)
+		require.Empty(t, events, "the rejected batch must persist nothing")
+	}
+}
+
+// TestService_EventsToleratesLiveOnlyStreamRows guards replay against a
+// pathological log: the stream kinds are recognized like the delta kinds, so
+// a row that slipped past Append anyway (a future writer's bug, say) decodes
+// without failing the whole transcript.
+func TestService_EventsToleratesLiveOnlyStreamRows(t *testing.T) {
+	ctx := context.Background()
+	svc, fs := newService(t)
+
+	sess, err := svc.CreateSession(ctx, "agent-1", "")
+	require.NoError(t, err)
+
+	require.NoError(t, svc.Append(ctx, sess.ID, []sessions.Event{
+		{Kind: sessions.KindUserMessage, Text: "go"},
+	}))
+
+	// Simulate rows the persist path itself refuses to write.
+	require.NoError(t, fs.SessionEvents().AppendEvents(ctx, sess.ID, []store.SessionEvent{
+		{EventID: "rogue-sync", Kind: string(sessions.KindStreamSync), TurnID: "turn-1", Payload: []byte(`{"text":"partial"}`)},
+		{EventID: "rogue-ping", Kind: string(sessions.KindStreamPing), TurnID: "turn-1", Payload: []byte(`{"deltas":5}`)},
+	}))
+
+	require.NoError(t, svc.Append(ctx, sess.ID, []sessions.Event{
+		{Kind: sessions.KindAssistantMessage, Text: "done"},
+	}))
+
+	events, err := svc.Events(ctx, sess.ID)
+	require.NoError(t, err, "live-only rows must not choke replay")
+	require.Len(t, events, 4)
+	require.Equal(t, sessions.KindUserMessage, events[0].Kind)
+	require.Equal(t, sessions.KindStreamSync, events[1].Kind)
+	require.Equal(t, sessions.KindStreamPing, events[2].Kind)
+	require.Equal(t, sessions.KindAssistantMessage, events[3].Kind, "known events keep their log positions")
+}

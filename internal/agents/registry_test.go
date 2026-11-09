@@ -74,7 +74,7 @@ func seedAgentOn(fs *fake.Store, providerType, model string) (*store.Provider, s
 func TestRegistry_BuildAnthropicWiresClaude(t *testing.T) {
 	_, agent, reg := newRegistryFixture(t)
 
-	mdl, err := reg.Build(t.Context(), agent, ModelOverride{})
+	mdl, err := reg.Build(t.Context(), agent, ModelOverride{}, observationContext{})
 	require.NoError(t, err)
 	require.IsType(t, &agenticclaude.Model{}, baseModelOf(t, mdl), "the anthropic path must construct the eino-ext claude connector")
 }
@@ -95,7 +95,7 @@ func TestRegistry_BuildOpenAIAndGeminiRegistered(t *testing.T) {
 			fs := fakeStoreForRegistry(t)
 			_, agent := seedAgentOn(fs, tc.providerType, tc.model)
 
-			mdl, err := newModelRegistry(fs).Build(t.Context(), agent, ModelOverride{})
+			mdl, err := newModelRegistry(fs).Build(t.Context(), agent, ModelOverride{}, observationContext{})
 			require.NoError(t, err)
 			require.IsType(t, tc.wantType, baseModelOf(t, mdl))
 		})
@@ -108,13 +108,13 @@ func TestRegistry_BuildOpenAIAndGeminiRegistered(t *testing.T) {
 func TestRegistry_RejectsUnconfiguredProviders(t *testing.T) {
 	t.Run("no provider selected", func(t *testing.T) {
 		fs := fakeStoreForRegistry(t)
-		_, err := newModelRegistry(fs).Build(t.Context(), store.Agent{Name: "lonely"}, ModelOverride{})
+		_, err := newModelRegistry(fs).Build(t.Context(), store.Agent{Name: "lonely"}, ModelOverride{}, observationContext{})
 		require.ErrorIs(t, err, ErrProviderNotConfigured)
 	})
 
 	t.Run("provider does not exist", func(t *testing.T) {
 		fs := fakeStoreForRegistry(t)
-		_, err := newModelRegistry(fs).Build(t.Context(), store.Agent{Name: "a", ProviderID: "ghost"}, ModelOverride{})
+		_, err := newModelRegistry(fs).Build(t.Context(), store.Agent{Name: "a", ProviderID: "ghost"}, ModelOverride{}, observationContext{})
 		require.ErrorIs(t, err, ErrProviderNotConfigured)
 	})
 
@@ -124,7 +124,7 @@ func TestRegistry_RejectsUnconfiguredProviders(t *testing.T) {
 		provider.Enabled = false
 		require.NoError(t, fs.Providers().Update(t.Context(), provider))
 
-		_, err := newModelRegistry(fs).Build(t.Context(), agent, ModelOverride{})
+		_, err := newModelRegistry(fs).Build(t.Context(), agent, ModelOverride{}, observationContext{})
 		require.ErrorIs(t, err, ErrProviderNotConfigured)
 	})
 
@@ -134,7 +134,7 @@ func TestRegistry_RejectsUnconfiguredProviders(t *testing.T) {
 		provider.APIKey = ""
 		require.NoError(t, fs.Providers().Update(t.Context(), provider))
 
-		_, err := newModelRegistry(fs).Build(t.Context(), agent, ModelOverride{})
+		_, err := newModelRegistry(fs).Build(t.Context(), agent, ModelOverride{}, observationContext{})
 		require.ErrorIs(t, err, ErrProviderNotConfigured)
 	})
 
@@ -159,7 +159,7 @@ func TestRegistry_RejectsUnconfiguredProviders(t *testing.T) {
 		agent := &store.Agent{Name: "local", ProviderID: provider.ID, Model: "llama3.2"}
 		require.NoError(t, fs.Agents().Create(t.Context(), agent))
 
-		mdl, err := newModelRegistry(fs).Build(t.Context(), *agent, ModelOverride{})
+		mdl, err := newModelRegistry(fs).Build(t.Context(), *agent, ModelOverride{}, observationContext{})
 		require.NoError(t, err)
 		require.IsType(t, &agenticopenai.ChatModel{}, baseModelOf(t, mdl))
 	})
@@ -171,7 +171,7 @@ func TestRegistry_RejectsUnconfiguredProviders(t *testing.T) {
 		agent := &store.Agent{Name: "a", ProviderID: provider.ID, Model: "m"}
 		require.NoError(t, fs.Agents().Create(t.Context(), agent))
 
-		_, err := newModelRegistry(fs).Build(t.Context(), *agent, ModelOverride{})
+		_, err := newModelRegistry(fs).Build(t.Context(), *agent, ModelOverride{}, observationContext{})
 		require.ErrorIs(t, err, ErrProviderUnsupported)
 	})
 }
@@ -243,7 +243,7 @@ func TestRegistry_OverrideModelReplacesAgentModel(t *testing.T) {
 		fs := fakeStoreForRegistry(t)
 		_, agent := seedAgentOn(fs, ProviderAnthropic, "claude-sonnet-4-5")
 
-		mdl, err := newModelRegistry(fs).Build(t.Context(), agent, ModelOverride{Model: "claude-opus-4-1"})
+		mdl, err := newModelRegistry(fs).Build(t.Context(), agent, ModelOverride{Model: "claude-opus-4-1"}, observationContext{})
 		require.NoError(t, err)
 		require.IsType(t, &agenticclaude.Model{}, baseModelOf(t, mdl))
 	})
@@ -252,7 +252,7 @@ func TestRegistry_OverrideModelReplacesAgentModel(t *testing.T) {
 		fs := fakeStoreForRegistry(t)
 		_, agent := seedAgentOn(fs, ProviderAnthropic, "claude-haiku-4-5")
 
-		_, err := newModelRegistry(fs).Build(t.Context(), agent, ModelOverride{})
+		_, err := newModelRegistry(fs).Build(t.Context(), agent, ModelOverride{}, observationContext{})
 		require.NoError(t, err)
 	})
 
@@ -260,7 +260,7 @@ func TestRegistry_OverrideModelReplacesAgentModel(t *testing.T) {
 		fs := fakeStoreForRegistry(t)
 		provider, agent := seedAgentOn(fs, ProviderAnthropic, "claude-sonnet-4-5")
 
-		_, err := newModelRegistry(fs).Build(t.Context(), agent, ModelOverride{Model: "claude-ghost"})
+		_, err := newModelRegistry(fs).Build(t.Context(), agent, ModelOverride{Model: "claude-ghost"}, observationContext{})
 		require.ErrorIs(t, err, ErrModelNotListed)
 		require.Contains(t, err.Error(), provider.Name)
 	})
@@ -269,7 +269,7 @@ func TestRegistry_OverrideModelReplacesAgentModel(t *testing.T) {
 		fs := fakeStoreForRegistry(t)
 		provider, agent := seedAgentOn(fs, ProviderOpenRouter, "some/vendor-model")
 
-		_, err := newModelRegistry(fs).Build(t.Context(), agent, ModelOverride{Model: "other/free-form-id"})
+		_, err := newModelRegistry(fs).Build(t.Context(), agent, ModelOverride{Model: "other/free-form-id"}, observationContext{})
 		require.ErrorIs(t, err, ErrModelNotListed)
 		require.Contains(t, err.Error(), provider.Name)
 		require.Contains(t, err.Error(), "other/free-form-id")
@@ -286,7 +286,7 @@ func TestRegistry_OverrideModelReplacesAgentModel(t *testing.T) {
 			Enabled:       true,
 		}))
 
-		mdl, err := newModelRegistry(fs).Build(t.Context(), agent, ModelOverride{Model: "other/stored-model"})
+		mdl, err := newModelRegistry(fs).Build(t.Context(), agent, ModelOverride{Model: "other/stored-model"}, observationContext{})
 		require.NoError(t, err)
 		require.NotNil(t, mdl)
 	})
@@ -302,7 +302,7 @@ func TestRegistry_OverrideModelReplacesAgentModel(t *testing.T) {
 			Enabled:       false,
 		}))
 
-		_, err := newModelRegistry(fs).Build(t.Context(), agent, ModelOverride{Model: "other/disabled-model"})
+		_, err := newModelRegistry(fs).Build(t.Context(), agent, ModelOverride{Model: "other/disabled-model"}, observationContext{})
 		require.ErrorIs(t, err, ErrModelNotListed)
 		require.Contains(t, err.Error(), provider.Name)
 		require.Contains(t, err.Error(), "disabled")
@@ -316,7 +316,7 @@ func TestRegistry_OverrideModelReplacesAgentModel(t *testing.T) {
 		agent := &store.Agent{Name: "unconfigured-agent", ProviderID: provider.ID, Model: "unlisted-model"}
 		require.NoError(t, fs.Agents().Create(ctx, agent))
 
-		_, err := newModelRegistry(fs).Build(ctx, *agent, ModelOverride{})
+		_, err := newModelRegistry(fs).Build(ctx, *agent, ModelOverride{}, observationContext{})
 		require.ErrorIs(t, err, ErrModelNotListed)
 		require.Contains(t, err.Error(), provider.Name)
 	})
@@ -331,7 +331,7 @@ func TestRegistry_OverrideEffortValidation(t *testing.T) {
 		fs := fakeStoreForRegistry(t)
 		_, agent := seedAgentOn(fs, ProviderAnthropic, "claude-sonnet-4-5")
 
-		_, err := newModelRegistry(fs).Build(t.Context(), agent, ModelOverride{Effort: EffortHigh})
+		_, err := newModelRegistry(fs).Build(t.Context(), agent, ModelOverride{Effort: EffortHigh}, observationContext{})
 		require.NoError(t, err)
 	})
 
@@ -339,11 +339,11 @@ func TestRegistry_OverrideEffortValidation(t *testing.T) {
 		fs := fakeStoreForRegistry(t)
 		// Claude models have no minimal tier; gpt-4o has no effort at all.
 		_, agent := seedAgentOn(fs, ProviderAnthropic, "claude-sonnet-4-5")
-		_, err := newModelRegistry(fs).Build(t.Context(), agent, ModelOverride{Effort: EffortMinimal})
+		_, err := newModelRegistry(fs).Build(t.Context(), agent, ModelOverride{Effort: EffortMinimal}, observationContext{})
 		require.ErrorIs(t, err, ErrEffortUnsupported)
 
 		_, gptAgent := seedAgentOn(fs, ProviderOpenAI, "gpt-4o")
-		_, err = newModelRegistry(fs).Build(t.Context(), gptAgent, ModelOverride{Effort: EffortLow})
+		_, err = newModelRegistry(fs).Build(t.Context(), gptAgent, ModelOverride{Effort: EffortLow}, observationContext{})
 		require.ErrorIs(t, err, ErrEffortUnsupported, "a non-reasoning model supports no effort")
 	})
 
@@ -362,7 +362,7 @@ func TestRegistry_OverrideEffortValidation(t *testing.T) {
 			}
 		}
 
-		_, err = newModelRegistry(fs).Build(t.Context(), agent, ModelOverride{Model: "gpt-5", Effort: EffortMinimal})
+		_, err = newModelRegistry(fs).Build(t.Context(), agent, ModelOverride{Model: "gpt-5", Effort: EffortMinimal}, observationContext{})
 		require.NoError(t, err)
 	})
 
@@ -370,7 +370,7 @@ func TestRegistry_OverrideEffortValidation(t *testing.T) {
 		fs := fakeStoreForRegistry(t)
 		_, agent := seedAgentOn(fs, ProviderAnthropic, "claude-sonnet-4-5")
 
-		_, err := newModelRegistry(fs).Build(t.Context(), agent, ModelOverride{})
+		_, err := newModelRegistry(fs).Build(t.Context(), agent, ModelOverride{}, observationContext{})
 		require.NoError(t, err)
 	})
 }
@@ -459,7 +459,7 @@ func TestRegistry_MaxTokensReachesEveryFamily(t *testing.T) {
 			require.NoError(t, fs.Providers().Update(t.Context(), provider))
 			agent.MaxTokens = tt.agentMax
 
-			mdl, err := newModelRegistry(fs).Build(t.Context(), agent, ModelOverride{})
+			mdl, err := newModelRegistry(fs).Build(t.Context(), agent, ModelOverride{}, observationContext{})
 			require.NoError(t, err)
 
 			drainStream(t, mdl)

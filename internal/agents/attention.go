@@ -30,13 +30,24 @@ import (
 // delivery. Events carry receipts only (outcome + redacted length).
 
 // attentionScope is what a turn hands tool resolution so the attention
-// wrapper can park and record: the owning session and turn, and the turn's
-// record closure (the runTurn/resumeTurn recorder). A scope without a record
-// (never production) resolves the tools bare.
+// wrapper can park and record: the owning session and turn, the turn's
+// record closure (the runTurn/resumeTurn recorder), and the agent's browser
+// profile binding (add-per-agent-browser-profiles design D4) the reserved
+// channel carries to the child. Empty binding fields — an agent without a
+// workspace, or a resolution failure — mean unbound: the channel calls ride
+// without the binding meta, the pre-binding behavior byte-identical. A scope
+// without a record (never production) resolves the tools bare.
 type attentionScope struct {
 	sessionID string
 	turnID    string
 	record    recordFn
+	// profileDir/profileName are the agent's browser profile binding: the
+	// workspace profile directory and the display name (the agent slug),
+	// stamped under MetaProfileDir/MetaProfileName on the reserved-channel
+	// calls — takeover, secret, and cookie operations land on the agent's
+	// own profile.
+	profileDir  string
+	profileName string
 }
 
 // The child-side contract (design D2/D7 — the browser-use engine's reserved
@@ -120,6 +131,14 @@ type pendingInput struct {
 	sessionID   string
 	turnID      string
 
+	// profileDir/profileName are the agent's browser profile binding
+	// (add-per-agent-browser-profiles design D4), copied from the scope at
+	// install time: the resolution-path channel calls — delivery, release,
+	// begin — stamp the same binding the prepare call carried. Empty means
+	// unbound (no binding meta on the channel calls).
+	profileDir  string
+	profileName string
+
 	// beginRequested reports whether BeginTakeover already fired for this
 	// entry — the active card must not flip twice. Guarded by the manager's
 	// mutex.
@@ -196,6 +215,8 @@ func (m *manager) installPendingInput(at attentionScope, kind attentionInstall) 
 		requestID:   kind.requestID,
 		sessionID:   at.sessionID,
 		turnID:      at.turnID,
+		profileDir:  at.profileDir,
+		profileName: at.profileName,
 		resolved:    make(chan inputResolution, 1),
 		begin:       make(chan struct{}, 1),
 		beginResult: make(chan error, 1),
@@ -222,6 +243,15 @@ func (m *manager) installPendingInput(at attentionScope, kind attentionInstall) 
 		m.dropPendingInput(entry.interruptID)
 		return nil, fmt.Errorf("record attention request: %w", err)
 	}
+	// The park is installed (add-desktop-notifications design D2): the
+	// WithSessionParked callback reports it with the interrupt id and the
+	// prompt/method describing the request. Only the park install fires —
+	// the resolve paths never do.
+	detail := kind.prompt
+	if kind.method != "" {
+		detail += " (" + kind.method + ")"
+	}
+	m.notifySessionParked(at.sessionID, ParkInput, entry.interruptID, detail)
 	return entry, nil
 }
 
@@ -442,11 +472,42 @@ func (m *manager) ResolveAttention(ctx context.Context, sessionID, interruptID, 
 	return nil
 }
 
+// profileMeta builds the reserved-channel call's binding meta
+// (add-per-agent-browser-profiles design D4): the agent's profile directory
+// and display name under MetaProfileDir/MetaProfileName. nil when the agent
+// carries no binding — an unbound channel call rides meta-free, exactly as
+// before the binding existed.
+func profileMeta(profileDir, profileName string) map[string]any {
+	if profileDir == "" && profileName == "" {
+		return nil
+	}
+	meta := make(map[string]any, 2)
+	if profileDir != "" {
+		meta[MetaProfileDir] = profileDir
+	}
+	if profileName != "" {
+		meta[MetaProfileName] = profileName
+	}
+	return meta
+}
+
 // invokeChildTool invokes one of the system server's reserved tools by raw
 // name over the supervised stdio channel (design D7): the parent already
 // holds the connection through the MCP manager, so the internal channel is a
-// plain tool call — no network listener, no new transport.
-func (m *manager) invokeChildTool(ctx context.Context, ref mcp.Ref, name, argsJSON string) (string, error) {
+// plain tool call — no network listener, no new transport. meta carries the
+// agent's browser profile binding (add-per-agent-browser-profiles design
+// D4): when non-nil and the manager can carry meta, the call rides the
+// meta-carrying Invoke; otherwise — a nil binding, or a manager without the
+// meta invoker (test doubles) — the call degrades to the plain tool-source
+// path and the meta is dropped.
+func (m *manager) invokeChildTool(ctx context.Context, ref mcp.Ref, name, argsJSON string, meta map[string]any) (string, error) {
+	if inv, ok := m.mcpManager.(metaInvoker); ok && meta != nil {
+		out, err := inv.Invoke(ctx, ref, name, argsJSON, meta)
+		if err != nil {
+			return "", err
+		}
+		return unwrapChildEnvelope(out), nil
+	}
 	tools, err := m.mcpManager.Tools(ctx, ref)
 	if err != nil {
 		return "", fmt.Errorf("invoke %s: %w", name, err)
@@ -588,7 +649,8 @@ func (m *manager) serveSubmitSecret(ref mcp.Ref, at attentionScope) func(context
 		var modelArgs submitSecretArgs
 		_ = json.Unmarshal([]byte(args), &modelArgs)
 
-		out, err := m.invokeChildTool(ctx, ref, childRequestSecret, args)
+		out, err := m.invokeChildTool(ctx, ref, childRequestSecret, args,
+			profileMeta(at.profileDir, at.profileName))
 		if err != nil {
 			// The child is unreachable: the fixed unavailable text, never the
 			// transport error (design D1 — fixed reason phrases only).
@@ -679,9 +741,9 @@ func (m *manager) deliverSecret(ctx context.Context, ref mcp.Ref, entry *pending
 		deliverPairs = append(deliverPairs, "identifier", entry.identifier)
 	}
 	out, err := m.invokeChildTool(ctx, ref, childDeliverSecret,
-		childRequestArgs(deliverPairs...))
+		childRequestArgs(deliverPairs...), profileMeta(entry.profileDir, entry.profileName))
 	if err != nil {
-		m.releaseChildAttention(ctx, ref, entry.requestID, sessions.InputFailed)
+		m.releaseChildAttention(ctx, ref, entry, sessions.InputFailed)
 		return unavailableAuthText(""), nil
 	}
 	var receipt childReceiptResponse
@@ -689,7 +751,7 @@ func (m *manager) deliverSecret(ctx context.Context, ref mcp.Ref, entry *pending
 		// The child refused the delivery: release its protection freeze
 		// best-effort and answer the fixed unavailable text — the agent's
 		// fallback is takeover, never a retry (design D2).
-		m.releaseChildAttention(ctx, ref, entry.requestID, sessions.InputFailed)
+		m.releaseChildAttention(ctx, ref, entry, sessions.InputFailed)
 		if jerr == nil {
 			return unavailableAuthText(receipt.ReasonCode), nil
 		}
@@ -708,16 +770,19 @@ func (m *manager) deliverSecret(ctx context.Context, ref mcp.Ref, entry *pending
 // terminal through the normal failure path).
 func (m *manager) cancelAttention(ctx context.Context, ref mcp.Ref, entry *pendingInput) string {
 	m.dropPendingInput(entry.interruptID)
-	m.releaseChildAttention(context.WithoutCancel(ctx), ref, entry.requestID, sessions.InputCancelled)
+	m.releaseChildAttention(context.WithoutCancel(ctx), ref, entry, sessions.InputCancelled)
 	return `{"status":"cancelled"}`
 }
 
 // releaseChildAttention invokes the child's __resolve_attention best-effort
 // (design D8): the child's held state ends at the outcome, and a failure here
-// can only cost the child its own timeout — it is never surfaced.
-func (m *manager) releaseChildAttention(ctx context.Context, ref mcp.Ref, requestID, outcome string) {
+// can only cost the child its own timeout — it is never surfaced. The call
+// carries the entry's binding (add-per-agent-browser-profiles design D4) so
+// the release lands on the same profile the prepare call bound.
+func (m *manager) releaseChildAttention(ctx context.Context, ref mcp.Ref, entry *pendingInput, outcome string) {
 	_, _ = m.invokeChildTool(ctx, ref, childResolveAttention,
-		childRequestArgs("requestID", requestID, "outcome", outcome))
+		childRequestArgs("requestID", entry.requestID, "outcome", outcome),
+		profileMeta(entry.profileDir, entry.profileName))
 }
 
 // serveTakeover is the intercepted request_takeover flow (design D8): prepare
@@ -725,7 +790,8 @@ func (m *manager) releaseChildAttention(ctx context.Context, ref mcp.Ref, reques
 // end on ResolveAttention.
 func (m *manager) serveTakeover(ref mcp.Ref, at attentionScope) func(context.Context, string) (string, error) {
 	return func(ctx context.Context, args string) (string, error) {
-		out, err := m.invokeChildTool(ctx, ref, childRequestTakeover, args)
+		out, err := m.invokeChildTool(ctx, ref, childRequestTakeover, args,
+			profileMeta(at.profileDir, at.profileName))
 		if err != nil {
 			return unavailableAuthText(""), nil
 		}
@@ -737,11 +803,20 @@ func (m *manager) serveTakeover(ref mcp.Ref, at attentionScope) func(context.Con
 			return unavailableAuthText(ready.ReasonCode), nil
 		}
 
-		profile := ready.Profile
-		if profile == "" {
-			profile = "browser"
+		// The card names the agent when the call is bound
+		// (add-per-agent-browser-profiles design D4): the profile literal is
+		// the child's named-profile view, meaningless for an agent's own
+		// directory. Unbound calls keep the literal path.
+		var prompt string
+		if at.profileName != "" {
+			prompt = "The agent asks to hand over the browser of agent " + at.profileName + " for sign-in."
+		} else {
+			profile := ready.Profile
+			if profile == "" {
+				profile = "browser"
+			}
+			prompt = "The agent asks to hand over the " + profile + " browser for sign-in."
 		}
-		prompt := "The agent asks to hand over the " + profile + " browser for sign-in."
 		entry, err := m.installPendingInput(at, attentionInstall{
 			attention: sessions.AttentionTakeover,
 			requestID: ready.RequestID,
@@ -766,7 +841,8 @@ func (m *manager) serveTakeover(ref mcp.Ref, at attentionScope) func(context.Con
 			case <-entry.begin:
 				bctx, cancel := context.WithTimeout(ctx, childCallTimeout)
 				_, berr := m.invokeChildTool(bctx, ref, childBeginTakeover,
-					childRequestArgs("requestID", entry.requestID))
+					childRequestArgs("requestID", entry.requestID),
+					profileMeta(entry.profileDir, entry.profileName))
 				cancel()
 				select {
 				case entry.beginResult <- berr:
@@ -787,7 +863,7 @@ func (m *manager) serveTakeover(ref mcp.Ref, at attentionScope) func(context.Con
 // tells the agent to re-observe the browser.
 func (m *manager) endTakeover(ctx context.Context, ref mcp.Ref, entry *pendingInput, outcome string) string {
 	m.dropPendingInput(entry.interruptID)
-	m.releaseChildAttention(context.WithoutCancel(ctx), ref, entry.requestID, outcome)
+	m.releaseChildAttention(context.WithoutCancel(ctx), ref, entry, outcome)
 	if outcome == sessions.InputCompleted {
 		return `{"status":"completed","next":"take a fresh snapshot"}`
 	}

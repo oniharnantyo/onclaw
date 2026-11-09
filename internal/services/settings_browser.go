@@ -244,8 +244,8 @@ func (s *SettingsService) DeleteBrowserProfile(ctx context.Context, name string)
 		return fmt.Errorf("delete browser profile: %w", err)
 	}
 	if s.systemServerRestart != nil && s.systemServerState != nil {
-		if state, ok := s.systemServerState(); ok && state.Status == mcp.StatusConnected {
-			s.systemServerRestart() // closes the child (and with it the profile's browser)
+		if state, ok := s.systemServerState(mcp.SystemServerID); ok && state.Status == mcp.StatusConnected {
+			s.systemServerRestart(mcp.SystemServerID) // closes the child (and with it the profile's browser)
 		}
 	}
 	if err := os.RemoveAll(profileDir); err != nil {

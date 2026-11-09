@@ -19,15 +19,17 @@ type GUIRunner func(ctx context.Context, app *App) error
 // "version" prints the application version (design D4). emitter receives
 // the services' events and opener launches their system-browser flows
 // inside both the GUI and serve actions; entrypoints supply their host
-// adapters (the desktop main wires the Wails event bus and browser). opts
-// pass through to Assemble (tests pass WithoutSystemBrowserUse; production
-// passes none).
-func NewRootCommand(emitter services.Emitter, opener services.URLOpener, run GUIRunner, opts ...AssembleOption) *cli.Command {
+// adapters (the desktop main wires the Wails event bus and browser).
+// notifier is the host's desktop-notification seam
+// (add-desktop-notifications design D1); nil assembles the internal no-op.
+// opts pass through to Assemble (tests pass WithoutSystemBrowserUse;
+// production passes none).
+func NewRootCommand(emitter services.Emitter, opener services.URLOpener, run GUIRunner, notifier Notifier, opts ...AssembleOption) *cli.Command {
 	return &cli.Command{
 		Name:  services.AppName,
 		Usage: "A local agent gateway that keeps running in the background",
 		Action: func(ctx context.Context, cmd *cli.Command) error {
-			app, err := Assemble(ctx, emitter, opener, opts...)
+			app, err := Assemble(ctx, emitter, opener, notifier, opts...)
 			if err != nil {
 				return err
 			}
@@ -35,8 +37,9 @@ func NewRootCommand(emitter services.Emitter, opener services.URLOpener, run GUI
 			return run(ctx, app)
 		},
 		Commands: []*cli.Command{
-			newServeCommand(emitter, opener, opts...),
+			newServeCommand(emitter, opener, notifier, opts...),
 			newBrowserMCPCommand(),
+			newComputerMCPCommand(),
 			newVersionCommand(),
 		},
 	}
@@ -45,12 +48,12 @@ func NewRootCommand(emitter services.Emitter, opener services.URLOpener, run GUI
 // newServeCommand returns the "serve" subcommand: it assembles the
 // application and hands it to the host-specific server action (build-tag
 // seam; see serve.go / serve_server.go).
-func newServeCommand(emitter services.Emitter, opener services.URLOpener, opts ...AssembleOption) *cli.Command {
+func newServeCommand(emitter services.Emitter, opener services.URLOpener, notifier Notifier, opts ...AssembleOption) *cli.Command {
 	return &cli.Command{
 		Name:  "serve",
 		Usage: "Serve the app as a web application (server mode)",
 		Action: func(ctx context.Context, cmd *cli.Command) error {
-			app, err := Assemble(ctx, emitter, opener, opts...)
+			app, err := Assemble(ctx, emitter, opener, notifier, opts...)
 			if err != nil {
 				return err
 			}

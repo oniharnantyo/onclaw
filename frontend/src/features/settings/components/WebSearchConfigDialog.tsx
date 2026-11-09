@@ -3,6 +3,7 @@ import type { ChangeEvent, ReactElement } from "react";
 
 import type {
   WebSearchChainEntry,
+  WebSearchChainEntryInput,
   WebSearchConfig,
   WebSearchProviderInfo,
 } from "../../../../bindings/github.com/oniharnantyo/buddies/internal/services/models";
@@ -29,6 +30,17 @@ function providerInfo(
   return providers.find((p: WebSearchProviderInfo): boolean => p.id === id);
 }
 
+/** Placeholder for the write-only key field (design D5): the saved-key hint
+ * when editing an entry whose key is stored, nothing while the field is a
+ * plain new-entry prompt. Mono face rides the input's own font-mono class. */
+function keyPlaceholder(draft: SearchEntryDraft): string {
+  if (draft.id === "" || !draft.keySet) return "";
+
+  return draft.keyHint
+    ? `Saved ··${draft.keyHint} — leave blank to keep`
+    : "Saved — leave blank to keep";
+}
+
 /** One editable chain row. `id` carries the persisted identifier ("" for a
  * row added this session); `localKey` keys React state and test ids. */
 interface SearchEntryDraft {
@@ -36,8 +48,14 @@ interface SearchEntryDraft {
   id: string;
   name: string;
   provider: string;
+  /** The typed replacement key; starts blank on every load and edit — the
+   * stored key never round-trips (write-only field, design D5). */
   apiKey: string;
   baseUrl: string;
+  /** Whether the stored entry carries an API key (redacted read state). */
+  keySet: boolean;
+  /** The stored key's last-4 hint; empty when no key is stored. */
+  keyHint: string;
 }
 
 /** Per-field validation messages keyed by draft localKey, plus the timeout
@@ -112,8 +130,13 @@ export default function WebSearchConfigDialog({
             id: entry.id,
             name: entry.name,
             provider: entry.provider,
-            apiKey: entry.api_key ?? "",
+            // The key is never handed back on a read: the field starts empty
+            // and a blank submit keeps the stored key via the merge-by-ID
+            // save (design D4/D5).
+            apiKey: "",
             baseUrl: entry.base_url ?? "",
+            keySet: entry.KeySet,
+            keyHint: entry.KeyHint,
           }))
         );
         setTimeoutText(String(config.request_timeout_seconds ?? 0));
@@ -168,6 +191,8 @@ export default function WebSearchConfigDialog({
         provider: "",
         apiKey: "",
         baseUrl: "",
+        keySet: false,
+        keyHint: "",
       },
     ]);
   };
@@ -238,7 +263,14 @@ export default function WebSearchConfigDialog({
       }
 
       if (info.credential === "api_key" && !draft.apiKey.trim()) {
-        rows[draft.localKey] = `${info.label} requires an API key.`;
+        // A blank key keeps the stored credential through the merge-by-ID
+        // save (design D4), so only an entry that cannot resolve one — a new
+        // row, or a row with no stored key — is rejected here.
+        const keepsStoredKey = draft.id !== "" && draft.keySet;
+
+        if (!keepsStoredKey) {
+          rows[draft.localKey] = `${info.label} requires an API key.`;
+        }
       }
     }
 
@@ -268,13 +300,18 @@ export default function WebSearchConfigDialog({
 
     try {
       await client.settings.saveWebSearchConfig({
-        entries: drafts.map((d: SearchEntryDraft): WebSearchChainEntry => ({
-          id: d.id,
-          name: d.name,
-          provider: d.provider,
-          api_key: d.apiKey || undefined,
-          base_url: d.baseUrl || undefined,
-        })),
+        // The write shape: an omitted api_key on an entry carrying its
+        // stable ID keeps the stored key (the wire format is unchanged —
+        // the backend merges by ID, design D4).
+        entries: drafts.map(
+          (d: SearchEntryDraft): WebSearchChainEntryInput => ({
+            id: d.id,
+            name: d.name,
+            provider: d.provider,
+            api_key: d.apiKey || undefined,
+            base_url: d.baseUrl || undefined,
+          })
+        ),
         request_timeout_seconds: Number(timeoutText) || 0,
       });
 
@@ -459,6 +496,12 @@ export default function WebSearchConfigDialog({
                           )}
                           type={isBaseURL ? "text" : "password"}
                           className={cn("h-8 flex-1 font-mono text-[13px]")}
+                          // The saved-key hint shows only on the write-only
+                          // key field (design D5); the mono face rides the
+                          // input's own font-mono class.
+                          placeholder={
+                            isBaseURL ? undefined : keyPlaceholder(draft)
+                          }
                           data-testid={`ws-cred-${draft.localKey}`}
                           value={isBaseURL ? draft.baseUrl : draft.apiKey}
                           onChange={(e: ChangeEvent<HTMLInputElement>) =>

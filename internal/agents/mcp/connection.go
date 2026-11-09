@@ -11,6 +11,7 @@ import (
 	"os/exec"
 	"slices"
 	"strings"
+	"time"
 
 	mcpp "github.com/cloudwego/eino-ext/components/tool/mcp"
 	"github.com/cloudwego/eino/components/tool"
@@ -31,7 +32,11 @@ const (
 // Connection-status vocabulary persisted by the probe (the store's
 // mcp_servers.status column; 'unknown' is the un-probed default the
 // migration ships). StatusAuthRequired marks a server waiting on user
-// authorization (design D5's four-value vocabulary).
+// authorization (design D5's four-value vocabulary). StatusHeld is
+// supervision-only (add-computer-use coordination contract C3): a system
+// server whose config provider reports it is awaiting readiness — it is
+// never persisted by the probe, only surfaced through the system server's
+// state view.
 const (
 	StatusConnected    = "connected"
 	StatusError        = "error"
@@ -40,6 +45,10 @@ const (
 	// made yet (the store column's shipped default; the supervised system
 	// server reports it before its first spawn attempt completes).
 	StatusUnknown = "unknown"
+	// StatusHeld marks a supervised system server awaiting readiness (C3):
+	// the config provider returned the hold, so no child spawns, the
+	// failure count does not move, and later ticks re-check.
+	StatusHeld = "held"
 )
 
 // ErrUnsupportedTransport is returned for a connection whose Transport is not
@@ -107,14 +116,21 @@ func connect(ctx context.Context, conn Connection) (*connection, error) {
 	initReq.Params.ProtocolVersion = mcp.LATEST_PROTOCOL_VERSION
 	initReq.Params.ClientInfo = clientInfo
 	if _, err := cli.Initialize(ctx, initReq); err != nil {
+		// The excerpt is drained BEFORE the abandon: the async close closes
+		// the stderr pipe, and a drain started after it can miss the
+		// buffered bytes to a read-on-closed-file error — the refusal would
+		// be lost exactly when it matters. The bound keeps a wedged child
+		// from holding the failure past the drain itself.
+		err = withStderrTail(fmt.Errorf("mcp initialize handshake: %w", err), stderr)
 		abandonClient(cli)
-		return nil, classifyConnectError(ctx, conn, fmt.Errorf("mcp initialize handshake: %w", err))
+		return nil, classifyConnectError(ctx, conn, err)
 	}
 
 	tools, err := mcpp.GetTools(ctx, &mcpp.Config{Cli: cli})
 	if err != nil {
+		err = withStderrTail(fmt.Errorf("mcp list tools: %w", err), stderr)
 		abandonClient(cli)
-		return nil, classifyConnectError(ctx, conn, fmt.Errorf("mcp list tools: %w", err))
+		return nil, classifyConnectError(ctx, conn, err)
 	}
 	// The adapter marshals the whole MCP result envelope as each tool's
 	// output; the unwrap sits here — innermost, before the supervisor's
@@ -148,6 +164,51 @@ func classifyConnectError(ctx context.Context, conn Connection, err error) error
 // server never holds a run hostage).
 func abandonClient(cli client.MCPClient) {
 	go closeClient(key{}, &cacheEntry{conn: &connection{client: cli}})
+}
+
+// stderrTailWait bounds how long a failed stdio dial waits on the child's
+// stderr before attaching whatever it captured: a child that already exited
+// (the common startup refusal) has EOF'd its pipe and the excerpt arrives
+// at once; a wedged child's read is abandoned at the bound with whatever
+// arrived by then — the abandon path closes the pipes, which unblocks the
+// reader and ends it.
+const stderrTailWait = 2 * time.Second
+
+// withStderrTail attaches a failed stdio dial's captured child stderr
+// excerpt to the error, wrapping with %w so the classification chain
+// (errors.Is, the OAuth mapping) survives. A child that dies at startup —
+// a held ownership lockfile, a missing interpreter — carries its real
+// reason on stderr; without this the parent only ever surfaces the
+// handshake's "context deadline exceeded". Nothing is attached when the
+// dial captured no stderr stream or the child wrote nothing. The excerpt
+// shares the supervision capture's bound (systemStderrTailBytes).
+func withStderrTail(err error, stderr io.Reader) error {
+	if err == nil || stderr == nil {
+		return err
+	}
+	tail := &stderrTail{max: systemStderrTailBytes}
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		buf := make([]byte, 4096)
+		for {
+			n, rerr := stderr.Read(buf)
+			if n > 0 {
+				tail.write(buf[:n])
+			}
+			if rerr != nil {
+				return
+			}
+		}
+	}()
+	select {
+	case <-done:
+	case <-time.After(stderrTailWait):
+	}
+	if excerpt := tail.excerpt(); excerpt != "" {
+		return fmt.Errorf("%w; stderr: %s", err, excerpt)
+	}
+	return err
 }
 
 // dial opens the transport for conn and returns the ready client plus, for a

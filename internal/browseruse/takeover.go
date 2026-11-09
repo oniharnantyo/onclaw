@@ -119,10 +119,14 @@ func (b *browserTools) handleTakeover(_ context.Context, _ mcp.CallToolRequest) 
 }
 
 // handleRequestTakeover parks a takeover request for the parent host. The
-// profile must exist: a live session or an on-disk profile directory. An
+// profile must exist: a live session or an on-disk profile directory — a
+// bound profile always qualifies, because the resolution seam creates its
+// directory on demand (design D4 of add-per-agent-browser-profiles). An
 // explicit url names the headed window's landing page; an invalid one
 // refuses the request — silently ignoring it would land the person
-// somewhere else.
+// somewhere else. The parked entry carries the sessions key (the bound
+// directory when bound) so the relaunch opens the right browser; the echo's
+// Profile field is the display name.
 func (b *browserTools) handleRequestTakeover(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 	var args takeoverArgs
 	if err := req.BindArguments(&args); err != nil {
@@ -131,11 +135,11 @@ func (b *browserTools) handleRequestTakeover(ctx context.Context, req mcp.CallTo
 	if args.Reason != "sign-in-blocked" {
 		return errResult(fmt.Errorf("browser: reason must be sign-in-blocked, got %q", args.Reason)), nil
 	}
-	profile, err := b.profile(args.Profile)
+	prof, err := b.resolveProfile(req, args.Profile)
 	if err != nil {
 		return errResult(err), nil
 	}
-	if err := b.mgr.profileExists(b.cfg.BrowserDir, profile); err != nil {
+	if err := b.mgr.profileExists(b.cfg.BrowserDir, prof.Key); err != nil {
 		return renderResult(secretUnavailable(reasonProfileMissing), nil)
 	}
 	if args.URL != "" {
@@ -144,8 +148,8 @@ func (b *browserTools) handleRequestTakeover(ctx context.Context, req mcp.CallTo
 		}
 	}
 	id := newRequestID()
-	b.mgr.parkAttention(&attentionRequest{ID: id, Kind: attentionTakeover, Profile: profile, URL: args.URL})
-	return renderResult(takeoverReadyResult{Status: "ready", RequestID: id, Profile: profile}, nil)
+	b.mgr.parkAttention(&attentionRequest{ID: id, Kind: attentionTakeover, Profile: prof.Key, URL: args.URL})
+	return renderResult(takeoverReadyResult{Status: "ready", RequestID: id, Profile: prof.Name}, nil)
 }
 
 // handleBeginTakeover relaunches the parked takeover's profile browser headed

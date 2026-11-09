@@ -172,6 +172,45 @@ let seenGroupMessageIDs = new Set<string>();
  * each "load earlier" fetch. */
 export const TRANSCRIPT_PAGE_SIZE = 60;
 
+/**
+ * Stream-resume tunables (enhance-resumable-streams design D6), mirroring
+ * the backend: `streamBeaconInterval` in internal/agents/manager_impl.go
+ * drives the liveness beacon's period, and a busy session that has seen no
+ * beacon (or sync) for twice that period counts as stale.
+ */
+export const STREAM_BEACON_INTERVAL_MS = 5000;
+
+/** The staleness window: two missed beacons (design D6 trigger (b)). */
+export const STREAM_STALENESS_MS = STREAM_BEACON_INTERVAL_MS * 2;
+
+/** Per-turn live-stream tracking for the resync triggers (design D6): the
+ * received TEXT-delta count — rebaselined by a folded sync, dropped at the
+ * turn's terminal — and the last beacon observation. */
+interface StreamTurnTracking {
+  received: number;
+  lastPing: { count: number; at: number } | null;
+}
+
+/** Tracking by turn id for the ACTIVE session (the ingest path only folds
+ * the active session's events); a session switch starts it fresh. */
+let streamTurns = new Map<string, StreamTurnTracking>();
+
+/** The last liveness observation (a beacon or a sync) for the active
+ * session, in ms — the staleness watch's clock reference. */
+let lastStreamObservation = 0;
+
+/** True once the current silence episode's staleness resync fired (design
+ * D6: triggers fire on transitions, not on a timer loop); any liveness
+ * observation or a watch (re)start clears it. */
+let stalenessFired = false;
+
+/** The busy period's staleness watch interval handle; null while idle. */
+let streamWatchHandle: number | null = null;
+
+/** The one-resync-in-flight guard (design D6): a burst of triggers collapses
+ * into the first call; the guard clears when the promise settles. */
+let resyncInFlight = false;
+
 /** The seq to page from after a fetch, or null when the session's beginning
  * is reached (a short page, or a page holding no seqs at all). */
 function oldestSeqOf(page: SessionEvent[]): number | null {
@@ -473,6 +512,9 @@ function setBusy(): void {
   // answering path records its input_resolved receipt first, so a pending
   // card never survives a terminal that legitimately resumed.
   if (s.busy && !busy) {
+    // The staleness watch lives exactly as long as the busy period
+    // (enhance-resumable-streams design D6 trigger (b)).
+    stopStreamWatch();
     useChatStore.setState({
       busy,
       entries: expireUnresolvedInputs(s.entries),
@@ -480,6 +522,8 @@ function setBusy(): void {
 
     return;
   }
+
+  if (!s.busy && busy) startStreamWatch();
 
   useChatStore.setState({ busy });
 }
@@ -514,7 +558,11 @@ function isTurnActivityKind(kind: SessionEvent["kind"]): boolean {
  * (task 5.1, design D3): the two delta kinds only. Every other kind applies
  * immediately (after draining the pending batch), which keeps turn-terminal
  * state changes synchronous and preserves arrival order across a delta that
- * precedes a structural event. */
+ * precedes a structural event. The stream-resume kinds stay out for the
+ * same reason (enhance-resumable-streams design D7): a KindStreamSync must
+ * REPLACE state in the tick it arrives — batching it behind deltas would
+ * delay and re-order the reconciliation — and a KindStreamPing folds as a
+ * no-op. */
 function isCoalescedKind(kind: SessionEvent["kind"]): boolean {
   return kind === Kind.KindTextDelta || kind === Kind.KindReasoningDelta;
 }
@@ -564,6 +612,120 @@ function clearPendingDeltas(): void {
   }
 
   pendingDeltas = [];
+}
+
+/** The tracking record for one turn, minted on first observation (design
+ * D6: per active turn, keyed by the events' turn id). */
+function streamTurnTracking(turnID: string | undefined): StreamTurnTracking {
+  const key = turnID ?? "";
+  let rec = streamTurns.get(key);
+
+  if (!rec) {
+    rec = { received: 0, lastPing: null };
+    streamTurns.set(key, rec);
+  }
+
+  return rec;
+}
+
+/**
+ * Requests one resync for the active session (enhance-resumable-streams
+ * design D6): fire-and-forget — the snapshot broadcast comes back through
+ * the normal subscription as a KindStreamSync and folds. The in-flight
+ * guard collapses a burst of triggers into one call; a rejection is kept
+ * going silently, the next trigger retries.
+ */
+function requestResync(): void {
+  if (resyncInFlight) return;
+
+  const sessionID = useChatStore.getState().activeSessionID;
+
+  if (!sessionID) return;
+
+  resyncInFlight = true;
+  void client.chat
+    .resync(sessionID)
+    .catch((): void => {
+      // Keep-going: a failed resync heals on the next trigger's attempt.
+    })
+    .finally((): void => {
+      resyncInFlight = false;
+    });
+}
+
+/** The busy period's staleness watch (design D6 trigger (b)): one interval
+ * while the session is busy, ticking at the beacon's period; a tick that
+ * finds no liveness observation for twice that period fires ONE resync per
+ * silence episode. Started and stopped by setBusy's busy transitions. */
+function startStreamWatch(): void {
+  lastStreamObservation = Date.now();
+  stalenessFired = false;
+
+  if (streamWatchHandle !== null) return;
+
+  streamWatchHandle = window.setInterval((): void => {
+    if (!useChatStore.getState().busy) {
+      stopStreamWatch();
+
+      return;
+    }
+
+    if (stalenessFired) return;
+
+    if (Date.now() - lastStreamObservation >= STREAM_STALENESS_MS) {
+      // A live pipe refreshes the clock through its beacons, so this branch
+      // only re-enters when the silence persisted for a whole window.
+      stalenessFired = true;
+      requestResync();
+    }
+  }, STREAM_BEACON_INTERVAL_MS);
+}
+
+function stopStreamWatch(): void {
+  if (streamWatchHandle !== null) {
+    window.clearInterval(streamWatchHandle);
+    streamWatchHandle = null;
+  }
+}
+
+/**
+ * Records the live-stream observations the resync triggers read (design
+ * D6), BEFORE the event folds — the ping's fold is a no-op, so this is the
+ * only place the observation is taken. Runs on every path that applies live
+ * events (ingest and the page-load buffer, where the subscribe catch-up
+ * sync lands): the delta count every beacon compares against, the beacon's
+ * counter and liveness stamp, and the sync's received-count rebaseline
+ * (without it every post-resync ping would read as a permanent gap). A
+ * beacon whose counter exceeds the received count fires the healing resync
+ * directly (trigger (a)).
+ */
+function trackStreamEvent(e: SessionEvent): void {
+  if (e.kind === Kind.KindTextDelta) {
+    streamTurnTracking(e.turn_id).received += 1;
+
+    return;
+  }
+
+  if (e.kind === Kind.KindStreamPing) {
+    const rec = streamTurnTracking(e.turn_id);
+    const count = e.deltas ?? 0;
+
+    rec.lastPing = { count, at: Date.now() };
+    lastStreamObservation = Date.now();
+    stalenessFired = false;
+
+    if (count > rec.received) requestResync();
+
+    return;
+  }
+
+  if (e.kind === Kind.KindStreamSync) {
+    const rec = streamTurnTracking(e.turn_id);
+
+    rec.received = e.stream?.deltas ?? rec.received;
+    lastStreamObservation = Date.now();
+    stalenessFired = false;
+  }
 }
 
 /** Folds one session's running flag into the per-session set. */
@@ -753,8 +915,15 @@ export function connectRunningSessions(): Unsubscribe {
     }
   );
 
+  // Window focus (add-grouped-session-rail design D3, plus
+  // enhance-resumable-streams design D6 trigger (c)): the rail re-queries
+  // the running set, and a BUSY session gets one resync — a throttled or
+  // suspended background window can miss beacons wholesale, so focus regain
+  // is the one moment the counter comparison cannot cover on its own.
   const refetch = (): void => {
     void syncRunningSessions();
+
+    if (useChatStore.getState().busy) requestResync();
   };
 
   window.addEventListener("focus", refetch);
@@ -801,6 +970,12 @@ function ingest(e: SessionEvent): void {
     if (seenEventIDs.has(e.id)) return;
     seenEventIDs.add(e.id);
   }
+
+  // Stream-resume bookkeeping (enhance-resumable-streams design D6) runs
+  // before the fold: a ping's fold is a no-op, so this is the only place
+  // its observation is taken, and a sync's rebaseline must land before the
+  // pings that follow it.
+  trackStreamEvent(e);
 
   if (isCoalescedKind(e.kind)) {
     pendingDeltas.push(e);
@@ -859,7 +1034,12 @@ function completeTurn(turnID?: string): void {
 
   if (turnID && s.activeTurnID && turnID !== s.activeTurnID) return;
 
-  if (turnID) s.finishedTurnIDs.add(turnID);
+  if (turnID) {
+    s.finishedTurnIDs.add(turnID);
+    // The turn's stream tracking dies with it (enhance-resumable-streams
+    // design D6): the next turn counts from zero.
+    streamTurns.delete(turnID);
+  }
   useChatStore.setState({ activeTurnID: null });
   setBusy();
   drainQueue();
@@ -1205,6 +1385,12 @@ export const useChatStore = create<ExtendedChatStore>(
           // seeded from the sticky default instead.
           modelOverride: "",
           effortOverride: "",
+          // The windowing state restarts with the fresh chat, same as
+          // selectSession's (task 6.1): the session just left may have paged
+          // history, and a surviving marker would offer "load earlier" on a
+          // transcript with nothing earlier to load.
+          oldestSeq: null,
+          loadingEarlier: false,
         });
         setBusy();
 
@@ -1238,6 +1424,10 @@ export const useChatStore = create<ExtendedChatStore>(
           // created session is seeded from the sticky default instead.
           modelOverride: "",
           effortOverride: "",
+          // The windowing state restarts here too: an agent with no sessions
+          // lands on the same session-less transcript as the rail's +.
+          oldestSeq: null,
+          loadingEarlier: false,
         });
       }
     },
@@ -1248,6 +1438,12 @@ export const useChatStore = create<ExtendedChatStore>(
       clearPendingDeltas();
 
       seenEventIDs = new Set<string>();
+      // The stream-resume tracking belongs to the session being left
+      // (enhance-resumable-streams design D6): re-entering a mid-stream
+      // session re-observes from the catch-up sync's rebaseline.
+      streamTurns = new Map<string, StreamTurnTracking>();
+      lastStreamObservation = 0;
+      stalenessFired = false;
       // The queue belongs to the session being left: dispatch always targets
       // the active session, so pending (never-sent) entries are dropped with it
       // rather than delivered to the session being opened.
@@ -1338,6 +1534,12 @@ export const useChatStore = create<ExtendedChatStore>(
             if (seenEventIDs.has(e.id)) continue;
             seenEventIDs.add(e.id);
           }
+
+          // The buffered live events carry the same resume bookkeeping as
+          // the ingest path (enhance-resumable-streams design D6): the
+          // catch-up sync's rebaseline lands before its pings, which the
+          // buffer's arrival order already guarantees.
+          trackStreamEvent(e);
 
           entries = applyEvent(entries, e);
 

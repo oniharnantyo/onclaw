@@ -15,10 +15,7 @@
 
 // eslint-disable-next-line @typescript-eslint/ban-ts-comment
 // @ts-ignore: Unused imports
-import {
-  Call as $Call,
-  CancellablePromise as $CancellablePromise,
-} from "@wailsio/runtime";
+import { Call as $Call, CancellablePromise as $CancellablePromise } from "@wailsio/runtime";
 
 // eslint-disable-next-line @typescript-eslint/ban-ts-comment
 // @ts-ignore: Unused imports
@@ -33,11 +30,8 @@ import * as store$0 from "../store/models.js";
  * (design D5), and a change line lands in the transcript. Adding the same
  * agent twice fails with store.ErrDuplicate.
  */
-export function AddMember(
-  groupID: string,
-  agentID: string
-): $CancellablePromise<void> {
-  return $Call.ByID(534270394, groupID, agentID);
+export function AddMember(groupID: string, agentID: string): $CancellablePromise<void> {
+    return $Call.ByID(534270394, groupID, agentID);
 }
 
 /**
@@ -45,18 +39,15 @@ export function AddMember(
  * and interrupts the active turns of the cancelled tasks' owners.
  */
 export function CancelTask(taskID: string): $CancellablePromise<void> {
-  return $Call.ByID(2102494726, taskID);
+    return $Call.ByID(2102494726, taskID);
 }
 
 /**
  * ContinueTask re-dispatches a paused task with the continue message as a
  * follow-up (design D8); only a paused task continues.
  */
-export function ContinueTask(
-  taskID: string,
-  message: string
-): $CancellablePromise<void> {
-  return $Call.ByID(1849605733, taskID, message);
+export function ContinueTask(taskID: string, message: string): $CancellablePromise<void> {
+    return $Call.ByID(1849605733, taskID, message);
 }
 
 /**
@@ -64,13 +55,8 @@ export function ContinueTask(
  * instructions, and roster; the first member becomes the lead (design D5).
  * store.ErrNotFound when a roster agent does not exist.
  */
-export function CreateGroup(
-  name: string,
-  title: string,
-  instructions: string,
-  memberAgentIDs: string[] | null
-): $CancellablePromise<store$0.AgentGroup> {
-  return $Call.ByID(1154216536, name, title, instructions, memberAgentIDs);
+export function CreateGroup(name: string, title: string, instructions: string, memberAgentIDs: string[] | null): $CancellablePromise<store$0.AgentGroup> {
+    return $Call.ByID(1154216536, name, title, instructions, memberAgentIDs);
 }
 
 /**
@@ -79,16 +65,14 @@ export function CreateGroup(
  * they are ordinary sessions, not group-owned.
  */
 export function DeleteGroup(groupID: string): $CancellablePromise<void> {
-  return $Call.ByID(1148479737, groupID);
+    return $Call.ByID(1148479737, groupID);
 }
 
 /**
  * Group returns one group; store.ErrNotFound when absent.
  */
-export function Group(
-  groupID: string
-): $CancellablePromise<store$0.AgentGroup> {
-  return $Call.ByID(4268300136, groupID);
+export function Group(groupID: string): $CancellablePromise<store$0.AgentGroup> {
+    return $Call.ByID(4268300136, groupID);
 }
 
 /**
@@ -96,16 +80,14 @@ export function Group(
  * never nil.
  */
 export function ListGroups(): $CancellablePromise<store$0.AgentGroup[] | null> {
-  return $Call.ByID(3480170389);
+    return $Call.ByID(3480170389);
 }
 
 /**
  * Members returns the group's roster in add order. The result is never nil.
  */
-export function Members(
-  groupID: string
-): $CancellablePromise<store$0.AgentGroupMember[] | null> {
-  return $Call.ByID(1322268564, groupID);
+export function Members(groupID: string): $CancellablePromise<store$0.AgentGroupMember[] | null> {
+    return $Call.ByID(1322268564, groupID);
 }
 
 /**
@@ -113,11 +95,8 @@ export function Members(
  * it to the new owner (design D8); a running task's previous owner turn is
  * interrupted first.
  */
-export function ReassignTask(
-  taskID: string,
-  newOwnerAgentID: string
-): $CancellablePromise<void> {
-  return $Call.ByID(2798996508, taskID, newOwnerAgentID);
+export function ReassignTask(taskID: string, newOwnerAgentID: string): $CancellablePromise<void> {
+    return $Call.ByID(2798996508, taskID, newOwnerAgentID);
 }
 
 /**
@@ -126,11 +105,8 @@ export function ReassignTask(
  * first remaining member (design D5). The member's session and past
  * contributions survive.
  */
-export function RemoveMember(
-  groupID: string,
-  agentID: string
-): $CancellablePromise<void> {
-  return $Call.ByID(3182875391, groupID, agentID);
+export function RemoveMember(groupID: string, agentID: string): $CancellablePromise<void> {
+    return $Call.ByID(3182875391, groupID, agentID);
 }
 
 /**
@@ -139,18 +115,15 @@ export function RemoveMember(
  * follow-up, a single-member group, or the lead.
  */
 export function Send(req: groups$0.SendRequest): $CancellablePromise<void> {
-  return $Call.ByID(4182254179, req);
+    return $Call.ByID(4182254179, req);
 }
 
 /**
  * SetLead assigns the lead to a roster member (design D5: exactly one lead);
  * tasks that already have owners keep them.
  */
-export function SetLead(
-  groupID: string,
-  agentID: string
-): $CancellablePromise<void> {
-  return $Call.ByID(3466352617, groupID, agentID);
+export function SetLead(groupID: string, agentID: string): $CancellablePromise<void> {
+    return $Call.ByID(3466352617, groupID, agentID);
 }
 
 /**
@@ -158,21 +131,16 @@ export function SetLead(
  * (design D8), interrupting the owners' active member turns; an empty reason
  * reads as "stopped by user".
  */
-export function StopTask(
-  taskID: string,
-  reason: string
-): $CancellablePromise<void> {
-  return $Call.ByID(2947618560, taskID, reason);
+export function StopTask(taskID: string, reason: string): $CancellablePromise<void> {
+    return $Call.ByID(2947618560, taskID, reason);
 }
 
 /**
  * Tasks returns the group's tasks ordered by task id. The result is never
  * nil.
  */
-export function Tasks(
-  groupID: string
-): $CancellablePromise<store$0.AgentGroupTask[] | null> {
-  return $Call.ByID(938170185, groupID);
+export function Tasks(groupID: string): $CancellablePromise<store$0.AgentGroupTask[] | null> {
+    return $Call.ByID(938170185, groupID);
 }
 
 /**
@@ -181,23 +149,14 @@ export function Tasks(
  * when beforeSeq is 0 — in transcript order (the chat view's windowing
  * contract, design D6).
  */
-export function TranscriptPage(
-  groupID: string,
-  beforeSeq: number,
-  limit: number
-): $CancellablePromise<store$0.AgentGroupMessage[] | null> {
-  return $Call.ByID(710672804, groupID, beforeSeq, limit);
+export function TranscriptPage(groupID: string, beforeSeq: number, limit: number): $CancellablePromise<store$0.AgentGroupMessage[] | null> {
+    return $Call.ByID(710672804, groupID, beforeSeq, limit);
 }
 
 /**
  * UpdateGroup rewrites the group's editable fields (name, title,
  * instructions), keeping lead, roster, and transcript untouched.
  */
-export function UpdateGroup(
-  groupID: string,
-  name: string,
-  title: string,
-  instructions: string
-): $CancellablePromise<store$0.AgentGroup> {
-  return $Call.ByID(2242932979, groupID, name, title, instructions);
+export function UpdateGroup(groupID: string, name: string, title: string, instructions: string): $CancellablePromise<store$0.AgentGroup> {
+    return $Call.ByID(2242932979, groupID, name, title, instructions);
 }

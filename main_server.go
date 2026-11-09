@@ -14,11 +14,13 @@ import (
 	"context"
 	"embed"
 	"log"
+	"log/slog"
 	"os"
 
 	"github.com/wailsapp/wails/v3/pkg/application"
 
 	"github.com/oniharnantyo/buddies/internal/cli"
+	"github.com/oniharnantyo/buddies/internal/notifications"
 	"github.com/oniharnantyo/buddies/internal/services"
 )
 
@@ -49,7 +51,24 @@ func init() {
 	application.RegisterEvent[services.ChannelStateEvent](services.EventChannelState)
 	application.RegisterEvent[services.GroupsChangedEvent](services.EventGroupsChanged)
 	application.RegisterEvent[services.GroupEvent]("group:<id>:event")
+	application.RegisterEvent[services.NotificationOpenEvent](services.EventNotificationOpen)
 }
+
+// serverNotifier is the headless host's no-op notifier
+// (add-desktop-notifications design D1/D6): the engine and its settings and
+// focus surface still function over the served API — host parity — but this
+// host has no OS notification surface, so sends drop with a debug log.
+// WindowVisible reports false (no window), which never suppresses — the
+// equivalent of the engine's nil visibility query — and the send below is a
+// no-op anyway.
+type serverNotifier struct{}
+
+func (serverNotifier) Send(p notifications.Payload) error {
+	slog.Debug("notifications: server host dropped send", "id", p.ID)
+	return nil
+}
+
+func (serverNotifier) WindowVisible() bool { return false }
 
 func main() {
 	emitter := cli.NewWailsEmitter()
@@ -69,7 +88,7 @@ func main() {
 	// NoBrowser is the headless URLOpener (design D8): MCP OAuth
 	// authorization fails with a message directing the user to the desktop
 	// app, which shares this database and its tokens.
-	cmd := cli.NewRootCommand(emitter, services.NoBrowser{}, runner)
+	cmd := cli.NewRootCommand(emitter, services.NoBrowser{}, runner, serverNotifier{})
 	if err := cmd.Run(context.Background(), os.Args); err != nil {
 		log.Fatal(err)
 	}

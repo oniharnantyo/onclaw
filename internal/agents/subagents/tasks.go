@@ -233,6 +233,25 @@ func (r *TaskRegistry) Lookup(id string) (*TaskRecord, error) {
 	return rec, nil
 }
 
+// RunningTasks snapshots the registry's currently running tasks
+// (enhance-resumable-streams design D3): id, description, status running,
+// and the latest live progress — derived from the same records
+// AllocateTask/RegisterTask/Finish maintain, no new tracking. The result is
+// in allocation order and empty, never nil, when nothing is running.
+func (r *TaskRegistry) RunningTasks() []sessions.TaskActivity {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	out := make([]sessions.TaskActivity, 0, len(r.tasks))
+	for _, id := range r.order {
+		rec, ok := r.tasks[id]
+		if !ok || rec.Terminal() {
+			continue
+		}
+		out = append(out, *rec.Snapshot())
+	}
+	return out
+}
+
 // Progress folds one appended transcript chunk (JSONL records as written by
 // the transcript formatter) into the running record and re-broadcasts its
 // live snapshot, rate-limited per task.

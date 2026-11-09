@@ -46,6 +46,11 @@ const (
 	// change (add-agent-groups design D9) — so the frontend refetches the
 	// group list instead of polling. The payload is a GroupsChangedEvent.
 	EventGroupsChanged = "groups:changed"
+	// EventNotificationOpen announces a clicked notification
+	// (add-desktop-notifications design D5) so the frontend navigates to the
+	// session or group the notification concerned. The payload is a
+	// NotificationOpenEvent.
+	EventNotificationOpen = "notifications:open"
 )
 
 // GatewayStateEvent is the payload of EventGatewayState. State mirrors
@@ -169,4 +174,13 @@ type GroupEvent struct {
 // design D9) so the frontend subscribes only to the group it displays.
 func GroupEventName(groupID string) string {
 	return fmt.Sprintf("group:%s:event", groupID)
+}
+
+// NotificationOpenEvent is the payload of EventNotificationOpen. Kind
+// mirrors the notifications engine's route kind — "session" or "group" — and
+// ID names that session or group, not the notification
+// (add-desktop-notifications design D5).
+type NotificationOpenEvent struct {
+	Kind string `json:"kind"`
+	ID   string `json:"id"`
 }

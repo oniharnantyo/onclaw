@@ -168,6 +168,96 @@ func TestChatService_BrowserScreenshotUnwiredWorkspace(t *testing.T) {
 	require.Error(t, err)
 }
 
+// The computer-screenshot bound read's tests (add-computer-use tasks.md 6.1,
+// spec chat-tool-cards "Computer screenshot bound read"): the same jail as
+// the browser read, resolved strictly under the calling session's computer/
+// directory.
+
+// computerScreenshotService reuses the browser seeding and derives the
+// calling session's computer screenshots directory.
+func computerScreenshotService(t *testing.T) (*ChatService, string, string) {
+	t.Helper()
+	svc, _, sessionID := screenshotService(t)
+	dir := filepath.Join(svc.workspaces.Root(), "scout", "sessions", sessionID, workspaces.DirComputer)
+	return svc, dir, sessionID
+}
+
+// TestChatService_ComputerScreenshotServesValidName is the acceptance path:
+// the observation's naming shape reads back the bytes and the real pixel
+// dimensions from the session's computer/ directory, reporting only the
+// name — never the on-disk path.
+func TestChatService_ComputerScreenshotServesValidName(t *testing.T) {
+	svc, dir, sessionID := computerScreenshotService(t)
+	writeScreenshot(t, filepath.Join(dir, "1730000000000.png"))
+	want, err := os.ReadFile(filepath.Join(dir, "1730000000000.png"))
+	require.NoError(t, err)
+
+	got, err := svc.ComputerScreenshot(context.Background(), sessionID, "1730000000000.png")
+	require.NoError(t, err)
+	require.Equal(t, "1730000000000.png", got.Name)
+	require.Equal(t, 2, got.Width)
+	require.Equal(t, 3, got.Height)
+	require.Equal(t, want, mustDecodeBase64(t, got.Data))
+}
+
+// TestChatService_ComputerScreenshotRefusesBadNames pins the refusal rules
+// (spec: no file bytes leave the session jail): traversal, path separators,
+// directory components, and foreign shapes are refused before the filesystem
+// is touched — even when a file exists at the addressed location.
+func TestChatService_ComputerScreenshotRefusesBadNames(t *testing.T) {
+	svc, dir, sessionID := computerScreenshotService(t)
+	// Files that exist at the addressed locations: a traversal target
+	// outside the computer dir, a nested file, and a wrong extension.
+	outside := filepath.Join(dir, "..", "outside.png")
+	writeScreenshot(t, outside)
+	writeScreenshot(t, filepath.Join(dir, "sub", "1.png"))
+	writeScreenshot(t, filepath.Join(dir, "1.jpg"))
+	outsideBefore, err := os.ReadFile(outside)
+	require.NoError(t, err)
+
+	for _, name := range []string{
+		"../outside.png",  // traversal — must never escape the directory
+		"..\\outside.png", // windows-style traversal
+		"sub/1.png",       // directory component, file exists
+		"1.jpg",           // foreign extension
+		"png",             // no timestamp
+		"abc.png",         // not a timestamp
+		"",                // empty
+	} {
+		_, err := svc.ComputerScreenshot(context.Background(), sessionID, name)
+		require.Error(t, err, "name %q must be refused", name)
+		require.ErrorContains(t, err, "refused", "name %q must be refused before the filesystem", name)
+	}
+
+	// The outside file is untouched and was never served.
+	outsideAfter, err := os.ReadFile(outside)
+	require.NoError(t, err)
+	require.Equal(t, outsideBefore, outsideAfter)
+}
+
+// TestChatService_ComputerScreenshotMissingIsNotFound pins the not-found
+// contract: a well-shaped name with no file behind it — including when the
+// computer directory itself does not exist yet — wraps store.ErrNotFound.
+func TestChatService_ComputerScreenshotMissingIsNotFound(t *testing.T) {
+	svc, _, sessionID := computerScreenshotService(t)
+
+	_, err := svc.ComputerScreenshot(context.Background(), sessionID, "1730000000001.png")
+	require.ErrorIs(t, err, store.ErrNotFound)
+}
+
+// TestChatService_ComputerScreenshotDoesNotLeakBrowserDir pins the
+// wrong-directory escape: a name that exists under the session's browser/
+// directory but not its computer/ directory is a not-found miss, never
+// served from the sibling directory.
+func TestChatService_ComputerScreenshotDoesNotLeakBrowserDir(t *testing.T) {
+	svc, _, sessionID := computerScreenshotService(t)
+	browserDir := filepath.Join(svc.workspaces.Root(), "scout", "sessions", sessionID, workspaces.DirBrowser)
+	writeScreenshot(t, filepath.Join(browserDir, "1730000000000.png"))
+
+	_, err := svc.ComputerScreenshot(context.Background(), sessionID, "1730000000000.png")
+	require.ErrorIs(t, err, store.ErrNotFound)
+}
+
 // mustDecodeBase64 decodes a served payload back to bytes for comparison.
 func mustDecodeBase64(t *testing.T, data string) []byte {
 	t.Helper()

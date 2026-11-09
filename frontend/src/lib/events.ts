@@ -11,6 +11,7 @@ import type {
   GroupsChangedEvent,
   KnowledgeChangedEvent,
   MCPOAuthCompletedEvent,
+  NotificationOpenEvent,
   SchedulesChangedEvent,
   TurnsChangedEvent,
 } from "../../bindings/github.com/oniharnantyo/buddies/internal/services/models";
@@ -98,6 +99,18 @@ export const GROUPS_CHANGED_EVENT = "groups:changed";
 /** The generated payload of GROUPS_CHANGED_EVENT, re-exported so callers
  * keep one import surface beside the constant. */
 export type { GroupsChangedEvent };
+
+/**
+ * Event announcing a clicked desktop notification (add-desktop-notifications
+ * design D5): the Go side emits it when the user clicks a notification, with
+ * the session or group that notification concerned, so the frontend opens
+ * it; payload is NotificationOpenEvent.
+ */
+export const NOTIFICATIONS_OPEN_EVENT = "notifications:open";
+
+/** The generated payload of NOTIFICATIONS_OPEN_EVENT, re-exported so callers
+ * keep one import surface beside the constant. */
+export type { NotificationOpenEvent };
 
 /**
  * Event announcing one agent-group's live transcript and task updates

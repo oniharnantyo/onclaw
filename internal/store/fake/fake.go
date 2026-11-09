@@ -33,23 +33,27 @@ type Store struct {
 	channelReceipts map[channelReceiptKey]store.ChannelUpdateReceipt
 	hooks           map[string]store.Hook
 	gatewaySettings *store.GatewaySettings
-	sessionEvents   map[string][]store.SessionEvent // key: sessionID, kept in Seq order
-	checkpoints     map[string][]byte
-	skills          map[string]store.Skill          // key: name
-	toolStates      map[string]store.ToolState      // key: name
-	agentHooks      map[agentHookKey]int            // key: (agentID, hookID), value: position
-	hookExecutions  []store.HookExecution           // append-only audit trail
-	toolSettings    map[string]string               // key: tool, value: opaque JSON
-	attachments     map[string]store.Attachment     // key: capability key
-	documents       map[string]store.Document       // key: document id
-	documentPresets map[string]store.DocumentPreset // key: preset id
-	providerModels  map[int64]store.ProviderModel
-	nextModelID     int64
-	memoryTraces    map[string]store.MemoryTrace // key: trace id, append-only
-	memoryNotes     map[memoryNoteKey]store.MemoryNoteState
-	memoryStaging   map[memoryStagingKey]store.MemoryStaging
-	memorySweeps    map[string]store.MemorySweep // key: agent id
-	agentGroups     map[string]store.AgentGroup  // key: group id
+	// notificationSettings is the singleton desktop-notification
+	// configuration row (add-desktop-notifications design D4); nil until the
+	// first save, mirroring the defaults-when-absent convention.
+	notificationSettings *store.NotificationSettings
+	sessionEvents        map[string][]store.SessionEvent // key: sessionID, kept in Seq order
+	checkpoints          map[string][]byte
+	skills               map[string]store.Skill          // key: name
+	toolStates           map[string]store.ToolState      // key: name
+	agentHooks           map[agentHookKey]int            // key: (agentID, hookID), value: position
+	hookExecutions       []store.HookExecution           // append-only audit trail
+	toolSettings         map[string]string               // key: tool, value: opaque JSON
+	attachments          map[string]store.Attachment     // key: capability key
+	documents            map[string]store.Document       // key: document id
+	documentPresets      map[string]store.DocumentPreset // key: preset id
+	providerModels       map[int64]store.ProviderModel
+	nextModelID          int64
+	memoryTraces         map[string]store.MemoryTrace // key: trace id, append-only
+	memoryNotes          map[memoryNoteKey]store.MemoryNoteState
+	memoryStaging        map[memoryStagingKey]store.MemoryStaging
+	memorySweeps         map[string]store.MemorySweep // key: agent id
+	agentGroups          map[string]store.AgentGroup  // key: group id
 	// agentGroupMembers and agentGroupContexts share the (groupID,
 	// agentID) pair key; the messages are keyed by group and kept in Seq
 	// order.
@@ -114,20 +118,23 @@ func (s *Store) Schedules() store.ScheduleStore              { return &scheduleS
 func (s *Store) Channels() store.ChannelStore                { return &channelStore{s} }
 func (s *Store) Hooks() store.HookStore                      { return &hookStore{s} }
 func (s *Store) GatewaySettings() store.GatewaySettingsStore { return &gatewaySettingsStore{s} }
-func (s *Store) SessionEvents() store.SessionEventStore      { return &sessionEventStore{s} }
-func (s *Store) Checkpoints() store.CheckpointStore          { return &checkpointStore{s} }
-func (s *Store) Skills() store.SkillRegistry                 { return &skillRegistry{s} }
-func (s *Store) ToolStates() store.ToolStateStore            { return &toolStateStore{s} }
-func (s *Store) AgentHooks() store.AgentHookStore            { return &agentHookStore{s} }
-func (s *Store) HookExecutions() store.HookExecutionStore    { return &hookExecutionStore{s} }
-func (s *Store) ToolSettings() store.ToolSettingStore        { return &toolSettingStore{s} }
-func (s *Store) Attachments() store.AttachmentStore          { return &attachmentStore{s} }
-func (s *Store) Documents() store.DocumentStore              { return &documentStore{s} }
-func (s *Store) DocumentPresets() store.DocumentPresetStore  { return &documentPresetStore{s} }
-func (s *Store) ProviderModels() store.ProviderModelStore    { return &providerModelStore{s} }
-func (s *Store) Memory() store.MemoryStore                   { return &memoryStore{s} }
-func (s *Store) Groups() store.AgentGroupStore               { return &agentGroupStore{s} }
-func (s *Store) VaultItems() store.VaultItemStore            { return &vaultItemStore{s} }
+func (s *Store) NotificationSettings() store.NotificationSettingsStore {
+	return &notificationSettingsStore{s}
+}
+func (s *Store) SessionEvents() store.SessionEventStore     { return &sessionEventStore{s} }
+func (s *Store) Checkpoints() store.CheckpointStore         { return &checkpointStore{s} }
+func (s *Store) Skills() store.SkillRegistry                { return &skillRegistry{s} }
+func (s *Store) ToolStates() store.ToolStateStore           { return &toolStateStore{s} }
+func (s *Store) AgentHooks() store.AgentHookStore           { return &agentHookStore{s} }
+func (s *Store) HookExecutions() store.HookExecutionStore   { return &hookExecutionStore{s} }
+func (s *Store) ToolSettings() store.ToolSettingStore       { return &toolSettingStore{s} }
+func (s *Store) Attachments() store.AttachmentStore         { return &attachmentStore{s} }
+func (s *Store) Documents() store.DocumentStore             { return &documentStore{s} }
+func (s *Store) DocumentPresets() store.DocumentPresetStore { return &documentPresetStore{s} }
+func (s *Store) ProviderModels() store.ProviderModelStore   { return &providerModelStore{s} }
+func (s *Store) Memory() store.MemoryStore                  { return &memoryStore{s} }
+func (s *Store) Groups() store.AgentGroupStore              { return &agentGroupStore{s} }
+func (s *Store) VaultItems() store.VaultItemStore           { return &vaultItemStore{s} }
 
 func (s *Store) Create(ctx context.Context, model *store.ProviderModel) error {
 	return (&providerModelStore{s}).Create(ctx, model)

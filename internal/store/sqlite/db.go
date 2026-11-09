@@ -54,6 +54,7 @@ type Store struct {
 	memory    *memoryStore
 	groups    *agentGroupStore
 	vault     *vaultItemStore
+	notifs    *notificationSettingsStore
 }
 
 // Open connects to (creating if necessary) the SQLite database at path,
@@ -158,33 +159,35 @@ func newStore(db *sql.DB, dataDir string) *Store {
 	s.memory = &memoryStore{db}
 	s.groups = &agentGroupStore{db}
 	s.vault = &vaultItemStore{db}
+	s.notifs = &notificationSettingsStore{db}
 	return s
 }
 
-func (s *Store) Agents() store.AgentStore                       { return s.agents }
-func (s *Store) Sessions() store.SessionsStore                  { return s.sessions }
-func (s *Store) Providers() store.ProviderStore                 { return s.providers }
-func (s *Store) MCPServers() store.MCPServerStore               { return s.mcp }
-func (s *Store) MCPOAuthTokens() store.MCPOAuthTokenStore       { return s.mcpTokens }
-func (s *Store) Schedules() store.ScheduleStore                 { return s.schedules }
-func (s *Store) Channels() store.ChannelStore                   { return s.channels }
-func (s *Store) Hooks() store.HookStore                         { return s.hooks }
-func (s *Store) GatewaySettings() store.GatewaySettingsStore    { return s.gateway }
-func (s *Store) SessionEvents() store.SessionEventStore         { return s.events }
-func (s *Store) Checkpoints() store.CheckpointStore             { return s.checkpts }
-func (s *Store) Skills() store.SkillRegistry                    { return s.skills }
-func (s *Store) ToolStates() store.ToolStateStore               { return s.tools }
-func (s *Store) AgentHooks() store.AgentHookStore               { return s.agentHooks }
-func (s *Store) HookExecutions() store.HookExecutionStore       { return s.hookExecs }
-func (s *Store) ToolSettings() store.ToolSettingStore           { return s.toolConfigs }
-func (s *Store) Attachments() store.AttachmentStore             { return s.attachments }
-func (s *Store) Documents() store.DocumentStore                 { return s.documents }
-func (s *Store) DocumentPresets() store.DocumentPresetStore     { return s.presets }
-func (s *Store) DocumentTemplates() store.DocumentTemplateStore { return s.templates }
-func (s *Store) ProviderModels() store.ProviderModelStore       { return s.models }
-func (s *Store) Memory() store.MemoryStore                      { return s.memory }
-func (s *Store) Groups() store.AgentGroupStore                  { return s.groups }
-func (s *Store) VaultItems() store.VaultItemStore               { return s.vault }
+func (s *Store) Agents() store.AgentStore                              { return s.agents }
+func (s *Store) Sessions() store.SessionsStore                         { return s.sessions }
+func (s *Store) Providers() store.ProviderStore                        { return s.providers }
+func (s *Store) MCPServers() store.MCPServerStore                      { return s.mcp }
+func (s *Store) MCPOAuthTokens() store.MCPOAuthTokenStore              { return s.mcpTokens }
+func (s *Store) Schedules() store.ScheduleStore                        { return s.schedules }
+func (s *Store) Channels() store.ChannelStore                          { return s.channels }
+func (s *Store) Hooks() store.HookStore                                { return s.hooks }
+func (s *Store) GatewaySettings() store.GatewaySettingsStore           { return s.gateway }
+func (s *Store) SessionEvents() store.SessionEventStore                { return s.events }
+func (s *Store) Checkpoints() store.CheckpointStore                    { return s.checkpts }
+func (s *Store) Skills() store.SkillRegistry                           { return s.skills }
+func (s *Store) ToolStates() store.ToolStateStore                      { return s.tools }
+func (s *Store) AgentHooks() store.AgentHookStore                      { return s.agentHooks }
+func (s *Store) HookExecutions() store.HookExecutionStore              { return s.hookExecs }
+func (s *Store) ToolSettings() store.ToolSettingStore                  { return s.toolConfigs }
+func (s *Store) Attachments() store.AttachmentStore                    { return s.attachments }
+func (s *Store) Documents() store.DocumentStore                        { return s.documents }
+func (s *Store) DocumentPresets() store.DocumentPresetStore            { return s.presets }
+func (s *Store) DocumentTemplates() store.DocumentTemplateStore        { return s.templates }
+func (s *Store) ProviderModels() store.ProviderModelStore              { return s.models }
+func (s *Store) Memory() store.MemoryStore                             { return s.memory }
+func (s *Store) Groups() store.AgentGroupStore                         { return s.groups }
+func (s *Store) VaultItems() store.VaultItemStore                      { return s.vault }
+func (s *Store) NotificationSettings() store.NotificationSettingsStore { return s.notifs }
 
 func (s *Store) Create(ctx context.Context, model *store.ProviderModel) error {
 	return s.models.Create(ctx, model)

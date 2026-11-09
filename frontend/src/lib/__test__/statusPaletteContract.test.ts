@@ -83,7 +83,10 @@ describe("status palette contract (design D2: token-only status hues)", () => {
     ).toBeNull();
   });
 
-  it("production source carries no palette-encoded status classes", () => {
+  // The source scans walk every frontend file; the 5s default is a
+  // coin-flip under the full suite's parallel load, so these carry an
+  // explicit budget (the earlier full-run flakes were timeouts, not hits).
+  it("production source carries no palette-encoded status classes", { timeout: 30_000 }, () => {
     const violations: { file: string; classes: string[] }[] = [];
 
     for (const file of walk(SRC)) {
@@ -112,7 +115,7 @@ describe("status palette contract (design D2: token-only status hues)", () => {
   // for the D2 large-glyph rule (≥18px or bold, 3:1 suffices) — a grep
   // cannot judge size, so that half is review-enforced and pinned by the
   // re-based small-text sites.
-  it("small status text uses the lifted tiers, never the raw fills", () => {
+  it("small status text uses the lifted tiers, never the raw fills", { timeout: 30_000 }, () => {
     const FILL_AS_TEXT =
       /(?:^|[\s"'`])((?:[a-z0-9-]+:)*text-(?:warn|danger))(?=$|["'`\s])/g;
 

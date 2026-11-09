@@ -10,9 +10,9 @@ import * as store$0 from "../store/models.js";
  * hook's id and display name plus its evaluation position for the agent.
  */
 export interface AgentHookAssignment {
-  HookID: string;
-  HookName: string;
-  Position: number;
+    "HookID": string;
+    "HookName": string;
+    "Position": number;
 }
 
 /**
@@ -21,15 +21,15 @@ export interface AgentHookAssignment {
  * previews and downloads from this, never from a raw path).
  */
 export interface AttachmentContent {
-  key: string;
-  name: string;
-  mime: string;
-  size: number;
+    "key": string;
+    "name": string;
+    "mime": string;
+    "size": number;
 
-  /**
-   * Data is the base64-encoded file content.
-   */
-  data: string;
+    /**
+     * Data is the base64-encoded file content.
+     */
+    "data": string;
 }
 
 /**
@@ -40,33 +40,33 @@ export interface AttachmentContent {
  * surfaced for editing.
  */
 export interface BrowserConfig {
-  /**
-   * DefaultProfile is the profile actions run in when the model passes
-   * none. Empty means the default profile
-   * (browseruse.DefaultBrowserProfile).
-   */
-  defaultProfile: string;
+    /**
+     * DefaultProfile is the profile actions run in when the model passes
+     * none. Empty means the default profile
+     * (browseruse.DefaultBrowserProfile).
+     */
+    "defaultProfile": string;
 
-  /**
-   * Headless launches Chromium without a window; the default is on.
-   */
-  headless: boolean;
+    /**
+     * Headless launches Chromium without a window; the default is on.
+     */
+    "headless": boolean;
 
-  /**
-   * IdleTimeoutSeconds closes a profile's idle browser after this long.
-   */
-  idleTimeoutSeconds: number;
+    /**
+     * IdleTimeoutSeconds closes a profile's idle browser after this long.
+     */
+    "idleTimeoutSeconds": number;
 
-  /**
-   * ActionTimeoutSeconds bounds each browser action.
-   */
-  actionTimeoutSeconds: number;
+    /**
+     * ActionTimeoutSeconds bounds each browser action.
+     */
+    "actionTimeoutSeconds": number;
 
-  /**
-   * AllowPrivate permits navigation to loopback/private network targets;
-   * the default is off.
-   */
-  allowPrivate: boolean;
+    /**
+     * AllowPrivate permits navigation to loopback/private network targets;
+     * the default is off.
+     */
+    "allowPrivate": boolean;
 }
 
 /**
@@ -74,21 +74,21 @@ export interface BrowserConfig {
  * renders it.
  */
 export interface BrowserProfile {
-  /**
-   * Name is the profile name; the model addresses it as the `profile`
-   * argument on any browser action.
-   */
-  name: string;
+    /**
+     * Name is the profile name; the model addresses it as the `profile`
+     * argument on any browser action.
+     */
+    "name": string;
 
-  /**
-   * ModifiedAt is the profile directory's last modification time.
-   */
-  modified_at: string;
+    /**
+     * ModifiedAt is the profile directory's last modification time.
+     */
+    "modified_at": string;
 
-  /**
-   * SizeBytes is the total size of the profile's files.
-   */
-  size_bytes: number;
+    /**
+     * SizeBytes is the total size of the profile's files.
+     */
+    "size_bytes": number;
 }
 
 /**
@@ -97,14 +97,14 @@ export interface BrowserProfile {
  * base64-encoded PNG bytes. The on-disk path never crosses the boundary.
  */
 export interface BrowserScreenshotContent {
-  name: string;
-  width?: number;
-  height?: number;
+    "name": string;
+    "width"?: number;
+    "height"?: number;
 
-  /**
-   * Data is the base64-encoded PNG content.
-   */
-  data: string;
+    /**
+     * Data is the base64-encoded PNG content.
+     */
+    "data": string;
 }
 
 /**
@@ -112,7 +112,7 @@ export interface BrowserScreenshotContent {
  * the mutated channel (add-telegram-channel task 1.4).
  */
 export interface ChannelChangedEvent {
-  channelId: string;
+    "channelId": string;
 }
 
 /**
@@ -121,13 +121,13 @@ export interface ChannelChangedEvent {
  * as "no override".
  */
 export interface ChannelChatView {
-  chatId: number;
-  kind: string;
-  title: string;
-  sessionId: string;
-  pinnedAgentId: string;
-  isHome: boolean;
-  freeResponse: boolean;
+    "chatId": number;
+    "kind": string;
+    "title": string;
+    "sessionId": string;
+    "pinnedAgentId": string;
+    "isHome": boolean;
+    "freeResponse": boolean;
 }
 
 /**
@@ -137,9 +137,9 @@ export interface ChannelChatView {
  * the token field is write-only.
  */
 export interface ChannelInput {
-  Enabled: boolean;
-  BotToken: string;
-  ProxyURL: string;
+    "Enabled": boolean;
+    "BotToken": string;
+    "ProxyURL": string;
 }
 
 /**
@@ -149,9 +149,9 @@ export interface ChannelInput {
  * D10).
  */
 export interface ChannelStateEvent {
-  channelId: string;
-  state: string;
-  detail?: string;
+    "channelId": string;
+    "state": string;
+    "detail"?: string;
 }
 
 /**
@@ -162,18 +162,18 @@ export interface ChannelStateEvent {
  * non-secret last-four hint.
  */
 export interface ChannelView {
-  id: string;
-  enabled: boolean;
+    "id": string;
+    "enabled": boolean;
 
-  /**
-   * TokenSet and TokenHint are the secret-free token views: only whether a
-   * bot token is stored and its last four characters, empty when unset.
-   */
-  tokenSet: boolean;
-  tokenHint: string;
-  proxyUrl: string;
-  createdAt: string;
-  updatedAt: string;
+    /**
+     * TokenSet and TokenHint are the secret-free token views: only whether a
+     * bot token is stored and its last four characters, empty when unset.
+     */
+    "tokenSet": boolean;
+    "tokenHint": string;
+    "proxyUrl": string;
+    "createdAt": string;
+    "updatedAt": string;
 }
 
 /**
@@ -183,28 +183,137 @@ export interface ChannelView {
  * installation (design D9: the manual source-path input is dropped).
  */
 export interface ChromeProfileCandidate {
-  /**
-   * DirName is the profile's directory name under the Chrome user-data
-   * directory ("Default", "Profile 1", ...).
-   */
-  dir_name: string;
+    /**
+     * DirName is the profile's directory name under the Chrome user-data
+     * directory ("Default", "Profile 1", ...).
+     */
+    "dir_name": string;
 
-  /**
-   * DisplayName is Chrome's own name for the profile ("Personal", ...);
-   * the directory name when the cache names none.
-   */
-  display_name: string;
+    /**
+     * DisplayName is Chrome's own name for the profile ("Personal", ...);
+     * the directory name when the cache names none.
+     */
+    "display_name": string;
 
-  /**
-   * IsDefault marks the profile Chrome launches with ("Default").
-   */
-  is_default: boolean;
+    /**
+     * IsDefault marks the profile Chrome launches with ("Default").
+     */
+    "is_default": boolean;
 
-  /**
-   * SizeBytes is the profile directory's total file size — informational,
-   * best-effort; zero when it cannot be measured.
-   */
-  size_bytes: number;
+    /**
+     * SizeBytes is the profile directory's total file size — informational,
+     * best-effort; zero when it cannot be measured.
+     */
+    "size_bytes": number;
+}
+
+/**
+ * ComputerConfigView is the Computer Use configuration as bound to the
+ * frontend for the pane's enable toggle. It is the pane-editable view of the
+ * stored document (computeruse.Config): one field today, more only when the
+ * adapter grows knobs (design D1's "any adapter knobs" clause).
+ */
+export interface ComputerConfigView {
+    /**
+     * Enabled gates the whole lane: when false the daemon and adapter do not
+     * run and no agent is offered computer-use tools. The default is false —
+     * Computer Use is opt-in end to end (design D2).
+     */
+    "enabled": boolean;
+}
+
+/**
+ * ComputerDriverState is the vendored driver's acquisition state as the pane
+ * renders it (spec settings "Computer Use pane": a one-time download state
+ * with its verification outcome). The composition adapts the computeruse
+ * package's pin status into it — the service only passes it through.
+ */
+export interface ComputerDriverState {
+    /**
+     * State is one of the ComputerDriver* vocabulary values below.
+     */
+    "state": string;
+
+    /**
+     * Detail carries the verification failure reason when State is failed;
+     * empty otherwise.
+     */
+    "detail"?: string;
+}
+
+/**
+ * ComputerPermission is one OS permission the desktop driver needs, as the
+ * pane's permission card renders it: live granted state plus the Manage
+ * action's deep link into the matching system settings pane (spec settings
+ * "Computer Use pane").
+ */
+export interface ComputerPermission {
+    /**
+     * Name is the display name ("Accessibility", "Screen Recording").
+     */
+    "name": string;
+
+    /**
+     * Granted is the live preflight answer. Probing never raises a prompt
+     * (spec computer-use "Permission warm-up gate").
+     */
+    "granted": boolean;
+
+    /**
+     * ManageURL opens the matching system settings pane
+     * (x-apple.systempreferences:... on macOS; empty when the platform has
+     * no settings pane to open).
+     */
+    "manage_url": string;
+}
+
+/**
+ * ComputerStatus is the pane's status aggregate: everything the permission
+ * card, download state, and status line render in one bound read.
+ */
+export interface ComputerStatus {
+    /**
+     * Available reports whether this build offers the lane at all — false in
+     * server mode, where the pane presents the capability as unavailable
+     * (design D9) and the remaining fields stay at their zero values.
+     */
+    "available": boolean;
+
+    /**
+     * Enabled is the persisted toggle.
+     */
+    "enabled": boolean;
+
+    /**
+     * Status is the status line, one of the ComputerStatus* vocabulary
+     * values.
+     */
+    "status": string;
+
+    /**
+     * StatusDetail carries the failure reason when Status is failed; empty
+     * otherwise.
+     */
+    "status_detail"?: string;
+
+    /**
+     * Permissions lists each required OS permission with its live granted
+     * state and Manage deep link. Empty on platforms with no permission
+     * ceremony (design D9); never nil on desktop builds.
+     */
+    "permissions": ComputerPermission[] | null;
+
+    /**
+     * Driver is the vendored driver's acquisition state, passed through from
+     * the PinStatus hook.
+     */
+    "driver": ComputerDriverState;
+
+    /**
+     * Supervision is the live adapter supervision status string
+     * (mcp.ServerState.Status verbatim: connected / error / unknown).
+     */
+    "supervision": string;
 }
 
 /**
@@ -218,42 +327,42 @@ export interface ChromeProfileCandidate {
  * and is immutable after create.
  */
 export interface CreateAgentInput {
-  Name: string;
-  Slug: string;
+    "Name": string;
+    "Slug": string;
 
-  /**
-   * Description is the optional card summary. Avatar is the optional
-   * procedural-avatar config (the wizard's AvatarPicker output), stored
-   * verbatim as a JSON object; an empty map derives the face from the id.
-   */
-  Description: string;
-  Brief: string;
-  Avatar: { [_ in string]?: any } | null;
-  ProviderID: string;
-  Model: string;
+    /**
+     * Description is the optional card summary. Avatar is the optional
+     * procedural-avatar config (the wizard's AvatarPicker output), stored
+     * verbatim as a JSON object; an empty map derives the face from the id.
+     */
+    "Description": string;
+    "Brief": string;
+    "Avatar": { [_ in string]?: any } | null;
+    "ProviderID": string;
+    "Model": string;
 
-  /**
-   * Effort is the agent's default reasoning effort (spec agent-management
-   * "Edit agent configuration"): stored on the row and applied to turns
-   * whenever a session carries no effort override. Empty clears/inherit.
-   * Saved values are validated against the selected model's supported
-   * effort set — an unsupported effort is a validation error.
-   */
-  Effort: string;
-  Temperature: number;
-  MaxTokens: number;
-  ContextWindow: number;
-  Tools: string[] | null;
-  Skills: string[] | null;
-  MCPServers: string[] | null;
+    /**
+     * Effort is the agent's default reasoning effort (spec agent-management
+     * "Edit agent configuration"): stored on the row and applied to turns
+     * whenever a session carries no effort override. Empty clears/inherit.
+     * Saved values are validated against the selected model's supported
+     * effort set — an unsupported effort is a validation error.
+     */
+    "Effort": string;
+    "Temperature": number;
+    "MaxTokens": number;
+    "ContextWindow": number;
+    "Tools": string[] | null;
+    "Skills": string[] | null;
+    "MCPServers": string[] | null;
 
-  /**
-   * SubagentsEnabled is the dedicated subagents capability toggle (design
-   * D3). It is a pointer so "omitted" is distinguishable from an explicit
-   * false: nil (the wizard's default) means on — the same default the
-   * column carries (migration 000007's DEFAULT 1).
-   */
-  SubagentsEnabled: boolean | null;
+    /**
+     * SubagentsEnabled is the dedicated subagents capability toggle (design
+     * D3). It is a pointer so "omitted" is distinguishable from an explicit
+     * false: nil (the wizard's default) means on — the same default the
+     * column carries (migration 000007's DEFAULT 1).
+     */
+    "SubagentsEnabled": boolean | null;
 }
 
 /**
@@ -265,14 +374,14 @@ export interface CreateAgentInput {
  * skeleton is in place and what it was uploaded as.
  */
 export interface DocumentPresetEntry {
-  id: string;
-  name: string;
-  format: string;
-  config: string;
-  hasTemplate: boolean;
-  templateName?: string;
-  createdAt: string;
-  updatedAt: string;
+    "id": string;
+    "name": string;
+    "format": string;
+    "config": string;
+    "hasTemplate": boolean;
+    "templateName"?: string;
+    "createdAt": string;
+    "updatedAt": string;
 }
 
 /**
@@ -281,7 +390,7 @@ export interface DocumentPresetEntry {
  * gateway package's types stay out of the binding surface.
  */
 export interface GatewayStateEvent {
-  state: string;
+    "state": string;
 }
 
 /**
@@ -290,17 +399,17 @@ export interface GatewayStateEvent {
  * The on-disk path never crosses the boundary.
  */
 export interface GeneratedDocumentContent {
-  name: string;
+    "name": string;
 
-  /**
-   * SizeBytes is the document's size in bytes.
-   */
-  sizeBytes: number;
+    /**
+     * SizeBytes is the document's size in bytes.
+     */
+    "sizeBytes": number;
 
-  /**
-   * Data is the base64-encoded document content.
-   */
-  data: string;
+    /**
+     * Data is the base64-encoded document content.
+     */
+    "data": string;
 }
 
 /**
@@ -311,30 +420,30 @@ export interface GeneratedDocumentContent {
  * event name already carries.
  */
 export interface GroupEvent {
-  /**
-   * Kind is the update's kind — one of the GroupEventKind* values.
-   */
-  kind: string;
+    /**
+     * Kind is the update's kind — one of the GroupEventKind* values.
+     */
+    "kind": string;
 
-  /**
-   * MessageID and Seq name the appended transcript row
-   * (GroupEventKindMessageAppended only).
-   */
-  messageId?: string;
-  seq?: number;
+    /**
+     * MessageID and Seq name the appended transcript row
+     * (GroupEventKindMessageAppended only).
+     */
+    "messageId"?: string;
+    "seq"?: number;
 
-  /**
-   * Message carries the appended transcript row
-   * (GroupEventKindMessageAppended only), so an open transcript appends it
-   * without a refetch.
-   */
-  message?: store$0.AgentGroupMessage | null;
+    /**
+     * Message carries the appended transcript row
+     * (GroupEventKindMessageAppended only), so an open transcript appends it
+     * without a refetch.
+     */
+    "message"?: store$0.AgentGroupMessage | null;
 
-  /**
-   * TaskID names the task whose state changed (GroupEventKindTaskUpdated
-   * only).
-   */
-  taskId?: string;
+    /**
+     * TaskID names the task whose state changed (GroupEventKindTaskUpdated
+     * only).
+     */
+    "taskId"?: string;
 }
 
 /**
@@ -342,7 +451,8 @@ export interface GroupEvent {
  * fields: the change is list-wide from the surfaces' point of view, so they
  * simply refetch the group list (add-agent-groups design D9).
  */
-export interface GroupsChangedEvent {}
+export interface GroupsChangedEvent {
+}
 
 /**
  * HookTestResult is the outcome of one hook dry run: the handler's decision
@@ -351,13 +461,13 @@ export interface GroupsChangedEvent {}
  * or the script handler's captured console lines).
  */
 export interface HookTestResult {
-  Success: boolean;
-  Decision: string;
-  Reason: string;
-  Output: string;
-  Err: string;
-  ConsoleLines: string[] | null;
-  DurationMS: number;
+    "Success": boolean;
+    "Decision": string;
+    "Reason": string;
+    "Output": string;
+    "Err": string;
+    "ConsoleLines": string[] | null;
+    "DurationMS": number;
 }
 
 /**
@@ -367,62 +477,62 @@ export interface HookTestResult {
  * (design D2).
  */
 export interface IntegrationConnectInput {
-  /**
-   * Service is the catalog service id (e.g. "gitlab") naming the connect
-   * submission; required.
-   */
-  Service: string;
+    /**
+     * Service is the catalog service id (e.g. "gitlab") naming the connect
+     * submission; required.
+     */
+    "Service": string;
 
-  /**
-   * Endpoint is the instance URL — the catalog default or the user-edited
-   * template fill; required.
-   */
-  Endpoint: string;
+    /**
+     * Endpoint is the instance URL — the catalog default or the user-edited
+     * template fill; required.
+     */
+    "Endpoint": string;
 
-  /**
-   * AuthMethod is one of the IntegrationAuthMethod* kinds; required.
-   */
-  AuthMethod: string;
+    /**
+     * AuthMethod is one of the IntegrationAuthMethod* kinds; required.
+     */
+    "AuthMethod": string;
 
-  /**
-   * Credential is the token/API key, required for the token method and
-   * ignored otherwise. It is stored in the auth JSON, never in Headers
-   * (design D4).
-   */
-  Credential: string;
+    /**
+     * Credential is the token/API key, required for the token method and
+     * ignored otherwise. It is stored in the auth JSON, never in Headers
+     * (design D4).
+     */
+    "Credential": string;
 
-  /**
-   * ClientID and ClientSecret are the pre-registered confidential
-   * client's credentials, required for oauth_confidential.
-   */
-  ClientID: string;
-  ClientSecret: string;
+    /**
+     * ClientID and ClientSecret are the pre-registered confidential
+     * client's credentials, required for oauth_confidential.
+     */
+    "ClientID": string;
+    "ClientSecret": string;
 
-  /**
-   * ExtraAuthParams are extra query parameters appended to the authorize
-   * URL (e.g. Google's access_type=offline&prompt=consent).
-   */
-  ExtraAuthParams: { [_ in string]?: string } | null;
+    /**
+     * ExtraAuthParams are extra query parameters appended to the authorize
+     * URL (e.g. Google's access_type=offline&prompt=consent).
+     */
+    "ExtraAuthParams": { [_ in string]?: string } | null;
 
-  /**
-   * CredentialHeaderStyle is the catalog-declared header style for the
-   * token method (design D3): one of the MCPAuthHeaderStyle* values
-   * including the "custom:"/"header:" prefixed forms. Empty means bearer.
-   */
-  CredentialHeaderStyle: string;
+    /**
+     * CredentialHeaderStyle is the catalog-declared header style for the
+     * token method (design D3): one of the MCPAuthHeaderStyle* values
+     * including the "custom:"/"header:" prefixed forms. Empty means bearer.
+     */
+    "CredentialHeaderStyle": string;
 
-  /**
-   * Products, when non-empty, turns the input into a family connect
-   * (design D6): one tagged row per product id instead of a single row.
-   */
-  Products: string[] | null;
+    /**
+     * Products, when non-empty, turns the input into a family connect
+     * (design D6): one tagged row per product id instead of a single row.
+     */
+    "Products": string[] | null;
 
-  /**
-   * ProductEndpoints maps each family product id to its endpoint (design
-   * D6: products dial different hosts). Required for every product when
-   * Products is non-empty; Endpoint then only validates non-empty.
-   */
-  ProductEndpoints: { [_ in string]?: string } | null;
+    /**
+     * ProductEndpoints maps each family product id to its endpoint (design
+     * D6: products dial different hosts). Required for every product when
+     * Products is non-empty; Endpoint then only validates non-empty.
+     */
+    "ProductEndpoints": { [_ in string]?: string } | null;
 }
 
 /**
@@ -430,7 +540,8 @@ export interface IntegrationConnectInput {
  * no fields: the change is corpus-wide from the surfaces' point of view, so
  * they simply re-list (add-knowledge-corpus design D8).
  */
-export interface KnowledgeChangedEvent {}
+export interface KnowledgeChangedEvent {
+}
 
 /**
  * KnowledgeDocument is one knowledge document's bound view (add-knowledge-
@@ -438,16 +549,16 @@ export interface KnowledgeChangedEvent {}
  * bar's knowledge panel list, preview, and manage.
  */
 export interface KnowledgeDocument {
-  id: string;
-  filename: string;
-  mime: string;
-  size: number;
-  scope: string;
-  agentId: string;
-  agentSlug: string;
-  description: string;
-  source: string;
-  createdAt: string;
+    "id": string;
+    "filename": string;
+    "mime": string;
+    "size": number;
+    "scope": string;
+    "agentId": string;
+    "agentSlug": string;
+    "description": string;
+    "source": string;
+    "createdAt": string;
 }
 
 /**
@@ -455,77 +566,91 @@ export interface KnowledgeDocument {
  * carries the failure reason when OK is false.
  */
 export interface MCPOAuthCompletedEvent {
-  serverId: string;
-  ok: boolean;
-  error?: string;
+    "serverId": string;
+    "ok": boolean;
+    "error"?: string;
 }
 
 /**
- * MCPServerView is one MCP pane row: a stored server definition, or the
+ * MCPServerView is one MCP pane row: a stored server definition, or a
  * synthesized system-provided entry (rebrand-browser-use-system-mcp, spec
- * agent-mcp "System-provided server"). The MCPServer fields are the row's
- * stored view exactly as before; System distinguishes the app-provided
- * server, which has no store row behind it and no edit/remove affordances.
+ * agent-mcp "System-provided server"; add-computer-use design D2 generalizes
+ * the synthesis to the registry). The MCPServer fields are the row's stored
+ * view exactly as before; System distinguishes the app-provided servers,
+ * which have no store row behind them and no edit/remove affordances.
  */
 export interface MCPServerView {
-  ID: string;
-  Name: string;
-  Transport: string;
-  Command: string;
-  Args: string[] | null;
-  Env: { [_ in string]?: string } | null;
-  URL: string;
-  Headers: { [_ in string]?: string } | null;
+    "ID": string;
+    "Name": string;
+    "Transport": string;
+    "Command": string;
+    "Args": string[] | null;
+    "Env": { [_ in string]?: string } | null;
+    "URL": string;
+    "Headers": { [_ in string]?: string } | null;
 
-  /**
-   * Auth is the server's authentication settings (design D4); the zero
-   * value means static headers only.
-   */
-  Auth: store$0.MCPServerAuth;
+    /**
+     * Auth is the server's authentication settings (design D4); the zero
+     * value means static headers only.
+     */
+    "Auth": store$0.MCPServerAuth;
 
-  /**
-   * Service is the optional integration catalog tag; empty for raw MCP
-   * servers (add-integrations design D1: an integration is a tagged
-   * MCPServer row, not a separate entity).
-   */
-  Service: string;
+    /**
+     * Service is the optional integration catalog tag; empty for raw MCP
+     * servers (add-integrations design D1: an integration is a tagged
+     * MCPServer row, not a separate entity).
+     */
+    "Service": string;
 
-  /**
-   * CredentialSet and CredentialHint are computed/redacted views for
-   * listings (add-integrations design D4): only whether an integration
-   * credential exists and its last four characters. Plain row fields —
-   * never persisted (no column, never part of the auth JSON document);
-   * the store populates them on read.
-   */
-  CredentialSet: boolean;
-  CredentialHint: string;
-  Enabled: boolean;
-  Status: string;
-  StatusError: string;
-  ToolCount: number;
-  CreatedAt: string;
-  UpdatedAt: string;
+    /**
+     * CredentialSet and CredentialHint are computed/redacted views for
+     * listings (add-integrations design D4): only whether an integration
+     * credential exists and its last four characters. Plain row fields —
+     * never persisted (no column, never part of the auth JSON document);
+     * the store populates them on read.
+     */
+    "CredentialSet": boolean;
+    "CredentialHint": string;
 
-  /**
-   * System marks the app-provided browser-use server: always enabled,
-   * non-deletable, non-editable, its status fed by live supervision state.
-   */
-  system: boolean;
+    /**
+     * ClientSecretSet and ClientSecretHint are computed/redacted views like
+     * CredentialSet/CredentialHint above (fix-bridge-secret-redaction
+     * design D1): only whether the OAuth client secret — pre-registered or
+     * DCR-issued — exists and its last four characters. Plain row fields —
+     * never persisted (no column, never part of the auth JSON document);
+     * the settings service computes them at the redaction choke point, so
+     * they are empty on rows read straight from the store.
+     */
+    "ClientSecretSet": boolean;
+    "ClientSecretHint": string;
+    "Enabled": boolean;
+    "Status": string;
+    "StatusError": string;
+    "ToolCount": number;
+    "CreatedAt": string;
+    "UpdatedAt": string;
+
+    /**
+     * System marks an app-provided system server (browser-use, computer-use):
+     * always enabled, non-deletable, non-editable, its status fed by live
+     * supervision state.
+     */
+    "system": boolean;
 }
 
 /**
  * Metadata describes the running application.
  */
 export interface Metadata {
-  name: string;
-  version: string;
+    "name": string;
+    "version": string;
 
-  /**
-   * NativeDialogs reports whether this host can open native dialogs (the
-   * desktop build can; the server build cannot), so the frontend can hide
-   * host-dependent affordances such as Save As.
-   */
-  nativeDialogs: boolean;
+    /**
+     * NativeDialogs reports whether this host can open native dialogs (the
+     * desktop build can; the server build cannot), so the frontend can hide
+     * host-dependent affordances such as Save As.
+     */
+    "nativeDialogs": boolean;
 }
 
 /**
@@ -534,46 +659,57 @@ export interface Metadata {
  * render (design D2: the same DTO feeds both surfaces).
  */
 export interface ModelCapability {
-  ID: string;
+    "ID": string;
 
-  /**
-   * ContextWindow is the model's context limit in tokens; the default
-   * window for models outside the static catalog.
-   */
-  ContextWindow: number;
+    /**
+     * ContextWindow is the model's context limit in tokens; the default
+     * window for models outside the static catalog.
+     */
+    "ContextWindow": number;
 
-  /**
-   * Efforts are the model's reasoning-effort options in declared order:
-   * for a stored row, the row's declared values in declared order, or
-   * exactly ["high"] when the row declares none (design D3).
-   */
-  Efforts: string[] | null;
+    /**
+     * Efforts are the model's reasoning-effort options in declared order:
+     * for a stored row, the row's declared values in declared order, or
+     * exactly ["high"] when the row declares none (design D3).
+     */
+    "Efforts": string[] | null;
 
-  /**
-   * ImageInput, PDFInput, and VideoInput report the model's multimodal
-   * input support.
-   */
-  ImageInput: boolean;
-  PDFInput: boolean;
-  VideoInput: boolean;
+    /**
+     * ImageInput, PDFInput, and VideoInput report the model's multimodal
+     * input support.
+     */
+    "ImageInput": boolean;
+    "PDFInput": boolean;
+    "VideoInput": boolean;
 
-  /**
-   * PDFParts reports whether the provider family's connector can carry
-   * PDF file parts to the model in a user message; the composer renders
-   * the connector-gap warning from it (fix-pdf-attachment-carriage
-   * design D6). Derived from the provider type via the carriage matrix,
-   * never stored on the model row.
-   */
-  PDFParts: boolean;
+    /**
+     * PDFParts reports whether the provider family's connector can carry
+     * PDF file parts to the model in a user message; the composer renders
+     * the connector-gap warning from it (fix-pdf-attachment-carriage
+     * design D6). Derived from the provider type via the carriage matrix,
+     * never stored on the model row.
+     */
+    "PDFParts": boolean;
 
-  /**
-   * VideoParts reports whether the provider family's connector can carry
-   * video parts to the model in a user message; the same connector-gap
-   * warning covers a video part that will degrade (fix-pdf-attachment-
-   * carriage design D6). Derived from the provider type via the carriage
-   * matrix, never stored on the model row.
-   */
-  VideoParts: boolean;
+    /**
+     * VideoParts reports whether the provider family's connector can carry
+     * video parts to the model in a user message; the same connector-gap
+     * warning covers a video part that will degrade (fix-pdf-attachment-
+     * carriage design D6). Derived from the provider type via the carriage
+     * matrix, never stored on the model row.
+     */
+    "VideoParts": boolean;
+}
+
+/**
+ * NotificationOpenEvent is the payload of EventNotificationOpen. Kind
+ * mirrors the notifications engine's route kind — "session" or "group" — and
+ * ID names that session or group, not the notification
+ * (add-desktop-notifications design D5).
+ */
+export interface NotificationOpenEvent {
+    "kind": string;
+    "id": string;
 }
 
 /**
@@ -582,12 +718,12 @@ export interface ModelCapability {
  * are present: a failed or never-generated agent legitimately holds none.
  */
 export interface PromptDocuments {
-  Identity: string;
-  IdentityExists: boolean;
-  Soul: string;
-  SoulExists: boolean;
-  Bootstrap: string;
-  BootstrapExists: boolean;
+    "Identity": string;
+    "IdentityExists": boolean;
+    "Soul": string;
+    "SoulExists": boolean;
+    "Bootstrap": string;
+    "BootstrapExists": boolean;
 }
 
 /**
@@ -598,11 +734,11 @@ export interface PromptDocuments {
  * webview payload cannot unmarshal into time.Time).
  */
 export interface ProviderInput {
-  Type: string;
-  Name: string;
-  BaseURL: string;
-  APIKey: string;
-  Enabled: boolean;
+    "Type": string;
+    "Name": string;
+    "BaseURL": string;
+    "APIKey": string;
+    "Enabled": boolean;
 }
 
 /**
@@ -610,18 +746,18 @@ export interface ProviderInput {
  * It exposes no secrets.
  */
 export interface ProviderModelInput {
-  ModelID: string;
-  ContextWindow: number;
-  ImageInput: boolean;
-  PDFInput: boolean;
-  VideoInput: boolean;
+    "ModelID": string;
+    "ContextWindow": number;
+    "ImageInput": boolean;
+    "PDFInput": boolean;
+    "VideoInput": boolean;
 
-  /**
-   * Efforts are the declared reasoning efforts in order; free-form
-   * values; empty means undeclared (design D7).
-   */
-  Efforts: string[] | null;
-  Enabled: boolean;
+    /**
+     * Efforts are the declared reasoning efforts in order; free-form
+     * values; empty means undeclared (design D7).
+     */
+    "Efforts": string[] | null;
+    "Enabled": boolean;
 }
 
 /**
@@ -629,22 +765,22 @@ export interface ProviderModelInput {
  * It deliberately carries no API key or secrets (design D2).
  */
 export interface ProviderModelView {
-  ID: number;
-  ProviderID: string;
-  ModelID: string;
-  ContextWindow: number;
-  ImageInput: boolean;
-  PDFInput: boolean;
-  VideoInput: boolean;
+    "ID": number;
+    "ProviderID": string;
+    "ModelID": string;
+    "ContextWindow": number;
+    "ImageInput": boolean;
+    "PDFInput": boolean;
+    "VideoInput": boolean;
 
-  /**
-   * Efforts is the row's declared reasoning-effort set in declared
-   * order; empty means undeclared (design D7).
-   */
-  Efforts: string[] | null;
-  Enabled: boolean;
-  CreatedAt: string;
-  UpdatedAt: string;
+    /**
+     * Efforts is the row's declared reasoning-effort set in declared
+     * order; empty means undeclared (design D7).
+     */
+    "Efforts": string[] | null;
+    "Enabled": boolean;
+    "CreatedAt": string;
+    "UpdatedAt": string;
 }
 
 /**
@@ -654,15 +790,15 @@ export interface ProviderModelView {
  * is set and its non-secret hint.
  */
 export interface ProviderView {
-  ID: string;
-  Type: string;
-  Name: string;
-  BaseURL: string;
-  Enabled: boolean;
-  KeySet: boolean;
-  KeyHint: string;
-  CreatedAt: string;
-  UpdatedAt: string;
+    "ID": string;
+    "Type": string;
+    "Name": string;
+    "BaseURL": string;
+    "Enabled": boolean;
+    "KeySet": boolean;
+    "KeyHint": string;
+    "CreatedAt": string;
+    "UpdatedAt": string;
 }
 
 /**
@@ -671,35 +807,35 @@ export interface ProviderView {
  * change are empty strings (add-scheduler design D10).
  */
 export interface SchedulesChangedEvent {
-  scheduleId: string;
-  sessionId: string;
-  agentId: string;
+    "scheduleId": string;
+    "sessionId": string;
+    "agentId": string;
 }
 
 /**
  * ToolEntry is one built-in tool as the settings surface renders it.
  */
 export interface ToolEntry {
-  Name: string;
+    "Name": string;
 
-  /**
-   * DisplayName is the Title Case label the row renders; Name stays the
-   * gate key the toggles address.
-   */
-  DisplayName: string;
+    /**
+     * DisplayName is the Title Case label the row renders; Name stays the
+     * gate key the toggles address.
+     */
+    "DisplayName": string;
 
-  /**
-   * IconKey names a frontend kit glyph; unknown keys render a neutral
-   * plug client-side.
-   */
-  IconKey: string;
-  Description: string;
+    /**
+     * IconKey names a frontend kit glyph; unknown keys render a neutral
+     * plug client-side.
+     */
+    "IconKey": string;
+    "Description": string;
 
-  /**
-   * Enabled is the global toggle; a tool with no stored state defaults
-   * to enabled.
-   */
-  Enabled: boolean;
+    /**
+     * Enabled is the global toggle; a tool with no stored state defaults
+     * to enabled.
+     */
+    "Enabled": boolean;
 }
 
 /**
@@ -708,8 +844,8 @@ export interface ToolEntry {
  * TurnID identifies that in-flight turn for re-adoption by the frontend.
  */
 export interface TurnStateResult {
-  busy: boolean;
-  turn_id: string;
+    "busy": boolean;
+    "turn_id": string;
 }
 
 /**
@@ -719,8 +855,8 @@ export interface TurnStateResult {
  * outcome (add-grouped-session-rail design D2).
  */
 export interface TurnsChangedEvent {
-  sessionId: string;
-  busy: boolean;
+    "sessionId": string;
+    "busy": boolean;
 }
 
 /**
@@ -730,16 +866,16 @@ export interface TurnsChangedEvent {
  * RevealVaultLogin only.
  */
 export interface VaultLogin {
-  id: string;
-  name: string;
-  username: string;
-  origin: string;
+    "id": string;
+    "name": string;
+    "username": string;
+    "origin": string;
 
-  /**
-   * AddedBy records who handed the secret over (the agent name, or the
-   * user through settings).
-   */
-  added_by: string;
+    /**
+     * AddedBy records who handed the secret over (the agent name, or the
+     * user through settings).
+     */
+    "added_by": string;
 }
 
 /**
@@ -749,59 +885,122 @@ export interface VaultLogin {
  * Go error; the error is reserved for service and store failures.
  */
 export interface VerifyResult {
-  OK: boolean;
-  Detail: string;
+    "OK": boolean;
+    "Detail": string;
 }
 
 /**
  * WebSearchChainEntry is one ordered entry of the web_search failover chain,
- * as bound to the frontend. The JSON field names match the runtime's
- * tools.WebSearchChainEntry — this is the same document, surfaced for editing.
+ * as bound to the frontend. The id/name/provider/base_url JSON field names
+ * match the runtime's tools.WebSearchChainEntry — the persisted document —
+ * but this is the redacted read shape: a chain read never returns an entry's
+ * API key, only whether one is set and its non-secret hint.
  */
 export interface WebSearchChainEntry {
-  /**
-   * ID is the stable identifier assigned on first persist; edits and
-   * reorders carry it unchanged.
-   */
-  id: string;
+    /**
+     * ID is the stable identifier assigned on first persist; edits and
+     * reorders carry it unchanged, and SaveWebSearchConfig uses it to resolve
+     * a blank submitted key to the stored credential.
+     */
+    "id": string;
 
-  /**
-   * Name labels the entry in transcripts and errors; empty falls back to
-   * Provider at runtime.
-   */
-  name: string;
+    /**
+     * Name labels the entry in transcripts and errors; empty falls back to
+     * Provider at runtime.
+     */
+    "name": string;
 
-  /**
-   * Provider is one of the catalog provider identifiers.
-   */
-  provider: string;
+    /**
+     * Provider is one of the catalog provider identifiers.
+     */
+    "provider": string;
 
-  /**
-   * APIKey is the credential for api_key-kind providers.
-   */
-  api_key?: string;
+    /**
+     * BaseURL is the credential for base_url-kind providers (SearXNG). An
+     * instance URL is not a secret, so it round-trips.
+     */
+    "base_url"?: string;
 
-  /**
-   * BaseURL is the credential for base_url-kind providers (SearXNG).
-   */
-  base_url?: string;
+    /**
+     * KeySet reports whether the stored entry carries an API key.
+     */
+    "KeySet": boolean;
+
+    /**
+     * KeyHint is the key's last 4 runes; empty when no key is stored.
+     */
+    "KeyHint": string;
 }
 
 /**
- * WebSearchConfig is the persisted web_search chain configuration, as bound
- * to the frontend for the Tools pane's chain editor.
+ * WebSearchChainEntryInput is the write shape of one chain entry, as bound to
+ * the frontend. The JSON field names match the runtime document, so the
+ * pane's payload is unchanged. The API key is write-only: a blank key keeps
+ * the stored credential for an entry carrying its stable ID, a non-blank key
+ * replaces it — the key is never handed back out on a read.
+ */
+export interface WebSearchChainEntryInput {
+    /**
+     * ID is the stable identifier of an existing entry; empty on a new
+     * entry, which must carry its credential.
+     */
+    "id": string;
+
+    /**
+     * Name labels the entry in transcripts and errors; empty falls back to
+     * Provider at runtime.
+     */
+    "name": string;
+
+    /**
+     * Provider is one of the catalog provider identifiers.
+     */
+    "provider": string;
+
+    /**
+     * APIKey is the credential for api_key-kind providers; blank keeps the
+     * stored key.
+     */
+    "api_key"?: string;
+
+    /**
+     * BaseURL is the credential for base_url-kind providers (SearXNG).
+     */
+    "base_url"?: string;
+}
+
+/**
+ * WebSearchConfig is the read shape of the persisted web_search chain
+ * configuration, as bound to the frontend for the Tools pane's chain editor.
  */
 export interface WebSearchConfig {
-  /**
-   * Entries is the ordered provider chain; lower indexes try first.
-   */
-  entries: WebSearchChainEntry[] | null;
+    /**
+     * Entries is the ordered provider chain; lower indexes try first.
+     */
+    "entries": WebSearchChainEntry[] | null;
 
-  /**
-   * RequestTimeoutSeconds bounds each provider attempt; 0 means the
-   * runtime default.
-   */
-  request_timeout_seconds?: number;
+    /**
+     * RequestTimeoutSeconds bounds each provider attempt; 0 means the
+     * runtime default.
+     */
+    "request_timeout_seconds"?: number;
+}
+
+/**
+ * WebSearchConfigInput is the write shape of the web_search chain
+ * configuration, as bound to the frontend for the Tools pane's chain editor.
+ */
+export interface WebSearchConfigInput {
+    /**
+     * Entries is the ordered provider chain; lower indexes try first.
+     */
+    "entries": WebSearchChainEntryInput[] | null;
+
+    /**
+     * RequestTimeoutSeconds bounds each provider attempt; 0 means the
+     * runtime default.
+     */
+    "request_timeout_seconds"?: number;
 }
 
 /**
@@ -810,29 +1009,29 @@ export interface WebSearchConfig {
  * the credential kind the provider requires.
  */
 export interface WebSearchProviderInfo {
-  id: string;
-  label: string;
-  credential: string;
+    "id": string;
+    "label": string;
+    "credential": string;
 }
 
 /**
  * WorkspaceEntry is one listed workspace child (design D8).
  */
 export interface WorkspaceEntry {
-  /**
-   * Name is the entry's base name inside the listed directory.
-   */
-  name: string;
+    /**
+     * Name is the entry's base name inside the listed directory.
+     */
+    "name": string;
 
-  /**
-   * Dir reports whether the entry is a directory.
-   */
-  dir: boolean;
+    /**
+     * Dir reports whether the entry is a directory.
+     */
+    "dir": boolean;
 
-  /**
-   * Size is the file's byte size (0 for directories).
-   */
-  size: number;
+    /**
+     * Size is the file's byte size (0 for directories).
+     */
+    "size": number;
 }
 
 /**
@@ -841,21 +1040,21 @@ export interface WorkspaceEntry {
  * bytes. The on-disk path never crosses the boundary.
  */
 export interface WorkspaceFileBinaryContent {
-  /**
-   * Mime is the content type the preview renders by; only `.pdf` is
-   * distinguished — everything else is application/octet-stream.
-   */
-  mime: string;
+    /**
+     * Mime is the content type the preview renders by; only `.pdf` is
+     * distinguished — everything else is application/octet-stream.
+     */
+    "mime": string;
 
-  /**
-   * SizeBytes is the file's size in bytes.
-   */
-  sizeBytes: number;
+    /**
+     * SizeBytes is the file's size in bytes.
+     */
+    "sizeBytes": number;
 
-  /**
-   * Data is the base64-encoded file content.
-   */
-  data: string;
+    /**
+     * Data is the base64-encoded file content.
+     */
+    "data": string;
 }
 
 /**
@@ -863,6 +1062,6 @@ export interface WorkspaceFileBinaryContent {
  * skill's directory name plus the description parsed from its SKILL.md.
  */
 export interface WorkspaceSkill {
-  Name: string;
-  Description: string;
+    "Name": string;
+    "Description": string;
 }

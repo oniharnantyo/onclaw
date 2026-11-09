@@ -29,22 +29,28 @@ import type { MCPOAuthCompletedEvent } from "../../../lib/events";
 import { useNavStore } from "../../../stores/nav";
 import type { McpDialogState, SettingsPaneConfig } from "../types";
 
-/** The synthesized system server's id (design D6): the built-in Browser Use
- * stdio server, always enabled, non-editable and non-deletable. */
-const SYSTEM_SERVER_ID = "browser-use";
+/** The settings pane each system server's "open settings" action asks
+ * settings to open, keyed by the server id from the backend's registry
+ * (spec agent-mcp "System-provided server", scenario "System row cannot be
+ * removed or edited": the action navigates to that server's settings pane).
+ * A system server without an entry — a registration whose pane ships later —
+ * renders no open-settings action until its key lands. */
+const SYSTEM_SERVER_PANE_KEYS = {
+  "browser-use": "browseruse",
+  "computer-use": "computeruse",
+} satisfies Record<string, string>;
 
-/** The Browser Use pane key the system row's "open settings" action asks
- * settings to open. */
-const BROWSER_USE_PANE_KEY = "browseruse";
-
-/** Whether a listing row is the synthesized system server: keyed on the id
- * primarily, with the backend's System flag accepted as well (the view
- * shape carries it; the id check keeps older shapes working). */
+/** Whether a listing row is a synthesized system server (add-computer-use
+ * design D2, spec agent-mcp "System server registry"): keyed on the
+ * backend's System marker — the service list stamps every synthesized row
+ * with MCPServerView.system (the generated binding field, JSON tag
+ * `json:"system"`) — never on a hardcoded id, so a newly registered system
+ * server renders with the system semantics without pane changes. */
 function isSystemRow(server: MCPServer): boolean {
-  return (
-    server.ID === SYSTEM_SERVER_ID ||
-    (server as MCPServer & { System?: boolean }).System === true
-  );
+  // SAFETY: the pane's rows ride the store MCPServer shape, which predates
+  // the view's system marker; the backend adds it on every synthesized row,
+  // and an unstamped row (all user rows) reads as undefined here.
+  return (server as MCPServer & { system?: boolean }).system === true;
 }
 
 /** Accent-tinted badge marking the built-in System row (design D11). */
@@ -70,6 +76,8 @@ function emptyServer(): MCPServer {
     Service: "",
     CredentialSet: false,
     CredentialHint: "",
+    ClientSecretSet: false,
+    ClientSecretHint: "",
     Enabled: true,
     Status: "",
     StatusError: "",
@@ -481,6 +489,14 @@ export default function McpPane(_props: {
           {servers.map((server: MCPServer) => {
             const system = isSystemRow(server);
 
+            // SAFETY: a system row's id comes from the backend's registry;
+            // an id outside the map has no pane mapping yet, and undefined
+            // is the intended "render no open-settings action" state.
+            const paneKey =
+              SYSTEM_SERVER_PANE_KEYS[
+                server.ID as keyof typeof SYSTEM_SERVER_PANE_KEYS
+              ];
+
             return (
               <SettingsRow
                 key={server.ID}
@@ -554,23 +570,24 @@ export default function McpPane(_props: {
                       // System row semantics (design D11, spec agent-mcp
                       // "System-provided server"): always enabled, so no
                       // toggle, and no edit or remove affordances — the
-                      // service rejects mutations on the system id anyway.
-                      // Refresh stays (the row is probed on demand like any
-                      // user row), next to the pane deep-link.
+                      // service rejects mutations on any registered system
+                      // id anyway. Refresh stays (the row is probed on
+                      // demand like any user row), next to the pane
+                      // deep-link when this server's pane mapping exists.
                       <>
-                        <Button
-                          variant="ghost"
-                          size="sm"
-                          data-testid={`mcp-open-settings-${server.ID}`}
-                          onClick={(): void =>
-                            useNavStore
-                              .getState()
-                              .openSettingsPane(BROWSER_USE_PANE_KEY)
-                          }
-                        >
-                          <Icon name="cog" size={14} />
-                          Open settings
-                        </Button>
+                        {paneKey && (
+                          <Button
+                            variant="ghost"
+                            size="sm"
+                            data-testid={`mcp-open-settings-${server.ID}`}
+                            onClick={(): void =>
+                              useNavStore.getState().openSettingsPane(paneKey)
+                            }
+                          >
+                            <Icon name="cog" size={14} />
+                            Open settings
+                          </Button>
+                        )}
                         <IconButton
                           label={`Refresh ${server.Name}`}
                           size="sm"

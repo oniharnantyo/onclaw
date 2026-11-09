@@ -349,3 +349,36 @@ func TestManager_SessionDirs(t *testing.T) {
 	require.NoDirExists(t, filepath.Join(root, "scout", DirSessions, "../../evil"),
 		"a refused session id never names a directory")
 }
+
+// TestManager_BrowserProfileDir pins the agent-level browser identity
+// directory (add-per-agent-browser-profiles design D2): BrowserProfileDir
+// mkdir -p's browser-profile/ inside the workspace at the private dir
+// mode, is idempotent, and refuses an invalid slug before any filesystem
+// call — nothing lands for a refused slug.
+func TestManager_BrowserProfileDir(t *testing.T) {
+	m := NewManager(t.TempDir())
+
+	profile, err := m.BrowserProfileDir("scout")
+	require.NoError(t, err)
+	require.DirExists(t, profile, "BrowserProfileDir must create the directory on demand")
+	require.Equal(t, filepath.Join(m.Root(), "scout", DirBrowserProfile), profile)
+	info, err := os.Stat(profile)
+	require.NoError(t, err)
+	require.Equal(t, os.FileMode(0700), info.Mode().Perm(), "the profile dir stays private to the user")
+
+	// Idempotent: a second call succeeds and returns the same path.
+	again, err := m.BrowserProfileDir("scout")
+	require.NoError(t, err)
+	require.Equal(t, profile, again)
+
+	// An invalid slug fails exactly like Dir/Create do — before any
+	// filesystem call, so nothing new appears under the root.
+	_, err = m.BrowserProfileDir("../escape")
+	require.Error(t, err)
+	_, err = m.BrowserProfileDir("")
+	require.Error(t, err)
+	entries, err := os.ReadDir(m.Root())
+	require.NoError(t, err)
+	require.Len(t, entries, 1, "an invalid slug must not create anything on disk")
+	require.Equal(t, "scout", entries[0].Name(), "only the valid slug's workspace may exist")
+}

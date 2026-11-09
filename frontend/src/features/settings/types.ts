@@ -17,10 +17,12 @@ export type PaneKey =
   | "integrations"
   | "channels"
   | "browseruse"
+  | "computeruse"
   | "skills"
   | "tools"
   | "hooks"
-  | "mcp";
+  | "mcp"
+  | "notifications";
 
 /**
  * One static sidebar entry of the settings nav: which pane it opens plus
@@ -40,9 +42,9 @@ export interface SettingsPaneConfig {
  * under it, in nav order.
  */
 export interface SettingsPaneSection {
-  /** Section id: "models" | "integrations" | "automation". */
+  /** Section id: "models" | "integrations" | "automation" | "app". */
   id: string;
-  /** Uppercase section label: MODELS | INTEGRATIONS | AUTOMATION. */
+  /** Uppercase section label: MODELS | INTEGRATIONS | AUTOMATION | APP. */
   label: string;
   /** The panes in the section, in nav order. */
   panes: SettingsPaneConfig[];

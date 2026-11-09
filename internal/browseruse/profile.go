@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"path/filepath"
 	"regexp"
+	"strings"
 )
 
 // DefaultBrowserProfile is the profile used when neither the call nor the
@@ -24,9 +25,20 @@ func ValidateBrowserProfile(name string) error {
 	return nil
 }
 
-// ProfileDir maps a validated profile name to its persistent user-data
-// directory under browserDir.
+// ProfileDir maps a profile to its persistent user-data directory. A
+// validated profile name maps under browserDir; an absolute-path name is a
+// bound profile directory (the host-stamped sessions key, design D3 of
+// add-per-agent-browser-profiles) and passes through cleaned and
+// traversal-checked — so createSession, profileExists, and relaunchHeaded
+// work on bound keys unchanged. Named keys keep the name contract.
 func ProfileDir(browserDir, name string) (string, error) {
+	if filepath.IsAbs(name) {
+		cleaned := filepath.Clean(name)
+		if !filepath.IsAbs(cleaned) || strings.Contains(cleaned, "..") {
+			return "", fmt.Errorf("browser: invalid profile dir %q", name)
+		}
+		return cleaned, nil
+	}
 	if err := ValidateBrowserProfile(name); err != nil {
 		return "", err
 	}

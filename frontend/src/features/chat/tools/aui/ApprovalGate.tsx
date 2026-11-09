@@ -27,6 +27,30 @@ function isTextResult(value: unknown): value is string {
   return typeof value === "string";
 }
 
+/** The gated computer-use tool names (add-computer-use design D7). The
+ * backend synthesizes a computer-use approval's payload as
+ * `<tool> <target>` — "kill_app Safari", "type E12", "write_clipboard
+ * clipboard" — so the payload's first word names the requested action; the
+ * shell gate's payload is the raw command, and a dangerous shell command
+ * whose first word is one of these tool names is not a shape the shell
+ * gate's safety patterns park on. */
+const COMPUTER_USE_GATED_TOOLS = new Set([
+  "kill_app",
+  "write_clipboard",
+  "type",
+  "set_value",
+]);
+
+/** The computer-use action one approval payload names, when it names one:
+ * the first word of the synthesized payload, or null for anything else (a
+ * shell command). */
+function computerUseActionOf(command: string): string | null {
+  const separator = command.indexOf(" ");
+  if (separator <= 0) return null;
+  const action = command.slice(0, separator);
+  return COMPUTER_USE_GATED_TOOLS.has(action) ? action : null;
+}
+
 /** The receipt the gate renders: the ApprovalCard state plus its status
  * wording when it is not the element's default. */
 interface GateReceipt {
@@ -82,6 +106,10 @@ export function ApprovalGate({
   const resultText = isTextResult(part.result) ? part.result : "";
   const { state, statusLabel } = gateState(part);
   const pending = state === "request";
+  // A computer-use approval's payload already names the requested action and
+  // its target (the mono field renders it verbatim); the card words itself
+  // as a desktop action rather than a shell command.
+  const desktopAction = computerUseActionOf(command) !== null;
 
   const respond = (approved: boolean): void => {
     if (submitting) return;
@@ -109,10 +137,18 @@ export function ApprovalGate({
     >
       <ApprovalCard
         state={state}
-        title={pending ? "Approval required" : "Command approval"}
+        title={
+          desktopAction
+            ? "Desktop action approval"
+            : pending
+              ? "Approval required"
+              : "Command approval"
+        }
         subtitle={
           pending
-            ? "The agent paused before running this command"
+            ? desktopAction
+              ? "The agent paused before this desktop action"
+              : "The agent paused before running this command"
             : "The decision has been recorded"
         }
         command={command}

@@ -2,6 +2,7 @@ package services
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"net/http"
@@ -590,7 +591,9 @@ func TestConnectIntegrationFamilyCreatesProductRows(t *testing.T) {
 		require.Equal(t, fx.URL+"/"+service, row.URL, "each product dials its own endpoint")
 		require.Equal(t, store.MCPAuthModeOAuth, row.Auth.Mode)
 		require.Equal(t, "google-client", row.Auth.ClientID, "the family's shared client is on every product row")
-		require.Equal(t, "google-secret", row.Auth.ClientSecret)
+		require.Empty(t, row.Auth.ClientSecret, "the listing is redacted (fix-bridge-secret-redaction)")
+		require.True(t, row.ClientSecretSet)
+		require.Equal(t, "cret", row.ClientSecretHint)
 		require.Equal(t, extras, row.Auth.ExtraAuthParams, "ExtraAuthParams round-trips through the store")
 		require.Equal(t, mcp.StatusAuthRequired, row.Status, "each product is probed into its own state")
 	}
@@ -746,4 +749,260 @@ func TestConnectIntegrationBlankCredentialFreshConnectErrors(t *testing.T) {
 		AuthMethod: IntegrationAuthMethodToken,
 	})
 	require.ErrorContains(t, err, "token method requires a credential")
+}
+
+// ---------------------------------------------------------------------------
+// Client-secret redaction (fix-bridge-secret-redaction tasks 1.4/1.5, design
+// D1/D2, spec integrations "Client secret never round-trips" and "Edit
+// preserves the stored client secret").
+// ---------------------------------------------------------------------------
+
+// clientSecretFixture is one seeded secret-carrying row for the redaction
+// tests: the service under test, its raw store, the row id, the secret as the
+// raw store row holds it, the last-four hint the reads may expose, and the
+// connect-sheet resubmission that edits the row in place (blank secret — what
+// a redacted read round-trips).
+type clientSecretFixture struct {
+	svc        *SettingsService
+	fs         *fake.Store
+	id         string
+	stored     string
+	hint       string
+	connectRes IntegrationConnectInput
+}
+
+// clientSecretRedactionCase is one seeded way a client secret lands on a row.
+type clientSecretRedactionCase struct {
+	name string
+	seed func(t *testing.T) clientSecretFixture
+}
+
+// clientSecretRedactionCases enumerates the two ways a client secret lands on
+// a row (fix-bridge-secret-redaction task 1.4): a pre-registered confidential
+// client connected through the sheet, and a DCR-issued secret minted by the
+// authorize flow (settings_mcp_oauth.go persists the registration before the
+// browser opens). Each seed runs against its own store and service.
+func clientSecretRedactionCases(fx *oauthFlowFixture) []clientSecretRedactionCase {
+	return []clientSecretRedactionCase{
+		{
+			name: "pre-registered confidential client",
+			seed: func(t *testing.T) clientSecretFixture {
+				t.Helper()
+				ctx := context.Background()
+				fs := fake.New()
+				svc := NewSettingsService(fs)
+				connected, err := svc.ConnectIntegration(ctx, IntegrationConnectInput{
+					Service:      "slack",
+					Endpoint:     fx.URL + "/mcp",
+					AuthMethod:   IntegrationAuthMethodConfidential,
+					ClientID:     "console-client",
+					ClientSecret: "console-secret-abc9",
+				})
+				require.NoError(t, err)
+				return clientSecretFixture{
+					svc:    svc,
+					fs:     fs,
+					id:     connected.ID,
+					stored: "console-secret-abc9",
+					hint:   "abc9",
+					connectRes: IntegrationConnectInput{
+						Service:      "slack",
+						Endpoint:     fx.URL + "/mcp",
+						AuthMethod:   IntegrationAuthMethodConfidential,
+						ClientID:     "console-client",
+						ClientSecret: "", // the edit sheet round-trips no secret.
+					},
+				}
+			},
+		},
+		{
+			name: "dcr-issued client secret",
+			seed: func(t *testing.T) clientSecretFixture {
+				t.Helper()
+				ctx := context.Background()
+				fs := fake.New()
+				emitter := &recordingEmitter{}
+				opener := &recordingOpener{}
+				svc := NewSettingsService(fs, WithEmitter(emitter), WithURLOpener(opener))
+				created, err := svc.CreateMCPServer(ctx, oauthHTTPServerRow("linear", fx.URL+"/mcp"))
+				require.NoError(t, err)
+				// Tag the row so a later connect edits it in place.
+				created.Service = "linear"
+				created.Auth.RedirectURI = freeCallbackURI(t)
+				require.NoError(t, fs.MCPServers().Update(ctx, &created))
+
+				// The authorize flow mints and persists the DCR secret.
+				require.NoError(t, svc.AuthorizeMCPServer(ctx, created.ID))
+				stored, err := fs.MCPServers().ByID(ctx, created.ID)
+				require.NoError(t, err)
+				finishAuthorization(t, opener, stored.Auth.RedirectURI)
+				require.True(t, awaitOAuthCompleted(t, emitter, len(emitter.recorded())).OK)
+				return clientSecretFixture{
+					svc:    svc,
+					fs:     fs,
+					id:     created.ID,
+					stored: "secret-client-1",
+					hint:   "nt-1",
+					connectRes: IntegrationConnectInput{
+						Service:    "linear",
+						Endpoint:   fx.URL + "/mcp",
+						AuthMethod: IntegrationAuthMethodDCR,
+					},
+				}
+			},
+		},
+	}
+}
+
+// TestMCPServerReadsRedactClientSecret pins the client-secret half of the
+// redaction contract across every read path — MCPServer, MCPServers, the
+// UpdateMCPServer return, ProbeMCPServer, ConnectIntegration, and
+// DisconnectMCPServer — for both a pre-registered confidential client and a
+// DCR-issued secret: each read returns Auth.ClientSecret == "" plus only the
+// key-set state and the last-four hint, whatever created the definition. A
+// blank-secret edit — everything a redacted read can resubmit — preserves the
+// stored secret on the store row; a non-blank one replaces it (design D2).
+func TestMCPServerReadsRedactClientSecret(t *testing.T) {
+	ctx := context.Background()
+	fx := newOAuthFlowFixture(t)
+
+	for _, tc := range clientSecretRedactionCases(fx) {
+		t.Run(tc.name, func(t *testing.T) {
+			want := tc.seed(t)
+
+			assertRedacted := func(label string, row store.MCPServer) {
+				t.Helper()
+				require.Empty(t, row.Auth.ClientSecret, "%s: the client secret must not cross the read", label)
+				require.True(t, row.ClientSecretSet, "%s: the key-set state survives the redaction", label)
+				require.Equal(t, want.hint, row.ClientSecretHint, "%s: the last-four hint", label)
+			}
+			assertStored := func(label string) {
+				t.Helper()
+				stored, err := want.fs.MCPServers().ByID(ctx, want.id)
+				require.NoError(t, err)
+				require.Equal(t, want.stored, stored.Auth.ClientSecret, "%s: the store row keeps the secret", label)
+			}
+
+			read, err := want.svc.MCPServer(ctx, want.id)
+			require.NoError(t, err)
+			assertRedacted("MCPServer", read)
+
+			listed, err := want.svc.MCPServers(ctx)
+			require.NoError(t, err)
+			var row store.MCPServer
+			for _, view := range listed {
+				if view.ID == want.id {
+					row = view.MCPServer
+				}
+			}
+			require.Equal(t, want.id, row.ID, "the row is in the listing")
+			assertRedacted("MCPServers", row)
+
+			// The blank-secret edit returns a redacted row and preserves the
+			// stored secret — against the store row, not just the view.
+			read.Name = read.Name + "-edited"
+			updated, err := want.svc.UpdateMCPServer(ctx, read)
+			require.NoError(t, err)
+			assertRedacted("UpdateMCPServer return", updated)
+			assertStored("blank-secret update")
+
+			probed, err := want.svc.ProbeMCPServer(ctx, want.id)
+			require.NoError(t, err)
+			assertRedacted("ProbeMCPServer", probed.MCPServer)
+
+			connected, err := want.svc.ConnectIntegration(ctx, want.connectRes)
+			require.NoError(t, err)
+			assertRedacted("ConnectIntegration", connected)
+			assertStored("connect-sheet edit")
+
+			disconnected, err := want.svc.DisconnectMCPServer(ctx, want.id)
+			require.NoError(t, err)
+			assertRedacted("DisconnectMCPServer", disconnected)
+			assertStored("disconnect")
+
+			// A non-blank client secret replaces the stored one.
+			read, err = want.svc.MCPServer(ctx, want.id)
+			require.NoError(t, err)
+			read.Auth.ClientSecret = "rotated-secret-zz42"
+			_, err = want.svc.UpdateMCPServer(ctx, read)
+			require.NoError(t, err)
+			stored, err := want.fs.MCPServers().ByID(ctx, want.id)
+			require.NoError(t, err)
+			require.Equal(t, "rotated-secret-zz42", stored.Auth.ClientSecret, "a non-blank secret replaces the stored one")
+		})
+	}
+}
+
+// TestMCPServerSecretRedactionGuard is the loud gate (fix-bridge-secret-
+// redaction task 1.5): the JSON marshal of every read-path return — what
+// actually crosses the bridge to the frontend — carries no non-empty
+// client_secret value, so a future read method that forgets the
+// redactServerSecrets choke point fails here before it can leak.
+func TestMCPServerSecretRedactionGuard(t *testing.T) {
+	ctx := context.Background()
+	fx := newOAuthFlowFixture(t)
+
+	for _, tc := range clientSecretRedactionCases(fx) {
+		t.Run(tc.name, func(t *testing.T) {
+			want := tc.seed(t)
+			check := func(label string, payload any) {
+				t.Helper()
+				data, err := json.Marshal(payload)
+				require.NoError(t, err)
+				assertNoClientSecretJSON(t, label, data)
+			}
+
+			read, err := want.svc.MCPServer(ctx, want.id)
+			require.NoError(t, err)
+			check("MCPServer", read)
+
+			listed, err := want.svc.MCPServers(ctx)
+			require.NoError(t, err)
+			check("MCPServers", listed)
+
+			read.Name = read.Name + "-edited"
+			updated, err := want.svc.UpdateMCPServer(ctx, read)
+			require.NoError(t, err)
+			check("UpdateMCPServer", updated)
+
+			probed, err := want.svc.ProbeMCPServer(ctx, want.id)
+			require.NoError(t, err)
+			check("ProbeMCPServer", probed)
+
+			connected, err := want.svc.ConnectIntegration(ctx, want.connectRes)
+			require.NoError(t, err)
+			check("ConnectIntegration", connected)
+
+			disconnected, err := want.svc.DisconnectMCPServer(ctx, want.id)
+			require.NoError(t, err)
+			check("DisconnectMCPServer", disconnected)
+		})
+	}
+}
+
+// assertNoClientSecretJSON fails when the marshaled read payload carries a
+// non-empty client_secret value anywhere in its JSON. An empty value is no
+// leak; a present-but-empty key is what the redacted reads produce.
+func assertNoClientSecretJSON(t *testing.T, label string, data []byte) {
+	t.Helper()
+	var decoded any
+	require.NoError(t, json.Unmarshal(data, &decoded), "%s: unmarshalable read payload", label)
+	var walk func(path string, node any)
+	walk = func(path string, node any) {
+		switch value := node.(type) {
+		case map[string]any:
+			for key, child := range value {
+				if key == "client_secret" {
+					require.Empty(t, child, "%s: %s carries a non-empty client_secret across the bridge", label, path)
+					continue
+				}
+				walk(path+"/"+key, child)
+			}
+		case []any:
+			for i, child := range value {
+				walk(fmt.Sprintf("%s[%d]", path, i), child)
+			}
+		}
+	}
+	walk(label, decoded)
 }

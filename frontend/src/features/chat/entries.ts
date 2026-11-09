@@ -42,6 +42,12 @@
  *   typed value rides no event, only client.resolveInput's argument.
  * - user_message payloads carry attachment metadata (task 5.5, design D5):
  *   the minted user entry keeps it for the transcript renderer.
+ * - stream_sync (enhance-resumable-streams design D7) is the composite
+ *   catch-up snapshot: it REPLACES the turn's streaming entries from the
+ *   snapshot's partials and reconciles the running tool/task rows — never
+ *   appends — so a reattach or resync reconstructs the in-flight state
+ *   atomically. stream_ping folds as a no-op; the store reads it before the
+ *   fold.
  */
 import {
   Kind,
@@ -270,7 +276,21 @@ function isStreamingEntry(
   );
 }
 
-/** Extend the trailing streaming entry of `kind` or open a new one. */
+/**
+ * Extend the turn's trailing streaming entry of `kind`, or open a new one
+ * (enhance-resumable-streams design D7). The target is a bounded backward
+ * scan, not the literal last entry: the composite stream-sync (design D7)
+ * mint-or-replaces the assistant entry and then the reasoning one, so a cold
+ * join can hold the pair [assistant][reasoning] with the reasoning sibling
+ * last — both siblings must stay extendable by their own deltas. The scan
+ * walks from the end, skips a streaming same-turn entry of the OTHER kind
+ * (the sync's sibling), and merges into the first streaming same-turn entry
+ * of `kind` while it is still the turn's live tail. It stops — opening a new
+ * entry, exactly the mint below — at the first entry that is not such a
+ * sibling: a tool/task card, a finalized (streaming:false) entry, a terminal
+ * record, or another turn's (a delta after a tool card opens a new entry,
+ * keeping the round's text after the card).
+ */
 function mergeDelta(
   entries: Entry[],
   kind: "assistant" | "reasoning",
@@ -279,26 +299,31 @@ function mergeDelta(
   at: string,
   tag: VariantTagged
 ): Entry[] {
-  const last = entries[entries.length - 1];
+  for (let i = entries.length - 1; i >= 0; i -= 1) {
+    const entry = entries[i];
 
-  // SAFETY: streaming entries this reducer mints carry the variant stamp
-  // fields even though the shared union does not declare them (the seam
-  // above); reading the stamp off a non-streaming tail is guarded below.
-  const lastTag: VariantTagged = last as VariantTagged;
+    // Not the turn's live tail: the segment boundary ends the scan.
+    if (!isStreamingEntry(entry) || !sameTurn(entry.turnID, turnID)) break;
 
-  if (
-    last &&
-    last.kind === kind &&
-    last.streaming &&
-    sameTurn(last.turnID, turnID) &&
-    lastTag.variantOf === tag.variantOf
-  ) {
+    // The sync's sibling (the other half of its [assistant][reasoning]
+    // pair): skip over it; its own deltas scan past this entry likewise.
+    if (entry.kind !== kind) continue;
+
+    // SAFETY: streaming entries this reducer mints carry the variant stamp
+    // fields even though the shared union does not declare them (the seam
+    // above); the scan only reaches this read on a streaming entry.
+    const entryTag: VariantTagged = entry as VariantTagged;
+
+    // The variant-stamp contract holds for the scanned target: a delta of
+    // another variant opens its own entry rather than extending this one.
+    if (entryTag.variantOf !== tag.variantOf) break;
+
     const merged: AssistantEntry | ReasoningEntry = {
-      ...last,
-      text: last.text + text,
+      ...entry,
+      text: entry.text + text,
     };
 
-    return [...entries.slice(0, -1), merged];
+    return [...entries.slice(0, i), merged, ...entries.slice(i + 1)];
   }
 
   const opened: AssistantEntry | ReasoningEntry =
@@ -332,6 +357,200 @@ function finalize(entries: Entry[]): Entry[] {
 
     return [isStreamingEntry(e) ? { ...e, streaming: false } : e];
   });
+}
+
+/** The turn's trailing streaming entry of `kind`, scanned from the end
+ * (enhance-resumable-streams design D7): the snapshot's partials describe the
+ * CURRENT model call, whose segment is the trailing one — a delta after a
+ * tool card opens a new entry, and each completed call's durable record
+ * finalizes its own segment before the next call streams. */
+function trailingStreamingIndex(
+  entries: Entry[],
+  kind: "assistant" | "reasoning",
+  turnID: string | undefined
+): number {
+  for (let i = entries.length - 1; i >= 0; i -= 1) {
+    const entry = entries[i];
+
+    if (
+      entry.kind === kind &&
+      entry.streaming &&
+      sameTurn(entry.turnID, turnID)
+    ) {
+      return i;
+    }
+  }
+
+  return -1;
+}
+
+/** The variant stamp for a sync-minted entry (design D7): the snapshot event
+ * carries no variant_of, so the turn's already-stamped entries lend theirs —
+ * a live resync mid-variant must leave the minted entry extendable by the
+ * turn's stamped deltas (mergeDelta matches on the stamp). Untagged when
+ * nothing holds it: a fresh reattach folds the durable page without live
+ * markers, and the turn's durable assistant_message re-stamps the entry when
+ * it lands. */
+function streamVariantTag(entries: Entry[], e: SessionEvent): VariantTagged {
+  if (e.variant_of) return variantTag(entries, e);
+
+  if (e.turn_id) {
+    for (const entry of entries) {
+      // SAFETY: only reply entries of a variant slot carry the stamp fields;
+      // reading them off other shapes is guarded by the turnID + variantOf
+      // check (the seam above).
+      const tag = entry as VariantTagged;
+
+      if (
+        (entry as { turnID?: string }).turnID === e.turn_id &&
+        tag.variantOf !== undefined
+      ) {
+        return { variantOf: tag.variantOf, variantIndex: tag.variantIndex };
+      }
+    }
+  }
+
+  return {};
+}
+
+/** Mint-or-REPLACE the streaming entry `kind` from one snapshot partial
+ * (design D7): the snapshot's value is authoritative, so an existing entry
+ * takes the text verbatim — mergeDelta appends, which would double the
+ * partial onto already-received deltas. An absent entry mints one; empty
+ * text mints nothing (an empty bubble would only be dropped at finalize). */
+function applyStreamPartial(
+  entries: Entry[],
+  kind: "assistant" | "reasoning",
+  turnID: string | undefined,
+  text: string,
+  at: string,
+  tag: VariantTagged
+): Entry[] {
+  const idx = trailingStreamingIndex(entries, kind, turnID);
+
+  if (idx !== -1) {
+    // SAFETY: the index scan matched the kind, so the widened record is
+    // exactly that streaming member.
+    const existing = entries[idx] as AssistantEntry | ReasoningEntry;
+    const replaced: AssistantEntry | ReasoningEntry = { ...existing, text };
+
+    return [...entries.slice(0, idx), replaced, ...entries.slice(idx + 1)];
+  }
+
+  if (text === "") return entries;
+
+  const minted: AssistantEntry | ReasoningEntry =
+    kind === "assistant"
+      ? {
+          kind: "assistant",
+          id: entryID(),
+          turnID,
+          text,
+          streaming: true,
+          at,
+          ...tag,
+        }
+      : {
+          kind: "reasoning",
+          id: entryID(),
+          turnID,
+          text,
+          streaming: true,
+          at,
+          ...tag,
+        };
+
+  return [...entries, minted];
+}
+
+/** Reconciles the running tool rows to the snapshot's list (design D7): rows
+ * the snapshot lists are running — a known call id mutates its card in place
+ * (the same dedupe-by-call-id contract as KindToolActivity), an unknown one
+ * mints. Rows NOT listed stay untouched: their terminal records carry the
+ * result, and fabricating one here would be worse than a stale spinner. */
+function applyStreamTools(entries: Entry[], e: SessionEvent): Entry[] {
+  const tools = e.stream?.tools;
+
+  if (!tools || tools.length === 0) return entries;
+
+  let next = entries;
+
+  for (const tool of tools) {
+    const idx = next.findIndex(
+      (en: Entry) => en.kind === "tool" && en.call?.call_id === tool.call_id
+    );
+
+    if (idx === -1) {
+      next = [
+        ...next,
+        {
+          kind: "tool",
+          id: entryID(),
+          turnID: e.turn_id,
+          call: tool,
+          at: e.occurred_at,
+          ...streamVariantTag(next, e),
+        },
+      ];
+
+      continue;
+    }
+
+    const existing = next[idx];
+
+    if (existing.kind !== "tool") continue;
+    next = [
+      ...next.slice(0, idx),
+      { ...existing, call: tool },
+      ...next.slice(idx + 1),
+    ];
+  }
+
+  return next;
+}
+
+/** Reconciles the running task rows the same way (design D7): dedupe by
+ * task id, replace the live running form (fresh progress included), mint
+ * unknown rows. */
+function applyStreamTasks(entries: Entry[], e: SessionEvent): Entry[] {
+  const tasks = e.stream?.tasks;
+
+  if (!tasks || tasks.length === 0) return entries;
+
+  let next = entries;
+
+  for (const task of tasks) {
+    const idx = next.findIndex(
+      (en: Entry) => en.kind === "task" && en.task?.task_id === task.task_id
+    );
+
+    if (idx === -1) {
+      next = [
+        ...next,
+        {
+          kind: "task",
+          id: entryID(),
+          turnID: e.turn_id,
+          task,
+          at: e.occurred_at,
+          ...streamVariantTag(next, e),
+        },
+      ];
+
+      continue;
+    }
+
+    const existing = next[idx];
+
+    if (existing.kind !== "task") continue;
+    next = [
+      ...next.slice(0, idx),
+      { ...existing, task },
+      ...next.slice(idx + 1),
+    ];
+  }
+
+  return next;
 }
 
 /** Stamps the turn_completed event's artifacts onto that turn's trailing
@@ -1030,6 +1249,47 @@ export function applyEvent(entries: Entry[], e: SessionEvent): Entry[] {
 
       return finalize(next);
     }
+
+    // Stream resume (enhance-resumable-streams design D7): the composite
+    // snapshot REPLACES the turn's live streaming state atomically — one
+    // event, one fold, so old and new partials can never mix. The partials
+    // mint-or-replace the streaming entries, the running tool/task rows
+    // reconcile to the snapshot's lists, and a later terminal record
+    // finalizes the reconstructed rows exactly like the subscribe-time
+    // snapshot's. Live-only: the durable vocabulary is untouched. The store
+    // rebaselines its received-delta counter off stream.deltas BEFORE this
+    // folds (design D6) — the two halves of one resync must not race.
+    case Kind.KindStreamSync: {
+      const tag = streamVariantTag(entries, e);
+
+      let next = applyStreamPartial(
+        entries,
+        "assistant",
+        e.turn_id,
+        e.stream?.text ?? "",
+        e.occurred_at,
+        tag
+      );
+
+      next = applyStreamPartial(
+        next,
+        "reasoning",
+        e.turn_id,
+        e.stream?.reasoning ?? "",
+        e.occurred_at,
+        tag
+      );
+      next = applyStreamTools(next, e);
+      next = applyStreamTasks(next, e);
+
+      return next;
+    }
+
+    case Kind.KindStreamPing:
+      // The liveness beacon changes nothing in the transcript (design D4):
+      // the store reads the ping's counter for gap detection BEFORE the
+      // fold — this arm only pins the no-op contract.
+      return entries;
 
     default:
       return entries;

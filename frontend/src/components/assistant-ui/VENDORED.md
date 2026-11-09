@@ -118,6 +118,7 @@ All under `frontend/src/components/assistant-ui/` (paths relative to it).
 | `elements-reasoning-effort` | `elements/reasoning-effort.tsx` |
 | `elements-context-usage` | `utils/context-usage.ts` |
 | `elements-context-breakdown` | `elements/context-breakdown.tsx` |
+| `elements-computer-use` | `elements/computer-use.tsx` (add-computer-use task 6.2; vendored WITH divergence 10 applied — see below) |
 
 Transitive registryDependencies (pulled automatically, also vendored):
 
@@ -539,6 +540,22 @@ presentational halves — it does not mount `Thread`/`Composer` wholesale
    the `className` merge seams to survive, so the wrappers assert on the
    vendored `data-slot` hooks and on buddies-owned test ids rather than on
    vendored class names.
+10. **`computer-use.tsx` desktop-frame retarget** (add-computer-use task 6.2,
+    design D8): the registry item renders browser chrome — traffic lights
+    plus a `field`-pill **URL bar** driven by a `url` prop. The desktop card
+    drives windows, not pages, so at vendor time the `url` prop became
+    `title` (the observed app's name) and the URL pill became a plain
+    truncated title span (`text-foreground/80 … text-[13px] font-medium`,
+    no pill chrome). Two more re-applies: the cursor trail and pointer are
+    **re-based onto the accent tokens** (registry's
+    `bg-blue-500 dark:bg-blue-400` → `bg-accent`; pointer
+    `fill-blue-500 text-blue-500 dark:…` → `fill-accent text-accent`) per
+    the status-palette contract — raw palette classes are banned in the
+    vendored seam, and the terminal-block cursor (`bg-accent/70`) is the
+    precedent. Everything else is the registry's own markup: the traffic
+    lights, the `paper` surface, the backdrop slot (`children`), the
+    `motion-reduce` guard, and the current-action line. Marked with a
+    `BUDDIES RETARGET` header comment; re-apply after any re-vendor.
 
 ## Spike gate (task 1.7) — RE-RECORDED at the closing wave (2026-10-21)
 

@@ -47,6 +47,18 @@ const RESOLVED: SessionEvent = ev(Kind.KindApprovalResolved, {
   approval: { interrupt_id: "int-1", outcome: "approved" },
 });
 
+// A computer-use approval (add-computer-use task 5.2): the backend
+// synthesizes the payload as `<tool> <target>` — the requested action and
+// its target, never the raw arguments.
+const CU_REQUIRED: SessionEvent = ev(Kind.KindApprovalRequired, {
+  turn_id: "t2",
+  approval: {
+    interrupt_id: "int-cu",
+    command: "kill_app Safari",
+    checkpoint_id: "adk_t2",
+  },
+});
+
 function fold(...events: SessionEvent[]): Entry[] {
   return events.reduce<Entry[]>(
     (entries: Entry[], e: SessionEvent) => applyEvent(entries, e),
@@ -275,6 +287,117 @@ describe("resolved receipts (spec: Resolved card on replay)", () => {
     );
 
     await unmount();
+  });
+});
+
+describe("computer-use approvals (add-computer-use task 5.2)", () => {
+  it("a pending desktop action renders the requested action and target, not raw args", async () => {
+    const { unmount } = await renderUI(
+      <ApprovalGate
+        part={partProps({
+          toolCallId: "c-cu",
+          toolName: "execute",
+          argsText: "kill_app Safari",
+          approval: { id: "int-cu" },
+          status: { type: "requires-action", reason: "interrupt" },
+        })}
+      />
+    );
+
+    const card = screen.getByTestId("entry-approval");
+
+    // The requested action and its target are both named; the raw argument
+    // JSON never appears.
+    expect(card.textContent).toContain("kill_app");
+    expect(card.textContent).toContain("Safari");
+    expect(card.textContent).toContain("Desktop action approval");
+    expect(card.textContent).toContain(
+      "The agent paused before this desktop action"
+    );
+    // The decision controls are live while pending.
+    expect(
+      document.querySelector('[data-slot="approval-card-allow-once"]')
+    ).toBeTruthy();
+    expect(
+      document.querySelector('[data-slot="approval-card-deny"]')
+    ).toBeTruthy();
+
+    await unmount();
+  });
+
+  it("a decided desktop approval persists its receipt like the shell card", async () => {
+    const approved = await renderUI(
+      <ApprovalGate
+        part={partProps({
+          toolCallId: "c-cu",
+          toolName: "execute",
+          argsText: "kill_app Safari",
+          approval: { id: "int-cu", approved: true },
+          result: '{"status":"killed"}',
+        })}
+      />
+    );
+
+    const approvedCard = screen.getByTestId("entry-approval");
+    expect(approvedCard.textContent).toContain("Approved");
+    expect(approvedCard.textContent).toContain("kill_app");
+    expect(approvedCard.textContent).toContain("Safari");
+    expect(
+      document.querySelector('[data-slot="approval-card-allow-once"]')
+    ).toBeNull();
+
+    await approved.unmount();
+
+    const denied = await renderUI(
+      <ApprovalGate
+        part={partProps({
+          toolCallId: "c-cu",
+          toolName: "execute",
+          argsText: "kill_app Safari",
+          approval: { id: "int-cu", approved: false },
+        })}
+      />
+    );
+
+    expect(screen.getByTestId("entry-approval").textContent).toContain(
+      "Denied"
+    );
+    expect(
+      document.querySelector('[data-slot="approval-card-allow-once"]')
+    ).toBeNull();
+    expect(
+      document.querySelector('[data-slot="approval-card-deny"]')
+    ).toBeNull();
+
+    await denied.unmount();
+  });
+
+  it("a replayed computer-use approval rebuilds the pending card from the mapped entry", async () => {
+    const entries = fold(CU_REQUIRED);
+
+    const parts = entriesToMessages(entries)[0]?.content ?? [];
+
+    expect(parts[0]).toMatchObject({
+      type: "tool-call",
+      approval: { id: "int-cu" },
+    });
+
+    await renderWithEntries(entries, true);
+
+    const card = screen.getByTestId("entry-approval");
+    expect(card.textContent).toContain("kill_app");
+    expect(card.textContent).toContain("Safari");
+    expect(card.textContent).toContain("Desktop action approval");
+
+    await act(async () => {
+      fireEvent.click(
+        document.querySelector('[data-slot="approval-card-allow-once"]')!
+      );
+    });
+
+    await act(async () => {});
+
+    expect(mockedResolve).toHaveBeenCalledWith("s1", "int-cu", true);
   });
 });
 

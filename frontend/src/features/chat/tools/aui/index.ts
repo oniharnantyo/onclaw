@@ -6,6 +6,7 @@
  */
 export {
   BROWSER_USE_PREFIX,
+  COMPUTER_USE_PREFIX,
   resolveToolRenderer,
   toolRenderers,
   type ToolRenderer,
@@ -15,3 +16,5 @@ export {
 export { ChatToolGroup } from "./ChatToolGroup";
 
 export type { ChatToolGroupProps, ToolGroupPart } from "./ChatToolGroup";
+
+export { ComputerTool, ComputerTrajectory } from "./ComputerTool";

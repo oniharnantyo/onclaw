@@ -24,28 +24,65 @@ type WebSearchProviderInfo struct {
 }
 
 // WebSearchChainEntry is one ordered entry of the web_search failover chain,
-// as bound to the frontend. The JSON field names match the runtime's
-// tools.WebSearchChainEntry — this is the same document, surfaced for editing.
+// as bound to the frontend. The id/name/provider/base_url JSON field names
+// match the runtime's tools.WebSearchChainEntry — the persisted document —
+// but this is the redacted read shape: a chain read never returns an entry's
+// API key, only whether one is set and its non-secret hint.
 type WebSearchChainEntry struct {
 	// ID is the stable identifier assigned on first persist; edits and
-	// reorders carry it unchanged.
+	// reorders carry it unchanged, and SaveWebSearchConfig uses it to resolve
+	// a blank submitted key to the stored credential.
 	ID string `json:"id"`
 	// Name labels the entry in transcripts and errors; empty falls back to
 	// Provider at runtime.
 	Name string `json:"name"`
 	// Provider is one of the catalog provider identifiers.
 	Provider string `json:"provider"`
-	// APIKey is the credential for api_key-kind providers.
+	// BaseURL is the credential for base_url-kind providers (SearXNG). An
+	// instance URL is not a secret, so it round-trips.
+	BaseURL string `json:"base_url,omitempty"`
+	// KeySet reports whether the stored entry carries an API key.
+	KeySet bool
+	// KeyHint is the key's last 4 runes; empty when no key is stored.
+	KeyHint string
+}
+
+// WebSearchConfig is the read shape of the persisted web_search chain
+// configuration, as bound to the frontend for the Tools pane's chain editor.
+type WebSearchConfig struct {
+	// Entries is the ordered provider chain; lower indexes try first.
+	Entries []WebSearchChainEntry `json:"entries"`
+	// RequestTimeoutSeconds bounds each provider attempt; 0 means the
+	// runtime default.
+	RequestTimeoutSeconds int `json:"request_timeout_seconds,omitempty"`
+}
+
+// WebSearchChainEntryInput is the write shape of one chain entry, as bound to
+// the frontend. The JSON field names match the runtime document, so the
+// pane's payload is unchanged. The API key is write-only: a blank key keeps
+// the stored credential for an entry carrying its stable ID, a non-blank key
+// replaces it — the key is never handed back out on a read.
+type WebSearchChainEntryInput struct {
+	// ID is the stable identifier of an existing entry; empty on a new
+	// entry, which must carry its credential.
+	ID string `json:"id"`
+	// Name labels the entry in transcripts and errors; empty falls back to
+	// Provider at runtime.
+	Name string `json:"name"`
+	// Provider is one of the catalog provider identifiers.
+	Provider string `json:"provider"`
+	// APIKey is the credential for api_key-kind providers; blank keeps the
+	// stored key.
 	APIKey string `json:"api_key,omitempty"`
 	// BaseURL is the credential for base_url-kind providers (SearXNG).
 	BaseURL string `json:"base_url,omitempty"`
 }
 
-// WebSearchConfig is the persisted web_search chain configuration, as bound
-// to the frontend for the Tools pane's chain editor.
-type WebSearchConfig struct {
+// WebSearchConfigInput is the write shape of the web_search chain
+// configuration, as bound to the frontend for the Tools pane's chain editor.
+type WebSearchConfigInput struct {
 	// Entries is the ordered provider chain; lower indexes try first.
-	Entries []WebSearchChainEntry `json:"entries"`
+	Entries []WebSearchChainEntryInput `json:"entries"`
 	// RequestTimeoutSeconds bounds each provider attempt; 0 means the
 	// runtime default.
 	RequestTimeoutSeconds int `json:"request_timeout_seconds,omitempty"`
@@ -63,6 +100,8 @@ func (s *SettingsService) WebSearchProviders(_ context.Context) ([]WebSearchProv
 }
 
 // WebSearchConfig returns the persisted web_search chain configuration. A
+// chain read never returns an entry's API key: each entry is projected onto
+// the redacted read shape — whether a key is set and its last-4 hint. A
 // tool_settings row that never existed (or holds an empty document) comes
 // back as the zero config with a non-nil, empty Entries slice.
 func (s *SettingsService) WebSearchConfig(ctx context.Context) (WebSearchConfig, error) {
@@ -83,26 +122,50 @@ func (s *SettingsService) WebSearchConfig(ctx context.Context) (WebSearchConfig,
 			ID:       entry.ID,
 			Name:     entry.Name,
 			Provider: entry.Provider,
-			APIKey:   entry.APIKey,
 			BaseURL:  entry.BaseURL,
+			KeySet:   entry.APIKey != "",
+			KeyHint:  keyHint(entry.APIKey),
 		})
 	}
 	cfg.RequestTimeoutSeconds = stored.RequestTimeoutSeconds
 	return cfg, nil
 }
 
-// SaveWebSearchConfig create-or-replaces the web_search chain configuration.
-// Every entry's provider must be in the catalog, and an entry whose provider
-// requires a credential must carry it — a chain entry without its API key or
-// base URL is rejected with an error naming both. Entries are stored in the
-// given order (the failover order); entries lacking an ID get one assigned.
-func (s *SettingsService) SaveWebSearchConfig(ctx context.Context, cfg WebSearchConfig) error {
-	stored := tools.WebSearchConfig{
+// SaveWebSearchConfig create-or-replaces the web_search chain configuration,
+// merging incoming entries against the stored config by stable entry ID
+// (design D4): a blank API key on an entry whose ID exists in storage keeps
+// the stored key, a non-blank key replaces it, and a blank key that cannot
+// resolve — a new entry, or an ID absent from storage — is rejected with the
+// provider named. After the merge, every entry's provider must be in the
+// catalog and carry its provider's required credential, so a provider change
+// with a blank key is validated against the new provider's requirement.
+// Entries are stored in the given order (the failover order); entries
+// lacking an ID get one assigned. The merged API keys persist but never
+// return on a read.
+func (s *SettingsService) SaveWebSearchConfig(ctx context.Context, cfg WebSearchConfigInput) error {
+	// The stored config loads first: blank submitted keys resolve against it
+	// by entry ID.
+	storedRaw, _, err := s.store.ToolSettings().Get(ctx, tools.NameWebSearch)
+	if err != nil {
+		return fmt.Errorf("save web_search config: %w", err)
+	}
+	var stored tools.WebSearchConfig
+	if storedRaw != "" {
+		if err := json.Unmarshal([]byte(storedRaw), &stored); err != nil {
+			return fmt.Errorf("save web_search config: decode stored config: %w", err)
+		}
+	}
+	byID := make(map[string]tools.WebSearchChainEntry, len(stored.Entries))
+	for _, entry := range stored.Entries {
+		byID[entry.ID] = entry
+	}
+
+	merged := tools.WebSearchConfig{
 		Entries:               make([]tools.WebSearchChainEntry, 0, len(cfg.Entries)),
 		RequestTimeoutSeconds: cfg.RequestTimeoutSeconds,
 	}
-	if stored.RequestTimeoutSeconds < 0 {
-		stored.RequestTimeoutSeconds = 0 // negative means the runtime default
+	if merged.RequestTimeoutSeconds < 0 {
+		merged.RequestTimeoutSeconds = 0 // negative means the runtime default
 	}
 	used := make(map[string]bool, len(cfg.Entries))
 	for _, entry := range cfg.Entries {
@@ -115,25 +178,36 @@ func (s *SettingsService) SaveWebSearchConfig(ctx context.Context, cfg WebSearch
 			id = nextChainEntryID(used)
 		}
 		used[id] = true
-		storedEntry := tools.WebSearchChainEntry{ID: id, Name: entry.Name, Provider: entry.Provider}
+		mergedEntry := tools.WebSearchChainEntry{ID: id, Name: entry.Name, Provider: entry.Provider}
 		switch info.Credential {
 		case tools.SearchCredentialAPIKey:
-			if entry.APIKey == "" {
+			apiKey := entry.APIKey
+			if apiKey == "" && entry.ID != "" {
+				// Blank means keep the stored key, addressed by the entry's
+				// stable ID; a minted ID marks a new entry, which must carry
+				// its key.
+				if prev, found := byID[entry.ID]; found {
+					apiKey = prev.APIKey
+				}
+			}
+			if apiKey == "" {
 				return fmt.Errorf("save web_search config: %s provider requires an API key", entry.Provider)
 			}
-			storedEntry.APIKey = entry.APIKey
+			mergedEntry.APIKey = apiKey
 		case tools.SearchCredentialBaseURL:
+			// A base URL is not a secret and always round-trips; blank is
+			// simply a missing credential.
 			if entry.BaseURL == "" {
 				return fmt.Errorf("save web_search config: %s provider requires a base URL", entry.Provider)
 			}
-			storedEntry.BaseURL = entry.BaseURL
+			mergedEntry.BaseURL = entry.BaseURL
 		default:
 			return fmt.Errorf("save web_search config: provider %q has an unknown credential kind", entry.Provider)
 		}
-		stored.Entries = append(stored.Entries, storedEntry)
+		merged.Entries = append(merged.Entries, mergedEntry)
 	}
 
-	raw, err := json.Marshal(stored)
+	raw, err := json.Marshal(merged)
 	if err != nil {
 		return fmt.Errorf("encode web_search config: %w", err)
 	}

@@ -163,7 +163,7 @@ func (b *browserTools) handleRequestSecret(ctx context.Context, req mcp.CallTool
 	if err := validateSecretArgs(args); err != nil {
 		return errResult(err), nil
 	}
-	profile, err := b.profile(args.Profile)
+	prof, err := b.resolveProfile(req, args.Profile)
 	if err != nil {
 		return errResult(err), nil
 	}
@@ -177,11 +177,11 @@ func (b *browserTools) handleRequestSecret(ctx context.Context, req mcp.CallTool
 	// taking the registry's mutex). stdio serializes parent calls, so no
 	// concurrent prepare can slip through the window.
 	var armedID string
-	res, err := b.withSessionInternal(ctx, profile, func(actx context.Context, s *profileSession) (any, error) {
+	res, err := b.withSessionInternal(ctx, prof.Key, func(actx context.Context, s *profileSession) (any, error) {
 		if s.held {
 			return secretUnavailable(reasonSessionHeld), nil
 		}
-		if b.mgr.pendingSecretOnProfile(profile) {
+		if b.mgr.pendingSecretOnProfile(prof.Key) {
 			return secretUnavailable(reasonAlreadyPending), nil
 		}
 		prepared, perr := s.prepareSecret(actx, args, digits, b.allowPrivate())
@@ -208,7 +208,7 @@ func (b *browserTools) handleRequestSecret(ctx context.Context, req mcp.CallTool
 	b.mgr.parkAttention(&attentionRequest{
 		ID:      armedID,
 		Kind:    attentionSecret,
-		Profile: profile,
+		Profile: prof.Key,
 		Secret: &parkedSecret{
 			origin:       prepared.origin,
 			method:       args.Method,

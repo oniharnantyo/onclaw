@@ -73,6 +73,11 @@ func (m *manager) parkForApproval(rt *runningTurn, record recordFn, hit *interru
 		turnID:       rt.turn.id,
 	}
 	m.mu.Unlock()
+	// The park is installed (add-desktop-notifications design D2): the
+	// WithSessionParked callback reports it with the interrupt id and the
+	// command awaiting approval. Only the park install fires — the resolve
+	// and cancel paths never do.
+	m.notifySessionParked(rt.sessionID, ParkApproval, hit.interruptID, hit.command)
 	return nil
 }
 
@@ -218,6 +223,14 @@ func (m *manager) ResolveApproval(ctx context.Context, sessionID, interruptID st
 		// claim — the terminal release below needs both to re-open the lane.
 		resumed.agentID = rt.agentID
 		resumed.laneClaimed = rt.laneClaimed
+		// The delegated-task space survives the resume (enhance-resumable-
+		// streams design D3): the session's registry is the same entry either
+		// way, and the snapshot builder reads it off the record.
+		resumed.tasks = rt.tasks
+		// The delta count survives the resume (enhance-resumable-streams
+		// design D4): the turn's beacon counter stays monotonic across the
+		// park, so a client's counter comparison keeps proving gaps.
+		resumed.deltas = rt.deltaCount()
 	} else {
 		for _, ev := range events {
 			if ev.TurnID == pend.turnID && ev.VariantOf != "" {
@@ -259,6 +272,14 @@ func (m *manager) ResolveApproval(ctx context.Context, sessionID, interruptID st
 	if !wasInFlight {
 		m.notifyTransition(sessionID, true)
 	}
+	// The liveness beacon rebinds to the resumed record (enhance-resumable-
+	// streams design D4): the replaced record's ticker stops — the record it
+	// reads is gone — and the resumed run's starts, so the turn keeps
+	// pinging with its monotonic delta count through the rest of the run.
+	if live {
+		rt.stopBeacon()
+	}
+	m.startStreamBeacon(resumed)
 
 	go m.resumeTurn(runCtx, resumed, pend, approved)
 	return nil
@@ -372,7 +393,9 @@ func (m *manager) resumeTurn(ctx context.Context, rt *runningTurn, pend *pending
 	run, err := m.composeResumeRun(ctx, rt, sess, *agent, pend, approved, hookChain, hookBase, record)
 	if err != nil {
 		m.clearBusy(rt)
-		rt.turn.finish(fail(err))
+		turnErr := fail(err)
+		m.notifyTurnFinished(rt.sessionID, rt, turnErr)
+		rt.turn.finish(turnErr)
 		return
 	}
 	err = m.executeTurnRun(ctx, recordCtx, rt, record, fail, hookChain, hookBase, *agent, run)
@@ -384,6 +407,7 @@ func (m *manager) resumeTurn(ctx context.Context, rt *runningTurn, pend *pending
 		return
 	}
 	m.clearBusy(rt)
+	m.notifyTurnFinished(rt.sessionID, rt, err)
 	rt.turn.finish(err)
 	// The terminal release (design D6): a resumed group turn still holds its
 	// agent's lane claim; groupLaneTurnDone is a no-op for records without
@@ -406,6 +430,9 @@ func (m *manager) failResume(rt *runningTurn, recordCtx context.Context, hookCha
 		hookChain.RunFinished(recordCtx, hookBase, hookRunStatusFailed)
 	}
 	m.clearBusy(rt)
+	// The failed resume is a turn terminal (add-desktop-notifications design
+	// D2): the outcome maps from the same error the Turn completes with.
+	m.notifyTurnFinished(rt.sessionID, rt, err)
 	rt.turn.finish(err)
 	// Same terminal release as resumeTurn: a failed resume of a claimed
 	// group turn must re-open the lane.
@@ -413,11 +440,15 @@ func (m *manager) failResume(rt *runningTurn, recordCtx context.Context, hookCha
 }
 
 // clearBusy removes the session's busy record and announces the transition
-// out of the in-flight state (add-grouped-session-rail design D2).
+// out of the in-flight state (add-grouped-session-rail design D2). The
+// record leaving the running set is the liveness beacon's terminal
+// (enhance-resumable-streams design D4) — the resume paths' delete goes
+// through here.
 func (m *manager) clearBusy(rt *runningTurn) {
 	m.mu.Lock()
 	delete(m.running, rt.sessionID)
 	m.mu.Unlock()
+	rt.stopBeacon()
 	m.notifyTransition(rt.sessionID, false)
 }
 
@@ -454,8 +485,11 @@ func (m *manager) composeResumeRun(ctx context.Context, rt *runningTurn, sess se
 	}
 
 	// Phase 3: the model from the agent's provider with the session's
-	// effective overrides.
-	mdl, err := m.registry.Build(ctx, agent, override)
+	// effective overrides. The session context turns on the observation
+	// image lane (add-computer-use design D5) exactly as a fresh turn would
+	// — a resumed run's composition must match the interrupted one's
+	// structure.
+	mdl, err := m.registry.Build(ctx, agent, override, m.observationContextFor(agent, sess.ID))
 	if err != nil {
 		return turnRun{}, err
 	}
@@ -555,8 +589,17 @@ func (m *manager) composeResumeRun(ctx context.Context, rt *runningTurn, sess se
 	// Phases 8.5 and 9-merge: the delegation tools and the MCP tools join
 	// the surface exactly as a fresh turn resolves them — including the
 	// attention scope (add-browser-login-handover design D3/D7), so a
-	// browser attention request parks the resumed turn on its card.
-	mcpTools, err := m.resolveMCPTools(ctx, agent, attentionScope{sessionID: rt.sessionID, turnID: rt.turn.id, record: record})
+	// browser attention request parks the resumed turn on its card, with the
+	// agent's browser profile binding riding the scope
+	// (add-per-agent-browser-profiles design D4) exactly as a fresh turn's.
+	profileDir, profileName := m.agentProfileBinding(agent)
+	mcpTools, err := m.resolveMCPTools(ctx, agent, attentionScope{
+		sessionID:   rt.sessionID,
+		turnID:      rt.turn.id,
+		record:      record,
+		profileDir:  profileDir,
+		profileName: profileName,
+	})
 	if err != nil {
 		return turnRun{}, err
 	}

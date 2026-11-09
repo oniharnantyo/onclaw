@@ -15,6 +15,9 @@ type Store interface {
 	Channels() ChannelStore
 	Hooks() HookStore
 	GatewaySettings() GatewaySettingsStore
+	// NotificationSettings returns the singleton desktop-notification
+	// configuration store (add-desktop-notifications design D4).
+	NotificationSettings() NotificationSettingsStore
 	SessionEvents() SessionEventStore
 	Checkpoints() CheckpointStore
 	Skills() SkillRegistry

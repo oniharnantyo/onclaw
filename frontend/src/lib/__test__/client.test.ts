@@ -18,15 +18,21 @@ import type {
   Hook,
   HookExecution,
   MCPServer,
+  NotificationSettings,
   Session,
   Skill,
 } from "../../../bindings/github.com/oniharnantyo/buddies/internal/store/models";
 import type { SendRequest as GroupSendRequest } from "../../../bindings/github.com/oniharnantyo/buddies/internal/groups/models";
-import type { GroupEvent } from "../../../bindings/github.com/oniharnantyo/buddies/internal/services/models";
+import type {
+  GroupEvent,
+  MCPServerView,
+} from "../../../bindings/github.com/oniharnantyo/buddies/internal/services/models";
 import type {
   AgentHookAssignment,
   BrowserConfig,
   BrowserProfile,
+  ComputerConfigView,
+  ComputerStatus,
   DocumentPresetEntry,
   GatewayStateEvent,
   GeneratedDocumentContent,
@@ -40,16 +46,19 @@ import type {
   ToolEntry,
   VerifyResult,
   WebSearchConfig,
+  WebSearchConfigInput,
   WebSearchProviderInfo,
 } from "../../../bindings/github.com/oniharnantyo/buddies/internal/services/models";
 import { createClient, type Client } from "../client";
 import {
   MCP_OAUTH_COMPLETED_EVENT,
+  NOTIFICATIONS_OPEN_EVENT,
   SCHEDULES_CHANGED_EVENT,
   SETTINGS_OPEN_EVENT,
   groupEventName,
   sessionEventName,
   type MCPOAuthCompletedEvent,
+  type NotificationOpenEvent,
 } from "../events";
 import type {
   EventHandler,
@@ -126,6 +135,8 @@ function makeMCPServer(): MCPServer {
     Service: "",
     CredentialSet: false,
     CredentialHint: "",
+    ClientSecretSet: false,
+    ClientSecretHint: "",
     Enabled: true,
     Status: "",
     StatusError: "",
@@ -272,6 +283,19 @@ function makeGroupSendRequest(): GroupSendRequest {
   };
 }
 
+/** The settings shape the backend answers (add-desktop-notifications D4):
+ * the defaults when nothing was ever saved — all on. */
+function makeNotificationSettings(): NotificationSettings {
+  return {
+    Enabled: true,
+    Turns: true,
+    Attention: true,
+    Schedules: true,
+    Groups: true,
+    UpdatedAt: "",
+  };
+}
+
 /** Guard for mock-transport members the cases under test never reach. */
 function unreachable(what: string): never {
   throw new Error(`${what} is not stubbed in this mock transport`);
@@ -288,6 +312,7 @@ interface MockTransport {
     Send: MockFn;
     Cancel: MockFn;
     Regenerate: MockFn;
+    Resync: MockFn;
     Sessions: MockFn;
     AllSessions: MockFn;
     RunningSessions: MockFn;
@@ -310,6 +335,7 @@ interface MockTransport {
     TurnState: MockFn;
     ContextUsage: MockFn;
     BrowserScreenshot: MockFn;
+    ComputerScreenshot: MockFn;
     GeneratedDocument: MockFn;
     SaveGeneratedDocumentAs: MockFn;
   };
@@ -352,6 +378,11 @@ interface MockTransport {
     ReassignTask: MockFn;
     CancelTask: MockFn;
   };
+  notifications: {
+    GetNotificationSettings: MockFn;
+    SaveNotificationSettings: MockFn;
+    ReportFocus: MockFn;
+  };
   unsubscribe: Unsubscribe;
 }
 
@@ -388,6 +419,9 @@ function makeTransport(): MockTransport {
       calls.push(`chat.Regenerate:${sessionID}:${turnID}`);
 
       return "turn-2";
+    }),
+    Resync: vi.fn(async (sessionID: string) => {
+      calls.push(`chat.Resync:${sessionID}`);
     }),
     Sessions: vi.fn(async () => []),
     AllSessions: vi.fn(async () => []),
@@ -499,6 +533,12 @@ function makeTransport(): MockTransport {
       height: 1,
       data: "cG5nLWJ5dGVz",
     })),
+    ComputerScreenshot: vi.fn(async (sessionID: string, name: string) => ({
+      name,
+      width: 1,
+      height: 1,
+      data: "cG5nLWJ5dGVz",
+    })),
     GeneratedDocument: vi.fn(async (agentID: string, name: string) => ({
       name,
       sizeBytes: 9,
@@ -557,12 +597,26 @@ function makeTransport(): MockTransport {
       unreachable("settings.WebSearchProviders"),
     WebSearchConfig: (): Promise<WebSearchConfig> =>
       unreachable("settings.WebSearchConfig"),
-    SaveWebSearchConfig: (_config: WebSearchConfig): Promise<void> =>
+    SaveWebSearchConfig: (_config: WebSearchConfigInput): Promise<void> =>
       unreachable("settings.SaveWebSearchConfig"),
     BrowserConfig: (): Promise<BrowserConfig> =>
       unreachable("settings.BrowserConfig"),
     SaveBrowserConfig: (_config: BrowserConfig): Promise<void> =>
       unreachable("settings.SaveBrowserConfig"),
+    // The Computer Use pane's surface (add-computer-use task 3.1); no client
+    // test drives it yet.
+    ComputerConfig: (): Promise<ComputerConfigView> =>
+      unreachable("settings.ComputerConfig"),
+    SaveComputerConfig: (_view: ComputerConfigView): Promise<void> =>
+      unreachable("settings.SaveComputerConfig"),
+    ComputerStatus: (): Promise<ComputerStatus> =>
+      unreachable("settings.ComputerStatus"),
+    CheckComputerPermissions: (): Promise<ComputerStatus> =>
+      unreachable("settings.CheckComputerPermissions"),
+    PromptComputerPermissions: (): Promise<void> =>
+      unreachable("settings.PromptComputerPermissions"),
+    OpenComputerManageURL: (url: string): Promise<void> =>
+      unreachable("settings.OpenComputerManageURL"),
     BrowserProfiles: (): Promise<BrowserProfile[] | null> =>
       unreachable("settings.BrowserProfiles"),
     CreateBrowserProfile: (_name: string): Promise<void> =>
@@ -648,7 +702,7 @@ function makeTransport(): MockTransport {
       unreachable(`settings.UpdateMCPServer:${server.Name}`),
     DeleteMCPServer: (id: string): Promise<void> =>
       unreachable(`settings.DeleteMCPServer:${id}`),
-    ProbeMCPServer: (id: string): Promise<MCPServer> =>
+    ProbeMCPServer: (id: string): Promise<MCPServerView> =>
       unreachable(`settings.ProbeMCPServer:${id}`),
     AuthorizeMCPServer: (id: string): Promise<void> =>
       unreachable(`settings.AuthorizeMCPServer:${id}`),
@@ -778,6 +832,20 @@ function makeTransport(): MockTransport {
     CancelTask: vi.fn(async (_taskID: string): Promise<void> => undefined),
   };
 
+  // SAFETY: the notifications surface is fully stubbed with recording mocks;
+  // the cases below drive every method, so no unreachable members exist here.
+  const notifications = {
+    GetNotificationSettings: vi.fn(
+      async (): Promise<NotificationSettings> => makeNotificationSettings()
+    ),
+    SaveNotificationSettings: vi.fn(
+      async (_settings: NotificationSettings): Promise<void> => undefined
+    ),
+    ReportFocus: vi.fn(
+      async (_kind: string, _id: string): Promise<void> => undefined
+    ),
+  };
+
   const transport: Transport = {
     appInfo,
     // SAFETY: the client wrapper under test never calls agent methods in
@@ -789,6 +857,7 @@ function makeTransport(): MockTransport {
     schedules,
     knowledge,
     groups,
+    notifications,
     // SAFETY: no case drives the Channels pane's backend surface; the empty
     // stub satisfies the transport contract like agents above.
     channels: {} as Transport["channels"],
@@ -834,6 +903,7 @@ function makeTransport(): MockTransport {
     schedules,
     knowledge,
     groups,
+    notifications,
     unsubscribe,
   };
 }
@@ -961,6 +1031,11 @@ describe("client wrapper", () => {
     expect(t.chat.Unsubscribe).toHaveBeenCalledWith("sess-1");
   });
 
+  it("routes chat.resync verbatim (enhance-resumable-streams design D5)", async () => {
+    await client.chat.resync("sess-1");
+    expect(t.chat.Resync).toHaveBeenCalledWith("sess-1");
+  });
+
   it("routes chat.generatedDocument and returns the served content", async () => {
     const content = makeGeneratedDocument();
 
@@ -983,7 +1058,7 @@ describe("client wrapper", () => {
   });
 
   describe("session event subscription", () => {
-    it("subscribes on the backend, then listens on the session channel", async () => {
+    it("subscribes on the backend and listens on the session channel", async () => {
       const events: SessionEvent[] = [];
 
       const off = await client.chat.subscribe("sess-9", (e: SessionEvent) =>
@@ -1006,6 +1081,46 @@ describe("client wrapper", () => {
       off();
       expect(t.calls).not.toContain("chat.Unsubscribe:sess-9");
       expect(t.active(sessionEventName("sess-9"))).toBe(0);
+    });
+
+    it("attaches the session listener before the Subscribe RPC resolves", async () => {
+      // The backend pumps the catch-up snapshot before Subscribe returns, so
+      // the listener must be wired first (enhance-resumable-streams design D1).
+      const events: SessionEvent[] = [];
+      let resolveSubscribe: () => void = () => undefined;
+      t.chat.Subscribe.mockImplementation((sessionID: string) => {
+        return new Promise<void>((resolve) => {
+          resolveSubscribe = (): void => {
+            t.calls.push(`chat.Subscribe:${sessionID}`);
+            resolve();
+          };
+        });
+      });
+
+      const pending = client.chat.subscribe("sess-order", (e: SessionEvent) =>
+        events.push(e)
+      );
+
+      // The listener is registered while the RPC is still in flight.
+      expect(t.calls).toEqual([`onEvent:${sessionEventName("sess-order")}`]);
+      expect(t.active(sessionEventName("sess-order"))).toBe(1);
+
+      // Events arriving in that window must be delivered, not dropped.
+      t.emit(
+        sessionEventName("sess-order"),
+        makeSessionEvent(Kind.KindTextDelta, "snap")
+      );
+      expect(events.map((e: SessionEvent) => e.text)).toEqual(["snap"]);
+
+      resolveSubscribe();
+      const off = await pending;
+      expect(t.calls).toEqual([
+        `onEvent:${sessionEventName("sess-order")}`,
+        "chat.Subscribe:sess-order",
+      ]);
+
+      off();
+      expect(t.active(sessionEventName("sess-order"))).toBe(0);
     });
 
     it("subscribe cleanup detaches locally without calling chat.Unsubscribe", async () => {
@@ -1582,6 +1697,50 @@ describe("client wrapper", () => {
 
       off();
       expect(t.active("groups:changed")).toBe(0);
+    });
+  });
+
+  describe("notifications surface (add-desktop-notifications task 5.2)", () => {
+    it("routes the settings round trip and focus report verbatim", async () => {
+      const settings = makeNotificationSettings();
+
+      await expect(
+        client.notifications.getNotificationSettings()
+      ).resolves.toEqual(settings);
+      expect(t.notifications.GetNotificationSettings).toHaveBeenCalledOnce();
+
+      await client.notifications.saveNotificationSettings(settings);
+      expect(t.notifications.SaveNotificationSettings).toHaveBeenCalledWith(
+        settings
+      );
+
+      await client.notifications.reportFocus("session", "s1");
+      expect(t.notifications.ReportFocus).toHaveBeenCalledWith("session", "s1");
+
+      await client.notifications.reportFocus("group", "g1");
+      expect(t.notifications.ReportFocus).toHaveBeenCalledWith("group", "g1");
+    });
+
+    it("listens on the notifications:open channel and passes the typed payload", () => {
+      const got: NotificationOpenEvent[] = [];
+
+      const off = client.notifications.onNotificationOpen(
+        (ev: NotificationOpenEvent): void => {
+          got.push(ev);
+        }
+      );
+
+      expect(t.calls).toContain(`onEvent:${NOTIFICATIONS_OPEN_EVENT}`);
+
+      t.emit(NOTIFICATIONS_OPEN_EVENT, { kind: "session", id: "s1" });
+      t.emit(NOTIFICATIONS_OPEN_EVENT, { kind: "group", id: "g1" });
+      expect(got).toEqual([
+        { kind: "session", id: "s1" },
+        { kind: "group", id: "g1" },
+      ]);
+
+      off();
+      expect(t.active(NOTIFICATIONS_OPEN_EVENT)).toBe(0);
     });
   });
 });

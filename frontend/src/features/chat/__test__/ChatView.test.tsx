@@ -485,10 +485,11 @@ describe("ChatView", () => {
     });
     expect(mockedClient.chat.createSession).not.toHaveBeenCalled();
     expect(useChatStore.getState().activeSessionID).toBeNull();
-    // The transcript opens in the empty fresh-chat state.
+    // The transcript opens in the empty fresh-chat state (the identity
+    // greeting — enhance-chat-empty-state).
     await waitFor((): void => {
       expect(screen.getByTestId("transcript").textContent).toContain(
-        "No messages yet"
+        "How can I help you today?"
       );
     });
   });

@@ -463,8 +463,13 @@ func TestAuthorizeMCPServerConfidentialClient(t *testing.T) {
 	})
 	require.NoError(t, err)
 	require.Equal(t, mcp.StatusAuthRequired, created.Status)
-	created.Auth.RedirectURI = freeCallbackURI(t)
-	require.NoError(t, fs.MCPServers().Update(ctx, &created))
+	// The connect return is redacted (fix-bridge-secret-redaction), so bump
+	// the redirect URI on the raw stored row: writing the redacted view back
+	// would wipe the pre-registered secret the authorize below must use.
+	stored, err := fs.MCPServers().ByID(ctx, created.ID)
+	require.NoError(t, err)
+	stored.Auth.RedirectURI = freeCallbackURI(t)
+	require.NoError(t, fs.MCPServers().Update(ctx, stored))
 
 	require.NoError(t, svc.AuthorizeMCPServer(ctx, created.ID))
 
@@ -476,7 +481,7 @@ func TestAuthorizeMCPServerConfidentialClient(t *testing.T) {
 
 	// The registration persisted before the browser opened is the console
 	// client, untouched.
-	stored, err := fs.MCPServers().ByID(ctx, created.ID)
+	stored, err = fs.MCPServers().ByID(ctx, created.ID)
 	require.NoError(t, err)
 	require.Equal(t, "console-client", stored.Auth.ClientID)
 	require.Equal(t, "console-secret", stored.Auth.ClientSecret)
@@ -489,6 +494,65 @@ func TestAuthorizeMCPServerConfidentialClient(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, mcp.StatusConnected, stored.Status)
 	require.Equal(t, extras, stored.Auth.ExtraAuthParams)
+}
+
+// TestAuthorizeMCPServerBlankSecretEditKeepsDCRSecret pins the load-bearing
+// preserve (fix-bridge-secret-redaction design D2, spec scenario "Edit
+// preserves the stored client secret"): a DCR-issued secret persisted by the
+// authorize flow survives an edit whose client-secret field is blank — every
+// redacted read round-trips no secret, so the pane's edit always arrives
+// blank — and the row still authorizes afterward on the kept registration,
+// without re-registering.
+func TestAuthorizeMCPServerBlankSecretEditKeepsDCRSecret(t *testing.T) {
+	ctx := context.Background()
+	fs := fake.New()
+	emitter := &recordingEmitter{}
+	opener := &recordingOpener{}
+	svc := NewSettingsService(fs, WithEmitter(emitter), WithURLOpener(opener))
+	fx := newOAuthFlowFixture(t)
+
+	created, err := svc.CreateMCPServer(ctx, oauthHTTPServerRow("atlassian", fx.URL+"/mcp"))
+	require.NoError(t, err)
+	created.Auth.RedirectURI = freeCallbackURI(t)
+	require.NoError(t, fs.MCPServers().Update(ctx, &created))
+
+	// The DCR flow mints client-1 / secret-client-1 and connects the row.
+	require.NoError(t, svc.AuthorizeMCPServer(ctx, created.ID))
+	stored, err := fs.MCPServers().ByID(ctx, created.ID)
+	require.NoError(t, err)
+	finishAuthorization(t, opener, stored.Auth.RedirectURI)
+	require.True(t, awaitOAuthCompleted(t, emitter, len(emitter.recorded())).OK)
+
+	// The service read is redacted: what the pane edits back carries the
+	// key-set state and hint, no secret.
+	read, err := svc.MCPServer(ctx, created.ID)
+	require.NoError(t, err)
+	require.Empty(t, read.Auth.ClientSecret)
+	require.True(t, read.ClientSecretSet)
+	require.Equal(t, "nt-1", read.ClientSecretHint)
+	read.Name = "atlassian-renamed"
+	updated, err := svc.UpdateMCPServer(ctx, read)
+	require.NoError(t, err)
+	require.Empty(t, updated.Auth.ClientSecret, "the update return is redacted too")
+
+	// The blank edit preserved the DCR secret on the store row.
+	stored, err = fs.MCPServers().ByID(ctx, created.ID)
+	require.NoError(t, err)
+	require.Equal(t, "client-1", stored.Auth.ClientID)
+	require.Equal(t, "secret-client-1", stored.Auth.ClientSecret, "the blank edit preserved the DCR-issued secret")
+	require.Equal(t, "atlassian-renamed", stored.Name)
+
+	// The row still authorizes: the kept registration is reused — no
+	// re-registration — and the completion re-probe connects.
+	stored.Auth.RedirectURI = freeCallbackURI(t)
+	require.NoError(t, fs.MCPServers().Update(ctx, stored))
+	require.NoError(t, svc.AuthorizeMCPServer(ctx, created.ID))
+	require.Equal(t, 1, fx.registrationsSeen(), "the kept registration is reused, not re-registered")
+	finishAuthorization(t, opener, stored.Auth.RedirectURI)
+	require.True(t, awaitOAuthCompleted(t, emitter, len(emitter.recorded())).OK)
+	stored, err = fs.MCPServers().ByID(ctx, created.ID)
+	require.NoError(t, err)
+	require.Equal(t, mcp.StatusConnected, stored.Status, "the row authorizes with the preserved secret")
 }
 
 // TestAuthorizeMCPServerStdioUnsupported pins the transport gate: stdio has

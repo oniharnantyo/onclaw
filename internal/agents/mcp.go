@@ -110,13 +110,20 @@ func filterReservedTools(ctx context.Context, tools []tool.BaseTool) []tool.Base
 // naming pass (add-browser-login-handover design D7): the `__` tools are the
 // parent↔child channel and never reach the model.
 //
-// The app-synthesized system server (browser-use) rides the same gate after
-// the store rows (design D6): always enabled, it is offered to every agent by
-// default and only to agents that name it once a list exists — the system
-// row has no Enabled toggle to consult by construction. Its
-// submit_secret/request_takeover are additionally wrapped with the
-// session-aware attention interceptor (at, design D3/D7), so those calls park
-// the turn on an attention card instead of reaching the child directly.
+// The app-synthesized system servers ride the same gate after the store rows
+// (design D6; add-computer-use design D2 generalizes the single seam to a
+// registry): always enabled — no Enabled toggle to consult by construction —
+// each offered under the standard allowlist reading (every server when the
+// list is empty, else the named ones) with the registry's opt-in rule on top:
+// an opt-in spec is offered ONLY to agents that name it, even when the list
+// is empty, so registering one never silently widens agents whose allowlist
+// is empty. Each server's tools pass the same wrap pipeline, in order:
+// session-dir meta wrap, reserved-prefix filter, the naming pass, then the
+// session-aware attention interceptor (at, design D3/D7) — so
+// submit_secret/request_takeover park the turn on an attention card instead
+// of reaching the child directly — and, for the computer-use server only,
+// the approval gate last (add-computer-use design D7): the gated subset
+// parks the turn on an approval card before reaching the adapter.
 func (m *manager) resolveMCPTools(ctx context.Context, agent store.Agent, at attentionScope) ([]tool.BaseTool, error) {
 	servers, err := m.store.MCPServers().List(ctx)
 	if err != nil {
@@ -142,18 +149,28 @@ func (m *manager) resolveMCPTools(ctx context.Context, agent store.Agent, at att
 		tools = append(tools, mcp.ApplyNames(server.Name, filterReservedTools(ctx, serverTools), namer)...)
 	}
 	if src, ok := m.mcpManager.(mcp.SystemServerSource); ok {
-		if ref, ok := src.SystemServer(); ok {
-			if unrestricted || slices.Contains(agent.MCPServers, ref.ServerID) {
-				serverTools, err := m.mcpManager.Tools(ctx, ref)
-				if err != nil {
-					slog.WarnContext(ctx, "system mcp server unavailable; skipping its tools",
-						"server", ref.ServerID, "error", err)
-				} else {
-					metaed := m.wrapSessionDirTools(ref, serverTools, agent, at)
-					named := mcp.ApplyNames(ref.Name, filterReservedTools(ctx, metaed), namer)
-					tools = append(tools, m.wrapAttentionTools(ref, named, at)...)
-				}
+		for _, entry := range src.SystemServers() {
+			// Offered iff the agent names the server, or the list is empty
+			// and the spec is not opt-in (add-computer-use design D2).
+			if !slices.Contains(agent.MCPServers, entry.Ref.ServerID) && (!unrestricted || entry.OptIn) {
+				continue
 			}
+			serverTools, err := m.mcpManager.Tools(ctx, entry.Ref)
+			if err != nil {
+				slog.WarnContext(ctx, "system mcp server unavailable; skipping its tools",
+					"server", entry.Ref.ServerID, "error", err)
+				continue
+			}
+			metaed := m.wrapSessionDirTools(entry.Ref, serverTools, agent, at)
+			named := mcp.ApplyNames(entry.Ref.Name, filterReservedTools(ctx, metaed), namer)
+			attended := m.wrapAttentionTools(entry.Ref, named, at)
+			// The approval gate rides the computer-use server only (design
+			// D7): the browser-use surface carries no gated subset, and the
+			// gate is ordered AFTER the attention wrap.
+			if entry.Ref.ServerID == computerUseServerID {
+				attended = m.wrapApprovalTools(attended, at)
+			}
+			tools = append(tools, attended...)
 		}
 	}
 	return tools, nil
@@ -166,6 +183,27 @@ func (m *manager) resolveMCPTools(ctx context.Context, agent store.Agent, at att
 // directory.
 const MetaScreenshotDir = "buddies.dev/screenshot-dir"
 
+// MetaScreenshotRel is the _meta key carrying the workspace-relative facing
+// path of the stamped directory (add-computer-use coordination contract C1):
+// `sessions/<session id>/computer` for computer-use calls. The adapter's
+// marker text and the observation lane read the relative form, so a
+// relocated workspace root cannot strand a stale absolute path in the
+// persisted transcript. Browser-use calls keep stamping the absolute
+// directory only.
+const MetaScreenshotRel = "buddies.dev/screenshot-rel"
+
+// MetaProfileDir and MetaProfileName mirror internal/browseruse's binding
+// keys (add-per-agent-browser-profiles design D1; the mcp seam stays
+// import-decoupled from the engine, like MetaScreenshotDir): the _meta keys
+// under which the parent binds a browser-use call to an agent's own profile —
+// the absolute workspace profile directory and the display name (the agent
+// slug). Host-stamped like every meta key: the model can neither see nor
+// influence them.
+const (
+	MetaProfileDir  = "buddies.dev/profile-dir"
+	MetaProfileName = "buddies.dev/profile-name"
+)
+
 // metaInvoker is the slice of *mcp.MCPManager the session-dir wrap needs:
 // the usual tool source plus the meta-carrying direct invoke. The noop and
 // plain test doubles need not implement it, so the wrap degrades to the
@@ -175,26 +213,71 @@ type metaInvoker interface {
 	Invoke(ctx context.Context, ref mcp.Ref, name, argsJSON string, meta map[string]any) (string, error)
 }
 
+// agentProfileBinding resolves the agent's browser profile binding
+// (add-per-agent-browser-profiles design D2): the agent-level profile
+// directory inside its workspace and the display name — the slug. A manager
+// without workspaces, a slug-less agent, or a resolution failure degrades to
+// the empty binding: the call then runs unbound (the child's named-profile
+// behavior), never half-bound.
+func (m *manager) agentProfileBinding(agent store.Agent) (profileDir, profileName string) {
+	if m.workspaces == nil || agent.Slug == "" {
+		return "", ""
+	}
+	dir, err := m.workspaces.BrowserProfileDir(agent.Slug)
+	if err != nil {
+		return "", ""
+	}
+	return dir, agent.Slug
+}
+
 // wrapSessionDirTools wraps the system server's tools so every model-invoked
 // call carries the calling session's workspace screenshots directory through
 // the call's _meta (never the arguments — arguments land in the transcript,
 // the metadata does not, and the model can neither see nor influence it).
 // The child's screenshot tool writes captures there — inside the workspace
 // jail — so the model can read its own screenshot back with read_file
-// (add-browser-login-handover follow-up). A manager without the meta
-// invoker, an agent without a workspace, or a scope without a session
-// degrades to the unwrapped tools: the child then falls back to its own
-// browser screenshots directory.
+// (add-browser-login-handover follow-up). The stamped directory is
+// per-server (add-computer-use C1): browser-use keeps the session's browser
+// screenshots directory (unchanged behavior), computer-use gets the
+// session's computer screenshots directory plus the workspace-relative
+// facing path under MetaScreenshotRel. The agent's browser profile binding
+// rides the browser-use server only (add-per-agent-browser-profiles design
+// D5): computer-use and any other registered system server carry neither
+// binding key. A manager without the meta invoker, an agent without a
+// workspace, or a scope without a session degrades to the unwrapped tools:
+// the child then falls back to its own screenshots directory.
 func (m *manager) wrapSessionDirTools(ref mcp.Ref, serverTools []tool.BaseTool, agent store.Agent, at attentionScope) []tool.BaseTool {
 	inv, ok := m.mcpManager.(metaInvoker)
 	if !ok || m.workspaces == nil || agent.Slug == "" || at.sessionID == "" {
 		return serverTools
 	}
-	dir, err := m.workspaces.SessionDir(agent.Slug, at.sessionID)
-	if err != nil {
-		return serverTools
+	var dir, rel, profileDir, profileName string
+	switch ref.ServerID {
+	case computerUseServerID:
+		computer, err := m.workspaces.SessionComputerDir(agent.Slug, at.sessionID)
+		if err != nil {
+			return serverTools
+		}
+		dir = computer
+		rel = workspaces.SessionRel(at.sessionID, workspaces.DirComputer)
+	default:
+		// Browser-use (and any other registered system server) keeps the
+		// session's browser screenshots directory — the pre-registry
+		// behavior, bit-identical (add-computer-use design D2).
+		session, err := m.workspaces.SessionDir(agent.Slug, at.sessionID)
+		if err != nil {
+			return serverTools
+		}
+		dir = filepath.Join(session, workspaces.DirBrowser)
+		// The profile binding is gated explicitly to the browser-use system
+		// server (add-per-agent-browser-profiles design D5), not to the
+		// default branch: only its handlers read the binding keys. A binding
+		// resolution failure degrades the two fields to empty — the
+		// session-dir stamping above stays intact.
+		if ref.ServerID == mcp.SystemServerID {
+			profileDir, profileName = m.agentProfileBinding(agent)
+		}
 	}
-	browser := filepath.Join(dir, workspaces.DirBrowser)
 	out := make([]tool.BaseTool, 0, len(serverTools))
 	for _, t := range serverTools {
 		if invk, isInv := t.(tool.InvokableTool); isInv {
@@ -202,7 +285,10 @@ func (m *manager) wrapSessionDirTools(ref mcp.Ref, serverTools []tool.BaseTool, 
 				InvokableTool: invk,
 				ref:           ref,
 				invoker:       inv,
-				dir:           browser,
+				dir:           dir,
+				rel:           rel,
+				profileDir:    profileDir,
+				profileName:   profileName,
 			})
 			continue
 		}
@@ -213,21 +299,41 @@ func (m *manager) wrapSessionDirTools(ref mcp.Ref, serverTools []tool.BaseTool, 
 
 // sessionDirTool routes one system server tool's invocations through the
 // manager's meta-carrying Invoke, stamping the session's workspace
-// screenshots directory. Info passes through so the naming pass and the
-// reserved-tool filter see the original tool.
+// screenshots directory — plus the workspace-relative facing path when the
+// server carries one (computer-use, C1). Info passes through so the naming
+// pass and the reserved-tool filter see the original tool.
 type sessionDirTool struct {
 	tool.InvokableTool
 	ref     mcp.Ref
 	invoker metaInvoker
 	dir     string
+	// rel is the workspace-relative facing path stamped under
+	// MetaScreenshotRel; empty keeps the meta to the absolute directory only
+	// (browser-use, unchanged).
+	rel string
+	// profileDir/profileName are the agent's browser profile binding
+	// (add-per-agent-browser-profiles design D1/D5, browser-use tools only):
+	// the workspace profile directory and the display name stamped under
+	// MetaProfileDir/MetaProfileName. Empty fields are left out of the meta —
+	// an unbound call keeps the named-profile meta contract exactly.
+	profileDir  string
+	profileName string
 }
 
 func (t *sessionDirTool) InvokableRun(ctx context.Context, argumentsInJSON string, _ ...tool.Option) (string, error) {
 	info, err := t.InvokableTool.Info(ctx)
 	if err != nil || info == nil {
-		return "", fmt.Errorf("browser session wrap: resolve tool name: %w", err)
+		return "", fmt.Errorf("session dir wrap: resolve tool name: %w", err)
 	}
-	return t.invoker.Invoke(ctx, t.ref, info.Name, argumentsInJSON, map[string]any{
-		MetaScreenshotDir: t.dir,
-	})
+	meta := map[string]any{MetaScreenshotDir: t.dir}
+	if t.rel != "" {
+		meta[MetaScreenshotRel] = t.rel
+	}
+	if t.profileDir != "" {
+		meta[MetaProfileDir] = t.profileDir
+	}
+	if t.profileName != "" {
+		meta[MetaProfileName] = t.profileName
+	}
+	return t.invoker.Invoke(ctx, t.ref, info.Name, argumentsInJSON, meta)
 }

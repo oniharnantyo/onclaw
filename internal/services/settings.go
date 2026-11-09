@@ -3,6 +3,7 @@ package services
 import (
 	"context"
 	"fmt"
+	"sync"
 
 	"github.com/oniharnantyo/buddies/internal/agents/mcp"
 	"github.com/oniharnantyo/buddies/internal/store"
@@ -25,19 +26,20 @@ type SettingsService struct {
 	// effect immediately (design D7). Never nil: the constructor installs a
 	// no-op until the composition root injects the real cache.
 	invalidateMCP func(serverID string)
-	// systemServerState reads the supervised system MCP server's (browser-
-	// use) live connection state, so MCPServers can synthesize its System row
-	// without a store row (rebrand-browser-use-system-mcp, spec agent-mcp
-	// "System-provided server"). Nil until the composition root injects it:
+	// systemServerState reads one supervised system MCP server's live
+	// connection state by id, so MCPServers can synthesize every registered
+	// system server's System row without a store row
+	// (rebrand-browser-use-system-mcp; add-computer-use design D2 generalizes
+	// the seam to the registry). Nil until the composition root injects it:
 	// then the listing carries no system row.
-	systemServerState func() (mcp.ServerState, bool)
-	// systemServerRestart stops the supervised system MCP server's child and
-	// re-arms its supervision (rebrand-browser-use-system-mcp): deleting a
-	// browser profile tears the child down — its stdin-close shutdown closes
-	// every profile browser — before the profile directory is removed. Nil
-	// until the composition root injects it: deletion then proceeds without
-	// the restart.
-	systemServerRestart func()
+	systemServerState func(id string) (mcp.ServerState, bool)
+	// systemServerRestart stops one supervised system MCP server's child by
+	// id and re-arms its supervision (rebrand-browser-use-system-mcp):
+	// deleting a browser profile tears the child down — its stdin-close
+	// shutdown closes every profile browser — before the profile directory is
+	// removed. Nil until the composition root injects it: deletion then
+	// proceeds without the restart.
+	systemServerRestart func(id string)
 	// emitter forwards service events to the host's event bus — the MCP
 	// OAuth completion announcement (design D2). Never nil: the constructor
 	// installs Noop{} until the composition root injects the host adapter.
@@ -58,6 +60,20 @@ type SettingsService struct {
 	// for profile detection (design D9) — a seam so tests inject a fixture
 	// directory. Never nil: the constructor installs the GOOS resolver.
 	chromeUserDataDir func() (string, error)
+	// computerHooks carries the Computer Use lane's injected runtime hooks
+	// (add-computer-use design D6): status aggregation, the enable/disable
+	// kicks, and the grant-change restart all call through it into the
+	// composition-owned driver machinery. Zero until WithComputerHooks wires
+	// it: the Computer methods then refuse with a readable error (nil deps
+	// are wiring bugs — mirrors the vault/templates refusal pattern), and in
+	// server mode the seam answers before the hooks are consulted.
+	computerHooks ComputerHooks
+	// computerGrants is the permission baseline CheckComputerPermissions
+	// compares a fresh probe against (tasks 3.1): seeded by the first status
+	// read, updated by every re-check, so a grant flipped between checks
+	// restarts the driver exactly once. Guarded by computerMu.
+	computerGrants []ComputerPermission
+	computerMu     sync.Mutex
 }
 
 // SettingsOption configures the settings service.
@@ -86,13 +102,14 @@ func WithBrowserDir(dir string) SettingsOption {
 	}
 }
 
-// WithSystemServerState supplies the seam that reads the supervised system
-// MCP server's (browser-use) live connection state, so MCPServers can
-// synthesize its System row from supervision state instead of a store row
-// (rebrand-browser-use-system-mcp, spec agent-mcp "System-provided server").
-// A nil function is ignored — the listing then carries no system row
-// (mirrors WithMCPInvalidate).
-func WithSystemServerState(state func() (mcp.ServerState, bool)) SettingsOption {
+// WithSystemServerState supplies the seam that reads a supervised system
+// MCP server's live connection state by id, so MCPServers can synthesize
+// every registered system server's System row from supervision state
+// instead of a store row (rebrand-browser-use-system-mcp, spec agent-mcp
+// "System-provided server"; add-computer-use design D2 generalizes the seam
+// to the registry). A nil function is ignored — the listing then carries no
+// system row (mirrors WithMCPInvalidate).
+func WithSystemServerState(state func(id string) (mcp.ServerState, bool)) SettingsOption {
 	return func(s *SettingsService) {
 		if state != nil {
 			s.systemServerState = state
@@ -100,15 +117,15 @@ func WithSystemServerState(state func() (mcp.ServerState, bool)) SettingsOption 
 	}
 }
 
-// WithSystemServerRestart supplies the seam that stops the supervised system
-// MCP server's child and re-arms its supervision. Deleting a browser profile
-// uses it so the child's graceful shutdown closes the profile's browser
-// before the directory is removed (rebrand-browser-use-system-mcp, spec
-// browser-use "Persistent browser profiles"; the settings delta's "deleting a
-// profile SHALL remove it after its browser closes"). A nil function is
-// ignored — deletion then proceeds without the restart (mirrors
+// WithSystemServerRestart supplies the seam that stops a supervised system
+// MCP server's child (by id) and re-arms its supervision. Deleting a browser
+// profile uses it so the child's graceful shutdown closes the profile's
+// browser before the directory is removed (rebrand-browser-use-system-mcp,
+// spec browser-use "Persistent browser profiles"; the settings delta's
+// "deleting a profile SHALL remove it after its browser closes"). A nil
+// function is ignored — deletion then proceeds without the restart (mirrors
 // WithMCPInvalidate).
-func WithSystemServerRestart(restart func()) SettingsOption {
+func WithSystemServerRestart(restart func(id string)) SettingsOption {
 	return func(s *SettingsService) {
 		if restart != nil {
 			s.systemServerRestart = restart

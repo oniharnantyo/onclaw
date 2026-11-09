@@ -2,8 +2,10 @@
  * toolDisplay.ts sentence-table tests (task 3.2, design D3): every one of
  * the fifteen builtin tools in both forms (intent while running, outcome
  * when done), the `execute` command-as-sentence special case, browser by
- * `args.action`, the chip/literal markup grammar, and an MCP name minting
- * no sentence. Counts come only from the delivered payloads.
+ * `args.action`, the computer-use curated surface keyed by name suffix
+ * (add-computer-use design D8), the chip/literal markup grammar, and an
+ * MCP name minting no sentence. Counts come only from the delivered
+ * payloads.
  */
 import { describe, expect, it } from "vite-plus/test";
 
@@ -180,6 +182,66 @@ const CASES: {
     outcome: "Performed 'click'",
   },
   {
+    // The Computer Use MCP tools key the sentence on the NAME's action
+    // suffix too (add-computer-use design D8): the curated surface.
+    name: "mcp__computer-use__list_apps",
+    args: {},
+    result: '{"apps":[{"name":"Notes"}]}',
+    intent: "Listing the running apps",
+    outcome: "Listed the running apps",
+  },
+  {
+    name: "mcp__computer-use__observe_window",
+    args: { app: "Notes" },
+    result: '{"tree":"...","path":"1.png"}',
+    intent: "Observing 'Notes'",
+    outcome: "Observed 'Notes'",
+  },
+  {
+    name: "mcp__computer-use__click",
+    args: { element: "e1" },
+    result: '{"ok":true}',
+    intent: "Clicking the target",
+    outcome: "Clicked the target",
+  },
+  {
+    // The typed text can be a credential — the sentence names the step
+    // only, in both forms (add-computer-use design D7's discipline).
+    name: "mcp__computer-use__type",
+    args: { element: "e2", text: "hunter2" },
+    result: '{"ok":true}',
+    intent: "Typing into the field",
+    outcome: "Typed into the field",
+  },
+  {
+    name: "mcp__computer-use__key",
+    args: { key: "Enter" },
+    result: '{"ok":true}',
+    intent: "Pressing 'Enter'",
+    outcome: "Pressed 'Enter'",
+  },
+  {
+    name: "mcp__computer-use__hotkey",
+    args: { keys: "cmd+c" },
+    result: '{"ok":true}',
+    intent: "Pressing 'cmd+c'",
+    outcome: "Pressed 'cmd+c'",
+  },
+  {
+    name: "mcp__computer-use__kill_app",
+    args: { app: "Safari" },
+    result: '{"ok":true}',
+    intent: "Quitting 'Safari'",
+    outcome: "Quit 'Safari'",
+  },
+  {
+    name: "mcp__computer-use__stop",
+    args: {},
+    result: '{"ok":true}',
+    intent: "Releasing the desktop",
+    outcome: "Released the desktop",
+  },
+  {
     name: "agent",
     args: { prompt: "research catalog", subagent_type: "researcher" },
     result: "done",
@@ -236,6 +298,52 @@ describe("toolSentence table (all fifteen builtins, both forms)", () => {
         isError: false,
       })
     ).toBeNull();
+  });
+
+  it("an unknown computer-use name falls back to the generic action sentence (add-computer-use 3.3)", () => {
+    expect(
+      toolSentence({
+        name: "mcp__computer-use__frobnicate",
+        args: { x: 1 },
+        result: "{}",
+        state: RUNNING,
+        isError: false,
+      })
+    ).toBe("Performing 'frobnicate'");
+    expect(
+      toolSentence({
+        name: "mcp__computer-use__frobnicate",
+        args: { x: 1 },
+        result: "{}",
+        state: DONE,
+        isError: false,
+      })
+    ).toBe("Performed 'frobnicate'");
+  });
+
+  it("the bare computer-use prefix with no action mints no sentence", () => {
+    expect(
+      toolSentence({
+        name: "mcp__computer-use__",
+        args: {},
+        result: "{}",
+        state: DONE,
+        isError: false,
+      })
+    ).toBeNull();
+  });
+
+  it("computer-use typed text never rides the sentence (add-computer-use D7)", () => {
+    const sentence = toolSentence({
+      name: "mcp__computer-use__type",
+      args: { element: "e2", text: "hunter2" },
+      result: '{"ok":true}',
+      state: DONE,
+      isError: false,
+    });
+
+    expect(sentence).toBe("Typed into the field");
+    expect(sentence).not.toContain("hunter2");
   });
 
   it("the retired built-in browser name mints no sentence — historical transcripts fall back", () => {

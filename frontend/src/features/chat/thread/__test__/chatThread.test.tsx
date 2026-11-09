@@ -517,12 +517,121 @@ describe("ChatThread (task 3.1)", () => {
     await h.unmount();
   });
 
-  it("shows the empty-state hint on a fresh session", async () => {
-    const h = await renderThread([]);
+  describe("the empty-transcript greeting (enhance-chat-empty-state)", () => {
+    it("greets with the agent's identity and centers the transcript", async () => {
+      useChatStore.setState({
+        agents: [
+          {
+            ...agent,
+            Description: "Finds signals in noisy data\n\nmore detail",
+          },
+        ],
+        activeAgentID: "a1",
+      });
 
-    expect(screen.getByText("No messages yet — say hello below.")).toBeTruthy();
+      const h = await renderThread([]);
 
-    await h.unmount();
+      expect(screen.getByTestId("thread-empty-state")).toBeTruthy();
+      expect(screen.getByTestId("thread-empty-state-avatar")).toBeTruthy();
+
+      expect(
+        screen.getByTestId("thread-empty-state-greeting").textContent
+      ).toBe("How can I help you today?");
+
+      // The identity line carries the name plus the description's FIRST
+      // non-empty line only.
+      const identity = screen.getByTestId("thread-empty-state-identity");
+
+      expect(identity.textContent).toContain("With Scout");
+      expect(identity.textContent).toContain("Finds signals in noisy data");
+      expect(identity.textContent).not.toContain("more detail");
+
+      // The intro owns the viewport: the log centers its column.
+      const log = document.querySelector('[data-testid="transcript-log"]');
+
+      expect(log!.className).toContain("min-h-full");
+      expect(log!.className).toContain("justify-center");
+
+      await h.unmount();
+    });
+
+    it("degrades to the bare name when the description is empty", async () => {
+      useChatStore.setState({ agents: [agent], activeAgentID: "a1" });
+
+      const h = await renderThread([]);
+
+      // No ` — ` tail: an empty description contributes nothing.
+      expect(
+        screen.getByTestId("thread-empty-state-identity").textContent
+      ).toBe("With Scout");
+
+      await h.unmount();
+    });
+
+    it("falls back to the greeting alone without an active agent (group transcript)", async () => {
+      const h = await renderThread([]);
+
+      expect(screen.getByTestId("thread-empty-state-greeting")).toBeTruthy();
+      expect(screen.queryByTestId("thread-empty-state-avatar")).toBeNull();
+      expect(screen.queryByTestId("thread-empty-state-identity")).toBeNull();
+
+      await h.unmount();
+    });
+
+    it("every leg carries the reduced-motion opt-out", async () => {
+      useChatStore.setState({ agents: [agent], activeAgentID: "a1" });
+
+      const h = await renderThread([]);
+
+      for (const id of [
+        "thread-empty-state-avatar",
+        "thread-empty-state-greeting",
+        "thread-empty-state-identity",
+      ]) {
+        expect(screen.getByTestId(id).className).toContain(
+          "motion-reduce:animate-none"
+        );
+      }
+
+      await h.unmount();
+    });
+
+    it("the skeleton owns the viewport while a session loads, then the greeting lands", async () => {
+      useChatStore.setState({ loadingSession: true });
+
+      const h = await renderThread([]);
+
+      expect(screen.getByTestId("transcript-skeleton")).toBeTruthy();
+      expect(screen.queryByTestId("thread-empty-state")).toBeNull();
+
+      // The skeleton stays top-aligned — no centering while it shows.
+      const log = document.querySelector('[data-testid="transcript-log"]');
+
+      expect(log!.className).not.toContain("justify-center");
+
+      await h.setStore({ loadingSession: false });
+
+      expect(screen.getByTestId("thread-empty-state-greeting")).toBeTruthy();
+
+      await h.unmount();
+    });
+
+    it("the messages wrapper stays unmounted while the greeting shows", async () => {
+      useChatStore.setState({ agents: [agent], activeAgentID: "a1" });
+
+      const h = await renderThread([]);
+
+      expect(screen.queryByTestId("transcript-messages")).toBeNull();
+
+      // With a message on the thread the wrapper returns (the normal path).
+      await h.setEntries(
+        fold(ev(Kind.KindUserMessage, { text: "hello", turn_id: "t1" }))
+      );
+
+      expect(screen.getByTestId("transcript-messages")).toBeTruthy();
+
+      await h.unmount();
+    });
   });
 
   it("exposes the transcript as a live log, busy while a turn streams (task 4.1, D8)", async () => {

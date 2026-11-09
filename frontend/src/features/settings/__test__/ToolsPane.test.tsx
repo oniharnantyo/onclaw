@@ -13,7 +13,9 @@ import type {
   DocumentPresetEntry,
   ToolEntry,
   WebSearchChainEntry,
+  WebSearchChainEntryInput,
   WebSearchConfig,
+  WebSearchConfigInput,
   WebSearchProviderInfo,
 } from "../../../../bindings/github.com/oniharnantyo/buddies/internal/services/models";
 import type { Client } from "../../../lib/client";
@@ -64,14 +66,34 @@ vi.mock("../../../lib/client", () => ({
       }),
       webSearchProviders: vi.fn(async () => [...providers]),
       webSearchConfig: vi.fn(async () => chain),
-      saveWebSearchConfig: vi.fn(async (config: WebSearchConfig) => {
-        // Mirror the service: assign ids to new entries, store the chain.
+      saveWebSearchConfig: vi.fn(async (config: WebSearchConfigInput) => {
+        // Mirror the service merge (design D4): ids minted for new entries, a
+        // blank key on a known entry keeps the stored key, a typed key
+        // replaces it — and the read shape hands back only KeySet/KeyHint.
         chain = {
           entries: (config.entries ?? []).map(
-            (entry: WebSearchChainEntry, i: number) => ({
-              ...entry,
-              id: entry.id || `entry-${i + 1}`,
-            })
+            (entry: WebSearchChainEntryInput, i: number) => {
+              const prev = (chain.entries ?? []).find(
+                (e: WebSearchChainEntry): boolean => e.id === entry.id
+              );
+              const keySet =
+                entry.api_key !== undefined && entry.api_key !== ""
+                  ? true
+                  : (prev?.KeySet ?? false);
+
+              return {
+                id: entry.id || `entry-${i + 1}`,
+                name: entry.name,
+                provider: entry.provider,
+                base_url: entry.base_url,
+                KeySet: keySet,
+                KeyHint: entry.api_key
+                  ? entry.api_key.slice(-4)
+                  : keySet
+                    ? (prev?.KeyHint ?? "")
+                    : "",
+              };
+            }
           ),
           request_timeout_seconds: config.request_timeout_seconds,
         };
@@ -407,8 +429,20 @@ describe("ToolsPane", () => {
     });
     chain = {
       entries: [
-        { id: "entry-1", name: "Brave", provider: "brave", api_key: "k1" },
-        { id: "entry-2", name: "Exa", provider: "exa", api_key: "k2" },
+        {
+          id: "entry-1",
+          name: "Brave",
+          provider: "brave",
+          KeySet: true,
+          KeyHint: "k1",
+        },
+        {
+          id: "entry-2",
+          name: "Exa",
+          provider: "exa",
+          KeySet: true,
+          KeyHint: "k2",
+        },
       ],
     };
     const user = userEvent.setup();
@@ -418,8 +452,9 @@ describe("ToolsPane", () => {
     await user.click(await findByTestId("btn-tool-config-web_search"));
     await findByTestId("tool-config-dialog");
 
-    // Loaded rows carry their stored secrets through edits (write-only round
-    // trip: the value round-trips from the read).
+    // Loaded rows no longer carry their stored keys: the key inputs render
+    // empty and the blank-key save keeps the stored credentials through the
+    // backend's merge-by-ID (design D4/D5).
     const moveButtons = getByTestId("tool-config-dialog").querySelectorAll(
       'button[aria-label="Move down"]'
     );
@@ -430,10 +465,14 @@ describe("ToolsPane", () => {
     await user.click(getByTestId("btn-tool-config-save"));
 
     const payload = mockedClient.settings.saveWebSearchConfig.mock.calls[0][0];
-    expect(payload.entries?.map((e: WebSearchChainEntry) => e.id)).toEqual([
-      "entry-2",
-      "entry-1",
-    ]);
+    expect(payload.entries?.map((e: WebSearchChainEntryInput) => e.id)).toEqual(
+      ["entry-2", "entry-1"]
+    );
+    // The blank key fields submit no key at all: the stored credentials
+    // survive the backend's merge (design D4).
+    expect(
+      payload.entries?.map((e: WebSearchChainEntryInput) => e.api_key)
+    ).toEqual([undefined, undefined]);
   });
 
   it("removes a row with undo and persists the remaining chain", async () => {
@@ -446,8 +485,20 @@ describe("ToolsPane", () => {
     });
     chain = {
       entries: [
-        { id: "entry-1", name: "Brave", provider: "brave", api_key: "k1" },
-        { id: "entry-2", name: "Exa", provider: "exa", api_key: "k2" },
+        {
+          id: "entry-1",
+          name: "Brave",
+          provider: "brave",
+          KeySet: true,
+          KeyHint: "k1",
+        },
+        {
+          id: "entry-2",
+          name: "Exa",
+          provider: "exa",
+          KeySet: true,
+          KeyHint: "k2",
+        },
       ],
     };
     const user = userEvent.setup();
@@ -509,5 +560,98 @@ describe("ToolsPane", () => {
       "Brave requires an API key"
     );
     expect(mockedClient.settings.saveWebSearchConfig).not.toHaveBeenCalled();
+  });
+
+  it("shows the saved-key hint placeholder on loaded entries and keeps the stored key on a blank save", async () => {
+    tools.push({
+      Name: "web_search",
+      DisplayName: "Web Search",
+      IconKey: "search",
+      Description: "",
+      Enabled: true,
+    });
+    chain = {
+      entries: [
+        {
+          id: "entry-1",
+          name: "Brave",
+          provider: "brave",
+          KeySet: true,
+          KeyHint: "abcd",
+        },
+      ],
+    };
+    const user = userEvent.setup();
+
+    const { getByTestId, findByTestId } = await renderUI(<ToolsPane />);
+
+    await user.click(await findByTestId("btn-tool-config-web_search"));
+    await findByTestId("tool-config-dialog");
+
+    // The write-only key field renders empty with the redacted hint as its
+    // mono placeholder (design D5) — the key itself never round-trips.
+    const keyInput = getByTestId(/^ws-cred-/) as HTMLInputElement;
+
+    expect(keyInput.value).toBe("");
+    expect(keyInput.placeholder).toBe("Saved ··abcd — leave blank to keep");
+
+    // Renaming without retyping the key keeps the stored credential: the
+    // submit carries no api_key at all for the untouched entry.
+    await user.type(getByTestId(/^web-search-name-/), " (primary)");
+    await user.click(getByTestId("btn-tool-config-save"));
+
+    expect(mockedClient.settings.saveWebSearchConfig).toHaveBeenCalledTimes(1);
+    const payload = mockedClient.settings.saveWebSearchConfig.mock
+      .calls[0][0] as WebSearchConfigInput;
+
+    expect(payload.entries?.[0]).toMatchObject({
+      id: "entry-1",
+      name: "Brave (primary)",
+      provider: "brave",
+    });
+    expect(payload.entries?.[0]?.api_key).toBeUndefined();
+
+    // And the mocked service merge keeps the key set on the stored entry.
+    expect(chain.entries?.[0]?.KeySet).toBe(true);
+    expect(chain.entries?.[0]?.KeyHint).toBe("abcd");
+  });
+
+  it("replaces the stored key when a new one is typed on an existing entry", async () => {
+    tools.push({
+      Name: "web_search",
+      DisplayName: "Web Search",
+      IconKey: "search",
+      Description: "",
+      Enabled: true,
+    });
+    chain = {
+      entries: [
+        {
+          id: "entry-1",
+          name: "Brave",
+          provider: "brave",
+          KeySet: true,
+          KeyHint: "k1",
+        },
+      ],
+    };
+    const user = userEvent.setup();
+
+    const { getByTestId, findByTestId } = await renderUI(<ToolsPane />);
+
+    await user.click(await findByTestId("btn-tool-config-web_search"));
+    await findByTestId("tool-config-dialog");
+
+    await user.type(getByTestId(/^ws-cred-/), "fresh-key-9876");
+    await user.click(getByTestId("btn-tool-config-save"));
+
+    const payload = mockedClient.settings.saveWebSearchConfig.mock
+      .calls[0][0] as WebSearchConfigInput;
+
+    expect(payload.entries?.[0]?.api_key).toBe("fresh-key-9876");
+    // The mock's read shape mirrors the service: the new key's last 4 ride
+    // the hint.
+    expect(chain.entries?.[0]?.KeySet).toBe(true);
+    expect(chain.entries?.[0]?.KeyHint).toBe("9876");
   });
 });

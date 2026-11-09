@@ -45,6 +45,8 @@ function makeServer(patch: Partial<MCPServer> = {}): MCPServer {
     Service: "linear",
     CredentialSet: false,
     CredentialHint: "",
+    ClientSecretSet: false,
+    ClientSecretHint: "",
     Enabled: true,
     Status: "",
     StatusError: "",
@@ -608,6 +610,46 @@ describe("IntegrationsPane", () => {
     expect(arg.ProductEndpoints).toEqual({
       calendar: "https://calendarmcp.googleapis.com/mcp/v1",
     });
+  });
+
+  it("shows the redacted client-secret hint on the edit sheet only", async () => {
+    const user = userEvent.setup();
+
+    // A fresh connect sheet (no stored row) renders no hint line.
+    const connect = await renderUI(<IntegrationsPane pane={pane} />);
+
+    await user.click(await connect.findByTestId("integrations-tile-gmail"));
+    await connect.findByTestId("integrations-connect-sheet");
+
+    expect(connect.queryByTestId("integrations-client-secret-hint")).toBeNull();
+    await connect.unmount();
+
+    // Edit sheet: the write-only secret field stays empty, and a non-secret
+    // mono hint line carries the stored secret's last 4 (design D5).
+    servers.push(
+      makeServer({
+        ID: "m1",
+        Name: "gmail",
+        Service: "gmail",
+        Status: "connected",
+        Auth: { client_id: "stored-client" },
+        ClientSecretSet: true,
+        ClientSecretHint: "cd34",
+      })
+    );
+    const edit = await renderUI(<IntegrationsPane pane={pane} />);
+
+    await user.click(await edit.findByTestId("integrations-tile-gmail"));
+    await edit.findByTestId("integrations-connect-sheet");
+
+    // SAFETY: the testid names the kit Input, a native <input>.
+    expect(
+      (edit.getByTestId("integrations-client-secret") as HTMLInputElement)
+        .value
+    ).toBe("");
+    expect(edit.getByTestId("integrations-client-secret-hint").textContent).toBe(
+      "configured (···cd34)"
+    );
   });
 
   it("disables the family submit as 'Everything connected' once all products exist", async () => {

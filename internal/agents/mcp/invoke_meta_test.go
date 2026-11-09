@@ -73,9 +73,9 @@ func newInvokeManager(t *testing.T, cli *recordingClient) (*MCPManager, Ref) {
 		status: StatusConnected,
 	}
 	m.mu.Unlock()
-	ref, ok := m.SystemServer()
-	require.True(t, ok)
-	return m, ref
+	entries := m.SystemServers()
+	require.Len(t, entries, 1)
+	return m, entries[0].Ref
 }
 
 func TestManagerInvokeCarriesMetaOnTheWire(t *testing.T) {
@@ -98,7 +98,7 @@ func TestManagerInvokeCarriesMetaOnTheWire(t *testing.T) {
 	require.Equal(t, "/ws/scout/sessions/abc/browser", req.Params.Meta.AdditionalFields["buddies.dev/screenshot-dir"])
 
 	// The in-flight gauge is back to zero after the call.
-	require.Zero(t, m.system.inflight.Load(), "the direct invoke counts toward the gauge like every listed tool")
+	require.Zero(t, m.systems[0].inflight.Load(), "the direct invoke counts toward the gauge like every listed tool")
 }
 
 func TestManagerInvokeRefusesNonSystemRefs(t *testing.T) {

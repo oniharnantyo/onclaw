@@ -20,7 +20,7 @@ func TestServeAction_NotImplemented(t *testing.T) {
 func TestRootCommand_Serve_NotImplementedInDesktopBuild(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
 
-	cmd := NewRootCommand(&recordingEmitter{}, services.NoBrowser{}, guiShouldNotRun, WithoutSystemBrowserUse())
+	cmd := NewRootCommand(&recordingEmitter{}, services.NoBrowser{}, guiShouldNotRun, nil, WithoutSystemBrowserUse())
 
 	err := cmd.Run(context.Background(), []string{services.AppName, "serve"})
 	require.ErrorIs(t, err, ErrServeNotImplemented)

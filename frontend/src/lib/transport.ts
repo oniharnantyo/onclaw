@@ -22,6 +22,7 @@ import * as channelBindings from "../../bindings/github.com/oniharnantyo/buddies
 import * as gatewayBindings from "../../bindings/github.com/oniharnantyo/buddies/internal/services/gatewayservice";
 import * as groupsBindings from "../../bindings/github.com/oniharnantyo/buddies/internal/services/groupsservice";
 import * as knowledgeBindings from "../../bindings/github.com/oniharnantyo/buddies/internal/services/knowledgeservice";
+import * as notificationsBindings from "../../bindings/github.com/oniharnantyo/buddies/internal/services/notificationsservice";
 import * as scheduleBindings from "../../bindings/github.com/oniharnantyo/buddies/internal/services/scheduleservice";
 import * as settingsBindings from "../../bindings/github.com/oniharnantyo/buddies/internal/services/settingsservice";
 import * as windowThemeModule from "../../bindings/github.com/oniharnantyo/buddies/windowthemeservice";
@@ -35,8 +36,9 @@ export type Unsubscribe = () => void;
  * MCP OAuth channel carries MCPOAuthCompletedEvents, the schedules channel
  * carries SchedulesChangedEvents, the turns channel carries
  * TurnsChangedEvents, the channels channels carry the channel change and
- * state events, and the groups channels carry the group event and
- * groups-changed payloads. The runtime hands all of them to `onEvent`, so
+ * state events, the groups channels carry the group event and
+ * groups-changed payloads, and the notifications channel carries the
+ * notification-open payload. The runtime hands all of them to `onEvent`, so
  * this is the single documented place where the domains meet before the
  * client narrows them.
  */
@@ -49,6 +51,7 @@ export type EventPayload =
   | serviceModels.GroupsChangedEvent
   | serviceModels.KnowledgeChangedEvent
   | serviceModels.MCPOAuthCompletedEvent
+  | serviceModels.NotificationOpenEvent
   | serviceModels.SchedulesChangedEvent
   | serviceModels.TurnsChangedEvent;
 
@@ -181,6 +184,17 @@ export interface Transport {
       name: string
     ): Promise<serviceModels.BrowserScreenshotContent>;
     /**
+     * Serves one computer-use observation screenshot's bytes by the file name
+     * the observation wrote (add-computer-use, spec chat-tool-cards): the
+     * browser read's same base64-PNG shape, resolved solely inside the
+     * calling session's computer screenshots directory; a refused or missing
+     * file rejects.
+     */
+    ComputerScreenshot(
+      sessionID: string,
+      name: string
+    ): Promise<serviceModels.BrowserScreenshotContent>;
+    /**
      * Serves one generated document's bytes by the file name the
      * create_document tool reported (add-create-document D7): base64 plus
      * the byte size. The backend refuses any name carrying directory
@@ -230,6 +244,8 @@ export interface Transport {
       relPath: string
     ): Promise<serviceModels.WorkspaceEntry[] | null>;
     Unsubscribe(sessionID: string): Promise<void>;
+    /** Re-delivers the in-flight turn's full state to every subscriber. */
+    Resync(sessionID: string): Promise<void>;
     /** Reports whether the session has a turn in flight and its turn ID. */
     TurnState(sessionID: string): Promise<serviceModels.TurnStateResult>;
     ContextUsage(sessionID: string): Promise<agentsModels.ContextUsage>;
@@ -273,9 +289,31 @@ export interface Transport {
     SetToolEnabled(name: string, enabled: boolean): Promise<void>;
     WebSearchProviders(): Promise<serviceModels.WebSearchProviderInfo[] | null>;
     WebSearchConfig(): Promise<serviceModels.WebSearchConfig>;
-    SaveWebSearchConfig(config: serviceModels.WebSearchConfig): Promise<void>;
+    // The write shape: a blank api_key on an entry carrying its stable ID
+    // keeps the stored key backend-side (merge-by-ID, design D4).
+    SaveWebSearchConfig(
+      config: serviceModels.WebSearchConfigInput
+    ): Promise<void>;
     BrowserConfig(): Promise<serviceModels.BrowserConfig>;
     SaveBrowserConfig(config: serviceModels.BrowserConfig): Promise<void>;
+    /**
+     * The Computer Use pane's surface (add-computer-use tasks 3.1, design
+     * D6): the config round trip, the status aggregate (available flag,
+     * per-permission grants with Manage deep links, driver download state,
+     * supervision status), the Check again re-probe (restarting the driver
+     * on a grant change), and the enable action's host-side prompt raise.
+     * Server builds answer ComputerStatus with available=false and refuse
+     * the save/prompt (design D9).
+     */
+    ComputerConfig(): Promise<serviceModels.ComputerConfigView>;
+    SaveComputerConfig(view: serviceModels.ComputerConfigView): Promise<void>;
+    ComputerStatus(): Promise<serviceModels.ComputerStatus>;
+    CheckComputerPermissions(): Promise<serviceModels.ComputerStatus>;
+    PromptComputerPermissions(): Promise<void>;
+    /** Opens one of the pane's Manage deep links host-side; the webview
+     * cannot open custom schemes itself, and only service-issued URLs pass
+     * the allowlist (add-computer-use design D6). */
+    OpenComputerManageURL(url: string): Promise<void>;
     BrowserProfiles(): Promise<serviceModels.BrowserProfile[] | null>;
     CreateBrowserProfile(name: string): Promise<void>;
     DeleteBrowserProfile(name: string): Promise<void>;
@@ -372,12 +410,16 @@ export interface Transport {
     ): Promise<storeModels.MCPServer>;
     DeleteMCPServer(id: string): Promise<void>;
     /**
-     * Dials the stored server definition on demand, discovers its tools, and
-     * persists the outcome onto the row's status fields. A failed probe
-     * reports on the row (status "error" with the reason) instead of
-     * rejecting; it never mutates the definition.
+     * Reports a row's connection state on demand (spec agent-mcp "Probe and
+     * tool discovery"). A stored server is dialed fresh and the outcome
+     * persists onto the row's status fields; a supervised system server has
+     * no stored definition — the supervision loop is its prober — so its
+     * probe reports the live state (spec agent-mcp "System-provided server":
+     * probed on demand like a user row). A failed probe reports on the row
+     * (status "error" with the reason) instead of rejecting; it never
+     * mutates a definition.
      */
-    ProbeMCPServer(id: string): Promise<storeModels.MCPServer>;
+    ProbeMCPServer(id: string): Promise<serviceModels.MCPServerView>;
     /**
      * Starts one server's OAuth browser flow (design D2) and returns
      * immediately; completion arrives as the mcp:oauth:completed event.
@@ -522,6 +564,19 @@ export interface Transport {
     /** One document's base64-encoded bytes, for previews. */
     Content(id: string): Promise<string>;
   };
+  /** The desktop-notification preferences surface (add-desktop-notifications
+   * tasks 5.1/5.2): the settings singleton's round trip and the frontend's
+   * focus reports for foreground suppression. */
+  notifications: {
+    GetNotificationSettings(): Promise<storeModels.NotificationSettings>;
+    SaveNotificationSettings(
+      settings: storeModels.NotificationSettings
+    ): Promise<void>;
+    /** Mirrors the viewed context for foreground suppression: kind is
+     * "session" or "group" and id names the conversation on screen; an empty
+     * id or an unknown kind clears the mirror. */
+    ReportFocus(kind: string, id: string): Promise<void>;
+  };
   windowTheme: {
     SetLight(light: boolean): Promise<void>;
   };
@@ -555,6 +610,7 @@ export function createWailsTransport(): Transport {
     knowledge: knowledgeBindings,
     schedules: scheduleBindings,
     channels: channelBindings,
+    notifications: notificationsBindings,
     windowTheme: windowThemeModule,
     onEvent: (name: string, handler: EventHandler): Unsubscribe =>
       Events.On(name, (ev: Events.WailsEvent): void => handler(ev.data)),

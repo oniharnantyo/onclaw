@@ -3,6 +3,7 @@ import type { ChangeEvent, ReactElement } from "react";
 
 import { PaneHeader } from "../../components";
 import BrowserUsePane from "./components/BrowserUsePane";
+import ComputerUsePane from "./components/ComputerUsePane";
 import { Icon } from "../../components/ui/Icon";
 import { Input } from "../../components/ui/Input";
 import { MicroLabel } from "../../components/ui/MicroLabel";
@@ -13,17 +14,33 @@ import IntegrationsPane from "../integrations/IntegrationsPane";
 import ChannelsPane from "./components/ChannelsPane";
 import HooksPane from "./components/HooksPane";
 import McpPane from "./components/McpPane";
+import NotificationsPane from "./components/NotificationsPane";
 import ProvidersPane from "./components/ProvidersPane";
 import SkillsPane from "./components/SkillsPane";
 import ToolsPane from "./components/ToolsPane";
 import type { PaneKey, SettingsPaneConfig, SettingsPaneSection } from "./types";
 
 /**
- * Sidebar sections in the add-integrations nav layout: Providers under
- * MODELS, Integrations under INTEGRATIONS, and the automation surfaces
- * (Skills, Tools, Hooks, MCP) under AUTOMATION. Icons are kit Icon names.
+ * Sidebar sections in the add-integrations nav layout: the app-level
+ * surfaces (Notifications) lead under APP (add-desktop-notifications
+ * design D7), followed by Providers under MODELS, Integrations under
+ * INTEGRATIONS, and the automation surfaces (Skills, Tools, Hooks, MCP)
+ * under AUTOMATION. Icons are kit Icon names.
  */
 export const settingsPaneSections: SettingsPaneSection[] = [
+  {
+    id: "app",
+    label: "APP",
+    panes: [
+      {
+        key: "notifications",
+        label: "Notifications",
+        icon: "bell",
+        description:
+          "Desktop notifications for agent turns, attention requests, schedules, and groups.",
+      },
+    ],
+  },
   {
     id: "models",
     label: "MODELS",
@@ -60,6 +77,13 @@ export const settingsPaneSections: SettingsPaneSection[] = [
         icon: "monitor",
         description:
           "The built-in Browser Use MCP server — engine settings, profiles, and profile import.",
+      },
+      {
+        key: "computeruse",
+        label: "Computer Use",
+        icon: "eye",
+        description:
+          "The built-in Computer Use MCP server — OS permissions, driver status, and desktop-control state.",
       },
     ],
   },
@@ -109,10 +133,12 @@ const paneComponents: Record<
   integrations: IntegrationsPane,
   channels: ChannelsPane,
   browseruse: BrowserUsePane,
+  computeruse: ComputerUsePane,
   skills: SkillsPane,
   tools: ToolsPane,
   hooks: HooksPane,
   mcp: McpPane,
+  notifications: NotificationsPane,
 };
 
 /**
@@ -183,6 +209,8 @@ export default function SettingsView(): ReactElement {
     if (appliedRequest.current === requestedPane.nonce) return;
 
     appliedRequest.current = requestedPane.nonce;
+    // SAFETY: a settings pane request names one of the static config keys
+    // (openSettingsPane callers pass pane keys, never arbitrary strings).
     setActive(requestedPane.pane as PaneKey);
   }, [requestedPane]);
 

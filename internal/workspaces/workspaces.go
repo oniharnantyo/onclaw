@@ -46,6 +46,17 @@ const (
 	DirUploads   = "uploads"
 	DirSessions  = "sessions"
 	DirBrowser   = "browser"
+	// DirComputer is the session's computer-use screenshot directory: the
+	// observe/zoom tools write captures there through the host's per-call
+	// _meta (add-computer-use), inside the workspace jail, so the model can
+	// read its own frame back and the runtime can serve it to vision models.
+	DirComputer = "computer"
+	// DirBrowserProfile is the agent-level browser-profile directory: the
+	// per-agent Chromium user-data dir that host-stamped _meta binds to the
+	// agent's browser tool calls (add-per-agent-browser-profiles D2),
+	// inside the workspace jail, so deleting the agent's workspace removes
+	// the profile with zero extra cleanup.
+	DirBrowserProfile = "browser-profile"
 )
 
 // maxSlugLen is the slug length cap (DNS label limit). The slug doubles as
@@ -140,6 +151,16 @@ func (m *Manager) UploadsDir(slug string) (string, error) {
 	return m.ensureDir(slug, DirUploads)
 }
 
+// BrowserProfileDir returns the workspace's browser-profile directory — the
+// agent-level browser identity: the per-agent Chromium user-data dir that
+// host-stamped _meta binds to the agent's browser tool calls
+// (add-per-agent-browser-profiles design D2) — creating it on demand
+// (idempotent mkdir -p). It lives inside the workspace, so deleting the
+// agent's workspace removes the profile with zero extra cleanup.
+func (m *Manager) BrowserProfileDir(slug string) (string, error) {
+	return m.ensureDir(slug, DirBrowserProfile)
+}
+
 // ensureDir resolves the slug's workspace and creates the named
 // subdirectory inside it.
 func (m *Manager) ensureDir(slug, name string) (string, error) {
@@ -212,6 +233,14 @@ func (m *Manager) SessionUploadsDir(slug, sessionID string) (string, error) {
 // by the time a turn runs.
 func (m *Manager) SessionArtifactsDir(slug, sessionID string) (string, error) {
 	return m.ensureSessionDir(slug, sessionID, DirArtifacts)
+}
+
+// SessionComputerDir returns the session's computer-use screenshots
+// directory (add-computer-use: the _meta dir the parent stamps on
+// computer-use tool calls and the directory the bound read serves from) —
+// creating it on demand (idempotent mkdir -p).
+func (m *Manager) SessionComputerDir(slug, sessionID string) (string, error) {
+	return m.ensureSessionDir(slug, sessionID, DirComputer)
 }
 
 // ensureSessionDir resolves the session's directory and creates the named

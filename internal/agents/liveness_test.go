@@ -11,6 +11,7 @@ import (
 	"github.com/cloudwego/eino/schema"
 	"github.com/stretchr/testify/require"
 
+	"github.com/oniharnantyo/buddies/internal/agents/subagents"
 	"github.com/oniharnantyo/buddies/internal/sessions"
 )
 
@@ -53,8 +54,11 @@ func TestManager_TurnState_RunningParkedIdle(t *testing.T) {
 }
 
 // TestManager_Subscribe_MidTurnCatchUpSnapshot asserts subscribing mid-turn
-// delivers synthetic partial text and running tool events before subsequent live events,
-// and that these snapshot events are never persisted to the store.
+// delivers the ONE composite in-flight snapshot (enhance-resumable-streams
+// design D2): the streamed text partial, the running tools, and the turn's
+// delta count ride a single live-only KindStreamSync event to the new
+// subscriber — the old synthetic text-delta/tool-activity pair is gone — and
+// it is never persisted to the store.
 func TestManager_Subscribe_MidTurnCatchUpSnapshot(t *testing.T) {
 	firstTurnBlocked := make(chan struct{})
 
@@ -74,7 +78,9 @@ func TestManager_Subscribe_MidTurnCatchUpSnapshot(t *testing.T) {
 	mgr.mu.Unlock()
 	require.NotNil(t, rt)
 
-	// Simulate streaming text and a running tool announced in-flight
+	// Simulate streaming text and a running tool announced in-flight: one
+	// prior delta emission, then the partial it produced.
+	rt.addDelta()
 	rt.appendPartial("partial text so far")
 	rt.addTool("call-123", "bash", `{"cmd":"ls"}`)
 
@@ -83,34 +89,43 @@ func TestManager_Subscribe_MidTurnCatchUpSnapshot(t *testing.T) {
 	require.NoError(t, err)
 	defer sub.Close()
 
-	// Drain snapshot events from subscription
-	var received []sessions.Event
-	timeout := time.After(2 * time.Second)
-
-	for len(received) < 2 {
+	// Exactly one catch-up event arrives: the composite snapshot. The turn's
+	// own user_message broadcast may race the subscribe around it, so the
+	// window counts snapshot-shaped events only — the old synthetic
+	// text-delta/tool-activity pair would show up here as more.
+	var snap sessions.Event
+	snapshots := 0
+	deadline := time.After(100 * time.Millisecond)
+collect:
+	for {
 		select {
 		case ev, ok := <-sub.Events():
 			require.True(t, ok)
-			received = append(received, ev)
-		case <-timeout:
-			t.Fatalf("timed out waiting for snapshot events, got %d", len(received))
+			if strings.HasPrefix(ev.ID, "snap-") {
+				snapshots++
+				if snapshots == 1 {
+					snap = ev
+				}
+			}
+		case <-deadline:
+			break collect
 		}
 	}
-
-	// Verify synthetic snapshot events
-	partialEv := received[0]
-	require.Equal(t, fmt.Sprintf("snap-%s-partial", turn.TurnID()), partialEv.ID)
-	require.Equal(t, sessions.KindTextDelta, partialEv.Kind)
-	require.Equal(t, "partial text so far", partialEv.Text)
-
-	toolEv := received[1]
-	require.Equal(t, fmt.Sprintf("snap-%s-tool-call-123", turn.TurnID()), toolEv.ID)
-	require.Equal(t, sessions.KindToolActivity, toolEv.Kind)
-	require.NotNil(t, toolEv.Tool)
-	require.Equal(t, "call-123", toolEv.Tool.CallID)
-	require.Equal(t, "bash", toolEv.Tool.Name)
-	require.Equal(t, `{"cmd":"ls"}`, toolEv.Tool.Arguments)
-	require.Equal(t, sessions.ToolStatusRunning, toolEv.Tool.Status)
+	require.Equal(t, 1, snapshots, "the catch-up must be exactly one composite event")
+	require.Equal(t, sessions.KindStreamSync, snap.Kind)
+	require.Equal(t, turn.TurnID(), snap.TurnID)
+	require.True(t, strings.HasPrefix(snap.ID, fmt.Sprintf("snap-%s-sync-", turn.TurnID())),
+		"snapshot id %q must carry the turn-scoped sync prefix", snap.ID)
+	require.NotNil(t, snap.Stream)
+	require.Equal(t, "partial text so far", snap.Stream.Text)
+	require.Equal(t, int64(1), snap.Stream.Deltas)
+	require.Equal(t, []sessions.ToolActivity{{
+		CallID:    "call-123",
+		Name:      "bash",
+		Arguments: `{"cmd":"ls"}`,
+		Status:    sessions.ToolStatusRunning,
+	}}, snap.Stream.Tools)
+	require.Empty(t, snap.Stream.Tasks)
 
 	// Complete the turn
 	close(firstTurnBlocked)
@@ -121,6 +136,390 @@ func TestManager_Subscribe_MidTurnCatchUpSnapshot(t *testing.T) {
 	require.NoError(t, err)
 	for _, ev := range persisted {
 		require.False(t, strings.HasPrefix(ev.ID, "snap-"), "persisted log must not contain synthetic snapshot event: %s", ev.ID)
+	}
+}
+
+// waitEvent reads the subscription until one event of the kind arrives.
+func waitEvent(t *testing.T, sub Subscription, kind sessions.Kind) sessions.Event {
+	t.Helper()
+	timeout := time.After(2 * time.Second)
+	for {
+		select {
+		case ev, ok := <-sub.Events():
+			require.True(t, ok)
+			if ev.Kind == kind {
+				return ev
+			}
+		case <-timeout:
+			t.Fatalf("timed out waiting for a %s event", kind)
+		}
+	}
+}
+
+// TestStream_TapFeedsGrowingReasoningPartial asserts the reasoning partial
+// mirrors the text one (enhance-resumable-streams design D3): a turn
+// streaming reasoning feeds the in-flight builder through the drain's tap,
+// the partial grows with each delta, the catch-up snapshot reconstructs it,
+// and the durable reasoning record — the builder's per-call terminal —
+// resets it without changing what persists.
+func TestStream_TapFeedsGrowingReasoningPartial(t *testing.T) {
+	gate := make(chan struct{})
+	f := newFixture(t, func(_ []*schema.Message) fakeReply {
+		return fakeReply{reasoning: "pondering", promptTokens: 1, completionTokens: 1}
+	})
+	f.model.midStream = func() { <-gate }
+	sess := f.newSession(t)
+
+	turn, err := f.mgr.Send(t.Context(), sess.ID, "think")
+	require.NoError(t, err)
+
+	mgr := f.mgr
+	snapshotReasoning := func() (string, bool) {
+		// The builder's contract: the caller holds m.mu (the record and its
+		// registry are map state).
+		mgr.mu.Lock()
+		defer mgr.mu.Unlock()
+		rt := mgr.running[sess.ID]
+		if rt == nil {
+			return "", false
+		}
+		ev := mgr.streamSyncEvent(rt)
+		if ev.Stream == nil {
+			return "", false
+		}
+		return ev.Stream.Reasoning, true
+	}
+
+	// The streamed reasoning delta lands on the in-flight builder.
+	require.Eventually(t, func() bool {
+		r, ok := snapshotReasoning()
+		return ok && r == "pondering"
+	}, 2*time.Second, 5*time.Millisecond, "the drain's tap must feed the reasoning partial")
+
+	// Growth: a further reasoning delta accumulates onto the partial.
+	mgr.mu.Lock()
+	rt := mgr.running[sess.ID]
+	require.NotNil(t, rt)
+	rt.appendReasoning(" deeper")
+	r, ok := func() (string, bool) {
+		ev := mgr.streamSyncEvent(rt)
+		if ev.Stream == nil {
+			return "", false
+		}
+		return ev.Stream.Reasoning, true
+	}()
+	mgr.mu.Unlock()
+	require.True(t, ok)
+	require.Equal(t, "pondering deeper", r)
+
+	// A mid-turn subscriber reconstructs the reasoning from the catch-up.
+	sub, err := f.mgr.Subscribe(t.Context(), sess.ID)
+	require.NoError(t, err)
+	snap := waitEvent(t, sub, sessions.KindStreamSync)
+	require.Equal(t, "pondering deeper", snap.Stream.Reasoning)
+	sub.Close()
+
+	// The durable reasoning record is the terminal: the turn completes with
+	// the model's own reasoning in the log.
+	close(gate)
+	require.NoError(t, turn.Wait())
+	persisted, err := f.sessions.Events(t.Context(), sess.ID)
+	require.NoError(t, err)
+	require.Equal(t, "pondering", textOf(persisted, sessions.KindReasoning))
+}
+
+// TestManager_Subscribe_CatchUpCarriesRunningTasks asserts the running
+// delegated tasks ride the catch-up snapshot (enhance-resumable-streams
+// design D2/D3): the turn's record reaches the session's task registry and a
+// registered task reconstructs from the composite with its description,
+// running status, and transcript path; after it finishes, nothing running
+// remains.
+func TestManager_Subscribe_CatchUpCarriesRunningTasks(t *testing.T) {
+	blocked := make(chan struct{})
+	f := newFixture(t, func(_ []*schema.Message) fakeReply {
+		<-blocked
+		return fakeReply{text: "done", promptTokens: 1, completionTokens: 1}
+	})
+	sess := f.newSession(t)
+
+	turn, err := f.mgr.Send(t.Context(), sess.ID, "delegate work")
+	require.NoError(t, err)
+
+	mgr := f.mgr
+	// runTurn installs the session's task registry on the record before the
+	// model call runs; wait for that from the turn goroutine. The field is
+	// map state — read it under m.mu.
+	var reg *subagents.TaskRegistry
+	require.Eventually(t, func() bool {
+		mgr.mu.Lock()
+		defer mgr.mu.Unlock()
+		rt := mgr.running[sess.ID]
+		if rt == nil || rt.tasks == nil {
+			return false
+		}
+		reg = rt.tasks
+		return true
+	}, 2*time.Second, 5*time.Millisecond, "the turn's record must carry the task registry")
+	reg.RegisterTask("task-1", "sweep the workspace\nsecond line ignored", ".tasks/call-1.output", "", turn.TurnID(), true)
+
+	sub, err := f.mgr.Subscribe(t.Context(), sess.ID)
+	require.NoError(t, err)
+	snap := waitEvent(t, sub, sessions.KindStreamSync)
+	require.Equal(t, []sessions.TaskActivity{{
+		TaskID:         "task-1",
+		Description:    "sweep the workspace",
+		Status:         sessions.ToolStatusRunning,
+		TranscriptPath: ".tasks/call-1.output",
+		Background:     true,
+	}}, snap.Stream.Tasks)
+	sub.Close()
+
+	// The finished task leaves the in-flight state.
+	reg.Finish("task-1", sessions.ToolStatusCompleted, "all done")
+	require.Empty(t, reg.RunningTasks())
+
+	close(blocked)
+	require.NoError(t, turn.Wait())
+}
+
+// TestManager_SnapshotIDs_UniquePerEmission asserts every composite snapshot
+// emission mints a fresh synthetic id (enhance-resumable-streams design D2):
+// two catch-ups and two resyncs for one turn arrive with distinct ids, so a
+// client's seenEventIDs dedupe cannot swallow a re-fire.
+func TestManager_SnapshotIDs_UniquePerEmission(t *testing.T) {
+	blocked := make(chan struct{})
+	f := newFixture(t, func(_ []*schema.Message) fakeReply {
+		<-blocked
+		return fakeReply{text: "done", promptTokens: 1, completionTokens: 1}
+	})
+	sess := f.newSession(t)
+
+	turn, err := f.mgr.Send(t.Context(), sess.ID, "stream")
+	require.NoError(t, err)
+	mgr := f.mgr
+	mgr.mu.Lock()
+	rt := mgr.running[sess.ID]
+	mgr.mu.Unlock()
+	require.NotNil(t, rt)
+	rt.appendPartial("in flight")
+
+	sub1, err := f.mgr.Subscribe(t.Context(), sess.ID)
+	require.NoError(t, err)
+	defer sub1.Close()
+	sub2, err := f.mgr.Subscribe(t.Context(), sess.ID)
+	require.NoError(t, err)
+	defer sub2.Close()
+
+	catchUp1 := waitEvent(t, sub1, sessions.KindStreamSync)
+	catchUp2 := waitEvent(t, sub2, sessions.KindStreamSync)
+	require.NoError(t, f.mgr.Resync(t.Context(), sess.ID))
+	resync1 := waitEvent(t, sub1, sessions.KindStreamSync)
+	resync2 := waitEvent(t, sub2, sessions.KindStreamSync)
+
+	// One emission, one id: the two catch-ups differ, the single resync
+	// broadcast delivers the SAME id to both subscribers, and all three
+	// emissions are distinct (a shared id would let a client's seenEventIDs
+	// dedupe swallow the re-fire).
+	ids := []string{catchUp1.ID, catchUp2.ID, resync1.ID}
+	for i, id := range ids {
+		require.True(t, strings.HasPrefix(id, fmt.Sprintf("snap-%s-sync-", turn.TurnID())),
+			"id %q must carry the turn-scoped sync prefix", id)
+		for j, other := range ids {
+			if i != j {
+				require.NotEqual(t, other, id, "snapshot ids must be unique per emission")
+			}
+		}
+	}
+	require.Equal(t, resync1.ID, resync2.ID, "one broadcast emission carries one id to every subscriber")
+
+	close(blocked)
+	require.NoError(t, turn.Wait())
+}
+
+// TestManager_Resync_BroadcastsCompositeToAllSubscribers asserts the resync
+// verb (enhance-resumable-streams design D5): every live subscriber of the
+// session receives the freshly built composite snapshot, an idle or unknown
+// session is a safe no-op, and a terminal turn delivers nothing.
+func TestManager_Resync_BroadcastsCompositeToAllSubscribers(t *testing.T) {
+	blocked := make(chan struct{})
+	f := newFixture(t, func(_ []*schema.Message) fakeReply {
+		<-blocked
+		return fakeReply{text: "done", promptTokens: 1, completionTokens: 1}
+	})
+	sess := f.newSession(t)
+
+	// Idle and unknown sessions: safe no-ops.
+	require.NoError(t, f.mgr.Resync(t.Context(), sess.ID))
+	require.NoError(t, f.mgr.Resync(t.Context(), "missing-session"))
+
+	turn, err := f.mgr.Send(t.Context(), sess.ID, "stream")
+	require.NoError(t, err)
+	mgr := f.mgr
+	mgr.mu.Lock()
+	rt := mgr.running[sess.ID]
+	mgr.mu.Unlock()
+	require.NotNil(t, rt)
+	rt.appendPartial("mid-stream")
+
+	sub1, err := f.mgr.Subscribe(t.Context(), sess.ID)
+	require.NoError(t, err)
+	defer sub1.Close()
+	sub2, err := f.mgr.Subscribe(t.Context(), sess.ID)
+	require.NoError(t, err)
+	defer sub2.Close()
+
+	// Both subscribers get their own catch-up first; consume it.
+	catchUp1 := waitEvent(t, sub1, sessions.KindStreamSync)
+	catchUp2 := waitEvent(t, sub2, sessions.KindStreamSync)
+
+	require.NoError(t, f.mgr.Resync(t.Context(), sess.ID))
+	resync1 := waitEvent(t, sub1, sessions.KindStreamSync)
+	resync2 := waitEvent(t, sub2, sessions.KindStreamSync)
+
+	// The resync carries the same composite state to every subscriber; one
+	// emission is one id, and the re-fire mints a fresh one (design D2).
+	require.Equal(t, catchUp1.Stream, resync1.Stream)
+	require.Equal(t, catchUp2.Stream, resync2.Stream)
+	require.Equal(t, resync1.Stream, resync2.Stream)
+	require.Equal(t, resync1.ID, resync2.ID)
+	require.NotEqual(t, catchUp1.ID, resync1.ID)
+	require.NotEqual(t, catchUp2.ID, resync2.ID)
+
+	close(blocked)
+	require.NoError(t, turn.Wait())
+
+	// Everything buffered predates the terminal (including a user_message
+	// broadcast that raced the subscribe); drain it, then the resync is a
+	// no-op delivering nothing.
+	drainBuffered(sub1)
+	drainBuffered(sub2)
+	require.NoError(t, f.mgr.Resync(t.Context(), sess.ID))
+	select {
+	case ev, ok := <-sub1.Events():
+		if !ok {
+			return
+		}
+		t.Fatalf("unexpected event after terminal: %+v", ev)
+	case <-time.After(50 * time.Millisecond):
+	}
+}
+
+// drainBuffered consumes everything already queued on the subscription. Every
+// event in the buffer was sent before the call point — the senders this test
+// cares about are quiescent by then.
+func drainBuffered(sub Subscription) {
+	for {
+		select {
+		case _, ok := <-sub.Events():
+			if !ok {
+				return
+			}
+		default:
+			return
+		}
+	}
+}
+
+// TestManager_StreamBeacon_PingsMonotonicStopsAtTerminal asserts the liveness
+// beacon (enhance-resumable-streams design D4): while the turn streams, a
+// per-turn ticker broadcasts live-only pings carrying the turn's monotonic
+// text-delta count; the beacon stops at the turn's terminal — no ping
+// follows it.
+func TestManager_StreamBeacon_PingsMonotonicStopsAtTerminal(t *testing.T) {
+	gate := make(chan struct{})
+	f := newFixture(t, func(_ []*schema.Message) fakeReply {
+		return fakeReply{text: "done soon", promptTokens: 1, completionTokens: 1}
+	})
+	f.model.midStream = func() { <-gate }
+	f.mgr.beaconInterval = 10 * time.Millisecond
+	sess := f.newSession(t)
+
+	sub, err := f.mgr.Subscribe(t.Context(), sess.ID)
+	require.NoError(t, err)
+	defer sub.Close()
+
+	turn, err := f.mgr.Send(t.Context(), sess.ID, "hello")
+	require.NoError(t, err)
+
+	// Pings flow while the turn holds; their counts never regress and they
+	// carry the streamed text deltas.
+	var lastDeltas int64 = -1
+	for pings := 0; pings < 3; pings++ {
+		ev := waitEvent(t, sub, sessions.KindStreamPing)
+		require.Equal(t, sessions.KindStreamPing, ev.Kind)
+		require.Equal(t, turn.TurnID(), ev.TurnID)
+		require.GreaterOrEqual(t, ev.Deltas, lastDeltas, "ping counts must be monotonic")
+		lastDeltas = ev.Deltas
+	}
+	require.Greater(t, lastDeltas, int64(0), "streamed deltas must show up in the counts")
+
+	// The terminal stops the beacon: stopBeacon is waited out before the Turn
+	// completes, so Wait returning means no further ping can be sent.
+	close(gate)
+	require.NoError(t, turn.Wait())
+
+	// Everything buffered predates the terminal; drain it, then verify the
+	// channel stays quiet for a few beacon intervals.
+	drainBuffered(sub)
+	select {
+	case ev, ok := <-sub.Events():
+		if !ok {
+			return
+		}
+		t.Fatalf("event after the turn's terminal: %+v", ev)
+	case <-time.After(3 * f.mgr.beaconInterval):
+	}
+}
+
+// TestManager_StreamBeacon_PingsThroughPark asserts the parked contract
+// (enhance-resumable-streams design D4): a turn parked on a pending approval
+// stops emitting deltas but not pings — the beacon keeps proving liveness
+// with the static count through the park and stops only at the terminal.
+func TestManager_StreamBeacon_PingsThroughPark(t *testing.T) {
+	rec := &turnRecorder{}
+	f := approvalFixture(t, t.TempDir(), func(input []*schema.Message) fakeReply {
+		sawTool := false
+		for _, msg := range input {
+			if msg.Role == schema.Tool && msg.ToolCallID == "call-1" {
+				sawTool = true
+			}
+		}
+		if !sawTool {
+			return dangerousCall("call-1", "doomed.txt")
+		}
+		return fakeReply{text: "handled", promptTokens: 10, completionTokens: 2}
+	}, WithTurnTransition(rec.record))
+	f.mgr.beaconInterval = 10 * time.Millisecond
+	sess, err := f.mgr.CreateSession(t.Context(), f.agent.ID)
+	require.NoError(t, err)
+
+	sub, err := f.mgr.Subscribe(t.Context(), sess.ID)
+	require.NoError(t, err)
+	defer sub.Close()
+
+	turn, pending := parkOnApproval(t, f, sess)
+	require.NotEmpty(t, pending.Approval.InterruptID)
+
+	// During the park the pings keep flowing; no delta was emitted, so the
+	// counts stay at zero (silence-proof liveness).
+	for pings := 0; pings < 3; pings++ {
+		ev := waitEvent(t, sub, sessions.KindStreamPing)
+		require.Equal(t, turn.TurnID(), ev.TurnID)
+		require.Equal(t, int64(0), ev.Deltas)
+	}
+
+	// Cancelling the parked turn is a terminal: the beacon stops with it.
+	require.NoError(t, f.mgr.Cancel(t.Context(), sess.ID))
+	require.ErrorIs(t, turn.Wait(), ErrTurnCancelled)
+
+	drainBuffered(sub)
+	select {
+	case ev, ok := <-sub.Events():
+		if !ok {
+			return
+		}
+		t.Fatalf("event after the parked turn's terminal: %+v", ev)
+	case <-time.After(3 * f.mgr.beaconInterval):
 	}
 }
 

@@ -118,12 +118,21 @@ type MCPServer struct {
 	// the store populates them on read.
 	CredentialSet  bool
 	CredentialHint string
-	Enabled        bool
-	Status         string
-	StatusError    string
-	ToolCount      int
-	CreatedAt      time.Time
-	UpdatedAt      time.Time
+	// ClientSecretSet and ClientSecretHint are computed/redacted views like
+	// CredentialSet/CredentialHint above (fix-bridge-secret-redaction
+	// design D1): only whether the OAuth client secret — pre-registered or
+	// DCR-issued — exists and its last four characters. Plain row fields —
+	// never persisted (no column, never part of the auth JSON document);
+	// the settings service computes them at the redaction choke point, so
+	// they are empty on rows read straight from the store.
+	ClientSecretSet  bool
+	ClientSecretHint string
+	Enabled          bool
+	Status           string
+	StatusError      string
+	ToolCount        int
+	CreatedAt        time.Time
+	UpdatedAt        time.Time
 }
 
 // MCP server authentication modes — the MCPServerAuth.Mode vocabulary.
@@ -277,6 +286,37 @@ type GatewaySettings struct {
 	Enabled        bool
 	DefaultAgentID string
 	UpdatedAt      time.Time
+}
+
+// NotificationSettings is the singleton desktop-notification configuration
+// (add-desktop-notifications design D4): the master toggle plus one toggle
+// per trigger category. Absence of a saved row is a normal state: Get
+// returns (nil, nil) and callers apply defaults.
+type NotificationSettings struct {
+	Enabled bool
+	// Turns gates user-originated turn terminals for non-group sessions.
+	Turns bool
+	// Attention gates the needs-attention parks (approval-required and
+	// input-required): sessions parked indefinitely on a shell approval or
+	// a browser sign-in.
+	Attention bool
+	// Schedules gates scheduled-run completions and missed/failed fires.
+	Schedules bool
+	// Groups gates group task terminal states.
+	Groups    bool
+	UpdatedAt time.Time
+}
+
+// DefaultNotificationSettings returns the settings applied when no row was
+// ever saved: notifications on, every category on.
+func DefaultNotificationSettings() NotificationSettings {
+	return NotificationSettings{
+		Enabled:   true,
+		Turns:     true,
+		Attention: true,
+		Schedules: true,
+		Groups:    true,
+	}
 }
 
 // SessionEvent is one record of the append-only session event log. Seq is

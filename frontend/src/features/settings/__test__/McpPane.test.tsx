@@ -134,6 +134,8 @@ function makeServer(patch: Partial<MCPServer> = {}): MCPServer {
     Service: "",
     CredentialSet: false,
     CredentialHint: "",
+    ClientSecretSet: false,
+    ClientSecretHint: "",
     Enabled: true,
     Status: "configured",
     StatusError: "",
@@ -685,18 +687,27 @@ describe("McpPane", () => {
 });
 
 describe("McpPane system row (rebrand-browser-use-system-mcp 6.1)", () => {
-  /** The synthesized system row the backend listing carries (design D6). */
+  /** The synthesized system row the backend listing carries (design D6):
+   * the definition fields plus the System marker the pane keys system
+   * semantics off (add-computer-use design D2 — MCPServerView.system, never
+   * a hardcoded id). */
   function makeSystemServer(patch: Partial<MCPServer> = {}): MCPServer {
-    return makeServer({
-      ID: "browser-use",
-      Name: "Browser Use",
-      Transport: "stdio",
-      Command: "/opt/buddies/buddies",
-      Args: ["browser-mcp"],
-      Status: "connected",
-      ToolCount: 11,
-      ...patch,
-    });
+    // SAFETY: the store MCPServer shape predates the view's system marker;
+    // the backend adds it on every synthesized row, which is what this
+    // fixture mirrors.
+    return {
+      ...makeServer({
+        ID: "browser-use",
+        Name: "Browser Use",
+        Transport: "stdio",
+        Command: "/opt/buddies/buddies",
+        Args: ["browser-mcp"],
+        Status: "connected",
+        ToolCount: 11,
+        ...patch,
+      }),
+      system: true,
+    } as MCPServer;
   }
 
   beforeEach(() => {
@@ -787,5 +798,73 @@ describe("McpPane system row (rebrand-browser-use-system-mcp 6.1)", () => {
       "browser-use: lock held by another buddies instance"
     );
     expect(queryByTestId("mcp-remove-browser-use")).toBeNull();
+  });
+
+  it("renders two system rows distinctly, each badged and bare of mutation affordances (add-computer-use 1.2)", async () => {
+    // A second registered system server (add-computer-use design D2): the
+    // pane is registry-driven, so it renders as its own row with the same
+    // system semantics — no pane changes, no hardcoded ids.
+    servers.push(
+      makeSystemServer(),
+      makeSystemServer({
+        ID: "computer-use",
+        Name: "Computer Use",
+        Status: "connected",
+        ToolCount: 15,
+      })
+    );
+
+    const { findByTestId, queryByTestId } = await renderUI(
+      <McpPane pane={pane} />
+    );
+
+    // Distinct rows, each carrying the System badge and its own state.
+    expect(await findByTestId("mcp-browser-use")).toBeTruthy();
+    expect(await findByTestId("mcp-computer-use")).toBeTruthy();
+    expect((await findByTestId("mcp-system-browser-use")).textContent).toBe(
+      "system"
+    );
+    expect((await findByTestId("mcp-system-computer-use")).textContent).toBe(
+      "system"
+    );
+    expect((await findByTestId("mcp-status-browser-use")).textContent).toBe(
+      "connected · 11 tools"
+    );
+    expect((await findByTestId("mcp-status-computer-use")).textContent).toBe(
+      "connected · 15 tools"
+    );
+
+    // No edit, remove, or toggle affordance on either row.
+    for (const id of ["browser-use", "computer-use"]) {
+      expect(queryByTestId(`mcp-edit-${id}`)).toBeNull();
+      expect(queryByTestId(`mcp-remove-${id}`)).toBeNull();
+      expect(queryByTestId(`mcp-toggle-${id}`)).toBeNull();
+    }
+
+    // Both system rows carry the open-settings affordance now that the
+    // computer-use pane mapping landed (add-computer-use 3.3).
+    expect(await findByTestId("mcp-open-settings-browser-use")).toBeTruthy();
+    expect(await findByTestId("mcp-open-settings-computer-use")).toBeTruthy();
+  });
+
+  it("the computer-use row's open-settings action asks the nav store for the Computer Use pane (add-computer-use 3.3)", async () => {
+    servers.push(
+      makeSystemServer({
+        ID: "computer-use",
+        Name: "Computer Use",
+        Status: "connected",
+        ToolCount: 15,
+      })
+    );
+
+    const user = userEvent.setup();
+    const { findByTestId } = await renderUI(<McpPane pane={pane} />);
+
+    await user.click(await findByTestId("mcp-open-settings-computer-use"));
+
+    expect(useNavStore.getState().settingsPaneRequest?.pane).toBe(
+      "computeruse"
+    );
+    expect(useNavStore.getState().menu).toBe("settings");
   });
 });

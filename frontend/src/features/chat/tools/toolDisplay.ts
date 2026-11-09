@@ -23,6 +23,11 @@ import {
  * name collision can suffix the server key in pathological cases. */
 const BROWSER_USE_PREFIX = "mcp__browser-use__";
 
+/** The MCP namespace prefix the Computer Use system server's curated tools
+ * surface under (add-computer-use design D8). Matched as a PREFIX for the
+ * same collision-suffix reason as the browser prefix. */
+const COMPUTER_USE_PREFIX = "mcp__computer-use__";
+
 /** Which form of the sentence the card needs. "failed" and legacy terminal
  * records (no status) read the outcome form when one exists. */
 export type SentenceState = "running" | "done";
@@ -503,6 +508,139 @@ function sentenceTaskStop(input: SentenceInput): string | null {
     : `Stopped task ${target}`;
 }
 
+/** The computer-use sentences are keyed by the tool name's action suffix
+ * (add-computer-use design D8): the curated MCP tools carry the action in
+ * the NAME, not the args. Sentences stay args-free wherever the payload
+ * could be sensitive — typed text and clipboard values never ride a
+ * sentence (the approval gate's credential discipline, add-computer-use
+ * design D7) — and only plainly safe names (a key, a hotkey, an app name)
+ * are quoted. */
+function sentenceComputerUse(
+  input: SentenceInput,
+  action: string
+): string | null {
+  const { args, state } = input;
+
+  switch (action) {
+    case "":
+      return null;
+    case "list_apps":
+      return state === "running"
+        ? "Listing the running apps"
+        : "Listed the running apps";
+    case "list_windows":
+      return state === "running"
+        ? "Listing the open windows"
+        : "Listed the open windows";
+    case "observe_window": {
+      const app = str(args, "app");
+
+      if (app === "") {
+        return state === "running"
+          ? "Observing the window"
+          : "Observed the window";
+      }
+
+      return state === "running" ? `Observing '${app}'` : `Observed '${app}'`;
+    }
+
+    case "observe_desktop":
+      return state === "running"
+        ? "Observing the desktop"
+        : "Observed the desktop";
+    case "click":
+      return state === "running" ? "Clicking the target" : "Clicked the target";
+    case "double_click":
+      return state === "running"
+        ? "Double-clicking the target"
+        : "Double-clicked the target";
+    case "right_click":
+      return state === "running"
+        ? "Right-clicking the target"
+        : "Right-clicked the target";
+    case "drag":
+      return state === "running" ? "Dragging the mouse" : "Dragged the mouse";
+    case "scroll":
+      return state === "running"
+        ? "Scrolling the window"
+        : "Scrolled the window";
+    case "type":
+      // The text can be a credential — the sentence names the step only.
+      return state === "running"
+        ? "Typing into the field"
+        : "Typed into the field";
+    case "key": {
+      const key = str(args, "key");
+
+      return state === "running"
+        ? key !== ""
+          ? `Pressing '${key}'`
+          : "Pressing the key"
+        : key !== ""
+          ? `Pressed '${key}'`
+          : "Pressed the key";
+    }
+
+    case "hotkey": {
+      const keys = str(args, "keys");
+
+      return state === "running"
+        ? keys !== ""
+          ? `Pressing '${keys}'`
+          : "Pressing the shortcut"
+        : keys !== ""
+          ? `Pressed '${keys}'`
+          : "Pressed the shortcut";
+    }
+
+    case "set_value":
+      // The value can be a credential — the sentence names the step only.
+      return state === "running"
+        ? "Setting the field's value"
+        : "Set the field's value";
+    case "read_clipboard":
+      return state === "running"
+        ? "Reading the clipboard"
+        : "Read the clipboard";
+    case "write_clipboard":
+      return state === "running"
+        ? "Copying to the clipboard"
+        : "Copied to the clipboard";
+    case "verify":
+      return state === "running" ? "Checking the screen" : "Checked the screen";
+    case "zoom":
+      return state === "running"
+        ? "Zooming into the capture"
+        : "Zoomed into the capture";
+    case "wait":
+      return state === "running"
+        ? "Waiting for the interface to settle"
+        : "Waited for the interface to settle";
+    case "stop":
+      return state === "running"
+        ? "Releasing the desktop"
+        : "Released the desktop";
+    case "kill_app": {
+      const app = str(args, "app");
+
+      return state === "running"
+        ? app !== ""
+          ? `Quitting '${app}'`
+          : "Quitting the app"
+        : app !== ""
+          ? `Quit '${app}'`
+          : "Quit the app";
+    }
+
+    default:
+      // An unknown computer-use name falls back to the generic action
+      // sentence (tasks 3.3) — the display name still shows it verbatim.
+      return state === "running"
+        ? `Performing '${action}'`
+        : `Performed '${action}'`;
+  }
+}
+
 /**
  * The sentence table (design D3): one entry per builtin tool. The running
  * form states intent; the completed one states the outcome — when an
@@ -562,6 +700,21 @@ export function toolSentence(input: SentenceInput): string | null {
       return sentenceBrowser(
         input,
         input.name.slice(BROWSER_USE_PREFIX.length)
+      );
+    } catch {
+      return null;
+    }
+  }
+
+  // The Computer Use MCP tools mint sentences keyed by the tool name's
+  // action suffix the same way (add-computer-use design D8): the curated
+  // surface's names, with an unknown name falling back to the generic
+  // action sentence (tasks 3.3).
+  if (input.name.startsWith(COMPUTER_USE_PREFIX)) {
+    try {
+      return sentenceComputerUse(
+        input,
+        input.name.slice(COMPUTER_USE_PREFIX.length)
       );
     } catch {
       return null;

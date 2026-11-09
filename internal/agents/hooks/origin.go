@@ -19,3 +19,9 @@ const (
 	// initiator delivery rule).
 	OriginTelegram = "telegram"
 )
+
+// Origin is the run-origin concept the constants above spell: a string
+// alias, so the constants and the Event.Origin field keep their plain-string
+// shape while the agent manager's turn-finished callback can name the concept
+// (add-desktop-notifications design D2).
+type Origin = string

@@ -65,6 +65,7 @@ type fakeAgentManager struct {
 	regenerateErr    error
 	cancelErr        error
 	resolveErr       error
+	resyncErr        error
 
 	resolveInputErr     error
 	beginTakeoverErr    error
@@ -81,6 +82,7 @@ type fakeAgentManager struct {
 	resolvedInputs    []string // "session|interrupt|text|identifier|savedAs|savedLoginID"
 	begunTakeovers    []string // "session|interrupt"
 	resolvedAttention []string // "session|interrupt|outcome"
+	resynced          []string // session ids, in call order
 	busy              map[string]bool
 	running           []string
 }
@@ -161,6 +163,16 @@ func (m *fakeAgentManager) Subscribe(_ context.Context, sessionID string) (agent
 	m.subs[sessionID] = append(m.subs[sessionID], sub)
 	m.mu.Unlock()
 	return sub, nil
+}
+
+func (m *fakeAgentManager) Resync(_ context.Context, sessionID string) error {
+	if m.resyncErr != nil {
+		return m.resyncErr
+	}
+	m.mu.Lock()
+	m.resynced = append(m.resynced, sessionID)
+	m.mu.Unlock()
+	return nil
 }
 
 func (m *fakeAgentManager) ContextUsage(_ context.Context, _ string) (agents.ContextUsage, error) {
@@ -516,6 +528,22 @@ func TestChatService_Cancel_DelegatesToRuntime(t *testing.T) {
 
 	require.NoError(t, svc.Cancel(context.Background(), "s1"))
 	require.Equal(t, []string{"s1"}, turns.cancelled)
+}
+
+// TestChatService_Resync_DelegatesToRuntime covers the bound resync
+// (enhance-resumable-streams design D5): the session id reaches the runtime
+// and runtime failures propagate.
+func TestChatService_Resync_DelegatesToRuntime(t *testing.T) {
+	turns := newFakeAgentManager()
+	svc := newTestChatService(t, turns, &fakeSessionsService{store: fake.New()}, &recordingEmitter{})
+
+	require.NoError(t, svc.Resync(context.Background(), "s1"))
+	require.Equal(t, []string{"s1"}, turns.resynced)
+
+	turns.resyncErr = errors.New("boom")
+	err := svc.Resync(context.Background(), "s1")
+	require.ErrorContains(t, err, "resync session")
+	require.ErrorContains(t, err, "boom")
 }
 
 // TestChatService_ResolveApproval_DelegatesToRuntime covers the bound

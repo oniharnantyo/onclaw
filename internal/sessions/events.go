@@ -37,6 +37,14 @@ func (s *service) Append(ctx context.Context, sessionID string, events []Event) 
 			return fmt.Errorf("append session events: %s: task %s is still running; persist the terminal record only",
 				ev.Kind, ev.Task.TaskID)
 		}
+		// The resync snapshot and the liveness beacon are live-only too
+		// (enhance-resumable-streams design D2/D4): the composite in-flight
+		// state and the delta count exist only on the stream, and the
+		// transcript's durable events are everything replay needs, so Append
+		// refuses both kinds outright.
+		if ev.Kind == KindStreamSync || ev.Kind == KindStreamPing {
+			return fmt.Errorf("append session events: %s is live-only; it never enters the transcript", ev.Kind)
+		}
 		if ev.ID == "" {
 			id, err := newEventID()
 			if err != nil {
@@ -189,7 +197,11 @@ func knownKind(k Kind) bool {
 	case KindUserMessage, KindTextDelta, KindReasoningDelta, KindAssistantMessage,
 		KindReasoning, KindToolActivity, KindTaskActivity, KindTurnCompleted, KindTurnError,
 		KindTurnCancelled, KindApprovalRequired, KindApprovalResolved, KindCompaction,
-		KindPlanActivity, KindInputRequired, KindInputResolved:
+		KindPlanActivity, KindInputRequired, KindInputResolved,
+		// The live-only stream kinds (enhance-resumable-streams design D2/D4)
+		// are recognized like the delta kinds — Append keeps them out of the
+		// log, and a row that slips in anyway must not choke replay.
+		KindStreamSync, KindStreamPing:
 		return true
 	default:
 		return false

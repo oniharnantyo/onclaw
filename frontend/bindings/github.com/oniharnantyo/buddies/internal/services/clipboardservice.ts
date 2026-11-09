@@ -14,17 +14,14 @@
 
 // eslint-disable-next-line @typescript-eslint/ban-ts-comment
 // @ts-ignore: Unused imports
-import {
-  Call as $Call,
-  CancellablePromise as $CancellablePromise,
-} from "@wailsio/runtime";
+import { Call as $Call, CancellablePromise as $CancellablePromise } from "@wailsio/runtime";
 
 /**
  * GetText reads the OS clipboard's text content; an error when the platform
  * read fails or the build has no clipboard.
  */
 export function GetText(): $CancellablePromise<string> {
-  return $Call.ByID(1992106466);
+    return $Call.ByID(1992106466);
 }
 
 /**
@@ -32,5 +29,5 @@ export function GetText(): $CancellablePromise<string> {
  * fails or the build has no clipboard.
  */
 export function SetText(text: string): $CancellablePromise<void> {
-  return $Call.ByID(3404655846, text);
+    return $Call.ByID(3404655846, text);
 }

@@ -32,6 +32,16 @@ vi.mock("../../../lib/client", () => ({
       browserProfiles: vi.fn(async () => [
         { name: "default", modified_at: "", size_bytes: 0 },
       ]),
+      // The Computer Use pane reads on selection (add-computer-use 3.2).
+      computerConfig: vi.fn(async () => ({ enabled: false })),
+      computerStatus: vi.fn(async () => ({
+        available: true,
+        enabled: false,
+        status: "off",
+        permissions: [],
+        driver: { state: "pending" },
+        supervision: "",
+      })),
     },
     channels: {
       channel: vi.fn(async () => ({
@@ -45,6 +55,19 @@ vi.mock("../../../lib/client", () => ({
       })),
       chats: vi.fn(async () => []),
       pendingPairings: vi.fn(async () => []),
+    },
+    // The Notifications pane reads the singleton on selection
+    // (add-desktop-notifications 6.1); defaults are all-on.
+    notifications: {
+      getNotificationSettings: vi.fn(async () => ({
+        Enabled: true,
+        Turns: true,
+        Attention: true,
+        Schedules: true,
+        Groups: true,
+        UpdatedAt: "",
+      })),
+      saveNotificationSettings: vi.fn(async (): Promise<void> => undefined),
     },
     // The integrations pane subscribes to OAuth completions on mount (the
     // MCP pane's refetch pattern); no SettingsView test drives the flow. The
@@ -74,19 +97,36 @@ type MockedClient = Client & {
     mcpServers: MockFn;
     webSearchProviders: MockFn;
     webSearchConfig: MockFn;
+    browserConfig: MockFn;
+    browserProfiles: MockFn;
+    computerConfig: MockFn;
+    computerStatus: MockFn;
+  };
+  channels: {
+    channel: MockFn;
+    chats: MockFn;
+    pendingPairings: MockFn;
+  };
+  notifications: {
+    getNotificationSettings: MockFn;
+    saveNotificationSettings: MockFn;
   };
 };
 
 // SAFETY: the client module is mocked with vi.fn members above.
 const mockedClient = client as MockedClient;
 
-/** Sidebar order is the grouped nav order: Providers, Integrations, Channels,
- * then the AUTOMATION panes (Skills, Tools, Hooks, MCP). */
+/** Sidebar order is the grouped nav order: Notifications under APP
+ * (add-desktop-notifications 6.1) leads, then Providers, Integrations,
+ * Channels, Browser Use, Computer Use, and the AUTOMATION panes (Skills,
+ * Tools, Hooks, MCP). */
 const navItemIds = [
+  "settings-nav-item-notifications",
   "settings-nav-item-providers",
   "settings-nav-item-integrations",
   "settings-nav-item-channels",
   "settings-nav-item-browseruse",
+  "settings-nav-item-computeruse",
   "settings-nav-item-skills",
   "settings-nav-item-tools",
   "settings-nav-item-hooks",
@@ -123,20 +163,34 @@ describe("SettingsView", () => {
     expect(mockedClient.settings.providers).toHaveBeenCalled();
   });
 
-  it("groups the sidebar into MODELS, INTEGRATIONS, and AUTOMATION sections", async () => {
+  it("groups the sidebar into APP, MODELS, INTEGRATIONS, and AUTOMATION sections in that order", async () => {
     const { getByTestId } = await renderUI(<SettingsView />);
 
-    for (const id of [
-      "settings-nav-section-models",
-      "settings-nav-section-integrations",
-      "settings-nav-section-automation",
-    ]) {
-      expect(getByTestId(id)).toBeTruthy();
+    const sections = ["app", "models", "integrations", "automation"].map(
+      (id) => getByTestId(`settings-nav-section-${id}`)
+    );
+    for (const el of sections) {
+      expect(el).toBeTruthy();
     }
+
+    // Cross-section order: APP leads, then MODELS, INTEGRATIONS, AUTOMATION.
+    expect(
+      sections[0].compareDocumentPosition(sections[1]) &
+        Node.DOCUMENT_POSITION_FOLLOWING
+    ).toBeTruthy();
+    expect(
+      sections[1].compareDocumentPosition(sections[2]) &
+        Node.DOCUMENT_POSITION_FOLLOWING
+    ).toBeTruthy();
+    expect(
+      sections[2].compareDocumentPosition(sections[3]) &
+        Node.DOCUMENT_POSITION_FOLLOWING
+    ).toBeTruthy();
 
     // The INTEGRATIONS section carries its panes in nav order: Integrations,
     // Channels (add-telegram-channel task 9.1), Browser Use
-    // (rebrand-browser-use-system-mcp 5.1).
+    // (rebrand-browser-use-system-mcp 5.1), Computer Use
+    // (add-computer-use 3.2).
     const integrationItems = Array.from(
       getByTestId("settings-nav-section-integrations").querySelectorAll(
         "[data-testid^='settings-nav-item-']"
@@ -147,6 +201,7 @@ describe("SettingsView", () => {
       "settings-nav-item-integrations",
       "settings-nav-item-channels",
       "settings-nav-item-browseruse",
+      "settings-nav-item-computeruse",
     ]);
 
     // The AUTOMATION section carries its panes in nav order: Skills, Tools,
@@ -163,6 +218,16 @@ describe("SettingsView", () => {
       "settings-nav-item-hooks",
       "settings-nav-item-mcp",
     ]);
+
+    // The APP section (add-desktop-notifications 6.1) leads the sidebar
+    // with the Notifications pane.
+    const appItems = Array.from(
+      getByTestId("settings-nav-section-app").querySelectorAll(
+        "[data-testid^='settings-nav-item-']"
+      )
+    ).map((el: Element): string => el.getAttribute("data-testid") ?? "");
+
+    expect(appItems).toEqual(["settings-nav-item-notifications"]);
   });
 
   it("switches the content pane when a sidebar entry is selected", async () => {
@@ -280,6 +345,42 @@ describe("SettingsView", () => {
     expect(await findByTestId("browseruse-pane")).toBeTruthy();
     expect(getByTestId("settings-pane-title").textContent).toBe("Browser Use");
     expect(mockedClient.settings.browserConfig).toHaveBeenCalled();
+  });
+
+  it("selects the Computer Use pane from the INTEGRATIONS section", async () => {
+    const user = userEvent.setup();
+
+    const { getByTestId, findByTestId } = await renderUI(<SettingsView />);
+
+    await user.click(getByTestId("settings-nav-item-computeruse"));
+
+    expect(
+      getByTestId("settings-nav-item-computeruse").getAttribute("aria-selected")
+    ).toBe("true");
+    expect(await findByTestId("computeruse-pane")).toBeTruthy();
+    expect(getByTestId("settings-pane-title").textContent).toBe("Computer Use");
+    expect(mockedClient.settings.computerStatus).toHaveBeenCalled();
+  });
+
+  it("selects the Notifications pane from the APP section", async () => {
+    const user = userEvent.setup();
+
+    const { getByTestId, findByTestId } = await renderUI(<SettingsView />);
+
+    await user.click(getByTestId("settings-nav-item-notifications"));
+
+    expect(
+      getByTestId("settings-nav-item-notifications").getAttribute(
+        "aria-selected"
+      )
+    ).toBe("true");
+    expect(await findByTestId("notifications-pane")).toBeTruthy();
+    expect(getByTestId("settings-pane-title").textContent).toBe(
+      "Notifications"
+    );
+    expect(
+      mockedClient.notifications.getNotificationSettings
+    ).toHaveBeenCalled();
   });
 
   it("opens the pane a cross-menu openSettingsPane request named", async () => {

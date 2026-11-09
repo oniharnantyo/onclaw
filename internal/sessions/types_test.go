@@ -97,3 +97,79 @@ func TestEventWithoutArtifactsOmitsField(t *testing.T) {
 	require.Nil(t, got.Artifacts)
 	require.False(t, got.ArtifactsTruncated)
 }
+
+// The live-only stream kinds (enhance-resumable-streams design D2/D4): the
+// snapshot payload and the beacon's delta count survive an encode/decode of
+// the live event — the wire form both hosts stream — while the fields stay
+// absent from every persisted kind's shape.
+
+// TestStreamSnapshotJSONRoundTrip pins the wire shape of the composite
+// snapshot: the text and reasoning partials, the running tool rows, the
+// running task rows, and the delta count all round-trip intact.
+func TestStreamSnapshotJSONRoundTrip(t *testing.T) {
+	in := StreamSnapshot{
+		Text:      "partial answer",
+		Reasoning: "thinking it through",
+		Tools: []ToolActivity{
+			{CallID: "call-1", Name: "execute", Arguments: `{"cmd":"ls"}`, Status: ToolStatusRunning},
+		},
+		Tasks: []TaskActivity{
+			{TaskID: "task-1", Description: "search the repo", Status: ToolStatusRunning, Progress: "reading files"},
+		},
+		Deltas: 12,
+	}
+	data, err := json.Marshal(Event{Kind: KindStreamSync, TurnID: "turn-1", Stream: &in})
+	require.NoError(t, err)
+	require.Contains(t, string(data), `"kind":"stream_sync"`)
+	require.Contains(t, string(data), `"text":"partial answer"`)
+	require.Contains(t, string(data), `"reasoning":"thinking it through"`)
+	require.Contains(t, string(data), `"call_id":"call-1"`)
+	require.Contains(t, string(data), `"progress":"reading files"`)
+	require.Contains(t, string(data), `"deltas":12`)
+
+	var got Event
+	require.NoError(t, json.Unmarshal(data, &got))
+	require.Equal(t, KindStreamSync, got.Kind)
+	require.Equal(t, "turn-1", got.TurnID)
+	require.NotNil(t, got.Stream)
+	require.Equal(t, in, *got.Stream)
+}
+
+// TestStreamPingDeltasRoundTrip pins the beacon's wire shape: the count of
+// KindTextDelta emissions so far rides the Event's Deltas field beside the
+// turn id, and a zero-count ping omits the key without changing the value.
+func TestStreamPingDeltasRoundTrip(t *testing.T) {
+	data, err := json.Marshal(Event{Kind: KindStreamPing, TurnID: "turn-1", Deltas: 42})
+	require.NoError(t, err)
+	require.Contains(t, string(data), `"kind":"stream_ping"`)
+	require.Contains(t, string(data), `"deltas":42`)
+
+	var got Event
+	require.NoError(t, json.Unmarshal(data, &got))
+	require.Equal(t, KindStreamPing, got.Kind)
+	require.Equal(t, "turn-1", got.TurnID)
+	require.Equal(t, int64(42), got.Deltas)
+
+	zero, err := json.Marshal(Event{Kind: KindStreamPing, TurnID: "turn-1"})
+	require.NoError(t, err)
+	require.NotContains(t, string(zero), "deltas")
+
+	var gotZero Event
+	require.NoError(t, json.Unmarshal(zero, &gotZero))
+	require.Zero(t, gotZero.Deltas)
+}
+
+// TestEventWithoutStreamFieldsOmitsKeys pins omitempty on the live-only
+// fields: a persisted kind's wire form carries neither the snapshot payload
+// nor a delta count.
+func TestEventWithoutStreamFieldsOmitsKeys(t *testing.T) {
+	data, err := json.Marshal(Event{Kind: KindTurnCompleted, Usage: &Usage{}})
+	require.NoError(t, err)
+	require.NotContains(t, string(data), "stream")
+	require.NotContains(t, string(data), "deltas")
+
+	var got Event
+	require.NoError(t, json.Unmarshal(data, &got))
+	require.Nil(t, got.Stream)
+	require.Zero(t, got.Deltas)
+}

@@ -8,6 +8,7 @@ import (
 
 	"github.com/oniharnantyo/buddies/internal/agents"
 	"github.com/oniharnantyo/buddies/internal/agents/hooks"
+	"github.com/oniharnantyo/buddies/internal/notifications"
 	"github.com/oniharnantyo/buddies/internal/scheduler"
 	"github.com/oniharnantyo/buddies/internal/sessions"
 )
@@ -45,6 +46,12 @@ type scheduleRuns struct {
 	// about finished runs (design D13). Nil — today's default — means no
 	// completion announcements: Submit behaves exactly as before.
 	announcer RunCompletionAnnouncer
+	// notifEngine, when bound in Assemble alongside the fields above, gates
+	// run completions into the notifications engine's Schedules category
+	// (add-desktop-notifications design D2). Nil — the tests' default —
+	// means no desktop notifications: announceCompletion behaves exactly as
+	// before.
+	notifEngine *notifications.Engine
 }
 
 var _ scheduler.Runs = (*scheduleRuns)(nil)
@@ -111,6 +118,29 @@ func (r *scheduleRuns) announceCompletion(ctx context.Context, sessionID string,
 	excerpt := r.turnExcerpt(ctx, sessionID, turn.TurnID())
 	if excerpt == "" && outcome == outcomeFailed {
 		excerpt = truncateRunes(waitErr.Error(), maxExcerptRunes)
+	}
+
+	// The desktop mirror of the announcement (add-desktop-notifications
+	// design D2/D5): the run's completion lands in the Schedules category.
+	// The notification id deviates from design D5's sched:<scheduleID>:
+	// <runID> — the RunCompletionAnnouncer seam carries no schedule id and
+	// widening it would touch the Telegram implementation, which the design
+	// forbids. A fire session is 1:1 with its run, so sessionID+turnID are
+	// the deterministic key this site holds, and the route — the fire's
+	// session — is the spec's click target. The title resolves through the
+	// schedule/session resolver in notifications_wiring.go: the fire titles
+	// the session "<schedule name> — <fire time>". Best-effort, like every
+	// notification path: the enqueue never touches the announce outcome.
+	if r.notifEngine != nil {
+		r.notifEngine.Enqueue(notifications.Candidate{
+			ID:       notifications.ScheduleNotificationID(sessionID, turn.TurnID()),
+			Category: notifications.CategorySchedules,
+			NameKey:  sessionID,
+			Outcome:  outcome,
+			Detail:   excerpt,
+			Route:    notifications.Route{Kind: notifications.RouteSession, ID: sessionID},
+			ThreadID: sessionID,
+		})
 	}
 
 	if err := r.announcer.AnnounceRunCompletion(ctx, sess.Title, outcome, excerpt); err != nil {

@@ -15,7 +15,13 @@
  * hard-splits the run so its card renders unfolded with the other calls
  * folded around it; a failed call tints the summary, reveals the rows, and
  * tints the failed row; repeated `todo_write` calls collapse to "plan
- * updated" lines except the last, which keeps its snapshot row. The export
+ * updated" lines except the last, which keeps its snapshot row. A maximal
+ * run of consecutive computer-use parts (add-computer-use task 6.2, design
+ * D8) routes to the trajectory card instead — the computer-use approval
+ * parts the gate parks beside them join the run (the trajectory card
+ * carries their state chips and renders the actionable gate cards beneath
+ * it), while any other call breaks the run and renders through the rules
+ * above. The export
  * name and prop shape are the contract between the transcript (wave 2A) and
  * the tool layer: keep both.
  */
@@ -34,6 +40,11 @@ import {
 } from "@/components/assistant-ui/elements/tool-timeline";
 
 import { setOpen as setCollapseOpen } from "../collapse";
+import {
+  ComputerTrajectory,
+  computerUseApprovalActionOf,
+  isComputerUseTool,
+} from "./ComputerTool";
 import { resolveToolRenderer, toolRenderers } from "./renderers";
 import type { ToolRenderer } from "./renderers";
 import { changeStats, toolChip, toolIcon, toolVerb } from "./traceRows";
@@ -58,6 +69,69 @@ interface RunCall {
 
 /** Runs below this many calls render as plain stacked cards. */
 const FOLD_MIN_STEPS = 4;
+
+/** One contiguous render segment of the group's calls: a computer-use
+ * trajectory run, or everything else. */
+type Segment =
+  | { kind: "computer"; start: number; end: number }
+  | { kind: "other"; start: number; end: number };
+
+/** Whether one call belongs to (or joins) a computer-use run: a
+ * `mcp__computer-use__*` call, or the "execute"-named approval part the gate
+ * parks for one (its payload names the computer-use action, design D7). */
+function joinsComputerRun(call: RunCall): boolean {
+  return (
+    isComputerUseTool(call.toolName) ||
+    (call.toolName === "execute" &&
+      computerUseApprovalActionOf(call.argsText) !== null)
+  );
+}
+
+/** Walks the group's calls and cuts the maximal computer-use runs out
+ * (add-computer-use task 6.2): computer-use parts — and the joined approval
+ * parts — coalesce into trajectory segments; every other call breaks the
+ * run, and a non-computer approval call always stands alone (the hard split
+ * keeps its card unfolded and actionable). */
+function segmentCalls(calls: readonly RunCall[]): Segment[] {
+  const segments: Segment[] = [];
+
+  let cursor = 0;
+
+  while (cursor < calls.length) {
+    if (calls[cursor].approval && !joinsComputerRun(calls[cursor])) {
+      segments.push({ kind: "other", start: cursor, end: cursor });
+      cursor += 1;
+      continue;
+    }
+
+    if (joinsComputerRun(calls[cursor])) {
+      let end = cursor;
+
+      while (end + 1 < calls.length && joinsComputerRun(calls[end + 1])) {
+        end += 1;
+      }
+
+      segments.push({ kind: "computer", start: cursor, end });
+      cursor = end + 1;
+      continue;
+    }
+
+    let end = cursor;
+
+    while (
+      end + 1 < calls.length &&
+      !joinsComputerRun(calls[end + 1]) &&
+      !calls[end + 1].approval
+    ) {
+      end += 1;
+    }
+
+    segments.push({ kind: "other", start: cursor, end });
+    cursor = end + 1;
+  }
+
+  return segments;
+}
 
 /** The parts at one group's indices, narrowed to the call view (a group
  * contains only tool-call parts by construction of the grouping). */
@@ -398,6 +472,77 @@ export function ChatToolGroup({
     [calls]
   );
 
+  const streaming = group.status.type === "running";
+
+  // Computer-use runs route to the trajectory card (add-computer-use task
+  // 6.2, design D8): the maximal runs are cut first; a group carrying none
+  // renders through the original paths below, unchanged.
+  const runSegments = useMemo((): Segment[] => segmentCalls(calls), [calls]);
+
+  const hasComputer = useMemo(
+    (): boolean =>
+      runSegments.some(
+        (segment: Segment): boolean => segment.kind === "computer"
+      ),
+    [runSegments]
+  );
+
+  if (hasComputer) {
+    return (
+      <div className="my-2 flex flex-col gap-2" data-testid="run-split">
+        {runSegments.map((segment: Segment): ReactElement => {
+          const slice = calls.slice(segment.start, segment.end + 1);
+
+          const sliceIndices = group.indices.slice(
+            segment.start,
+            segment.end + 1
+          );
+
+          if (segment.kind === "computer") {
+            // A run whose computer-use calls never reached the transcript
+            // (only the gate's approval parts ride it) renders the approval
+            // cards alone — no trajectory chrome standing over them.
+            const anyComputer = slice.some((call: RunCall): boolean =>
+              isComputerUseTool(call.toolName)
+            );
+
+            if (!anyComputer) {
+              return (
+                <PlainSegment key={segment.start} indices={sliceIndices} />
+              );
+            }
+
+            return (
+              <ComputerTrajectory
+                key={segment.start}
+                parts={parts}
+                indices={sliceIndices}
+                streaming={streaming}
+              />
+            );
+          }
+
+          if (slice.length === 1 && slice[0].approval) {
+            return <PlainSegment key={segment.start} indices={sliceIndices} />;
+          }
+
+          if (slice.length < FOLD_MIN_STEPS) {
+            return <PlainSegment key={segment.start} indices={sliceIndices} />;
+          }
+
+          return (
+            <FoldRun
+              key={segment.start}
+              calls={slice}
+              indices={sliceIndices}
+              streaming={streaming}
+            />
+          );
+        })}
+      </div>
+    );
+  }
+
   // A run shorter than the fold threshold renders its calls inline, one line
   // each, in the transcript flow (design D2). The ghost group would have
   // hidden them behind a "N tool calls" disclosure whose content Radix
@@ -439,8 +584,6 @@ export function ChatToolGroup({
   if (cursor < calls.length) {
     segments.push({ start: cursor, end: calls.length - 1 });
   }
-
-  const streaming = group.status.type === "running";
 
   return (
     <div className="my-2 flex flex-col gap-2" data-testid="run-split">

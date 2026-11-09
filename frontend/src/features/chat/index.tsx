@@ -35,6 +35,7 @@ import { useNavStore } from "../../stores/nav";
 import type { ChatStore } from "./types";
 import { connectGroups, connectRunningSessions, useChatStore } from "./store";
 import { ChatRuntimeProvider } from "./runtime/ChatRuntimeProvider";
+import { useFocusReport } from "./useFocusReport";
 import { ChatHeader } from "./components/ChatHeader";
 import { RightBar } from "./components/RightBar";
 import { ChatComposer } from "./composer/ChatComposer";
@@ -127,6 +128,12 @@ export default function ChatView(): ReactElement {
   // groups:changed refetches the list, and each group's event channel feeds
   // the rail's busy dots plus the open group's transcript and task rows.
   useEffect((): (() => void) => connectGroups(), []);
+
+  // The notifications engine's focus mirror (add-desktop-notifications D3,
+  // task 6.2): the feature root reports the active session/group context on
+  // mount and every selection change, so foreground suppression tracks what
+  // is actually on screen. Observes only — no send/render logic here.
+  useFocusReport();
 
   if (agents.length === 0) {
     return (

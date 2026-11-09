@@ -83,6 +83,20 @@ const (
 	// plantask tools' tasks) after a plan tool changed it (persisted: replay
 	// folds to the newest snapshot).
 	KindPlanActivity Kind = "plan_activity"
+	// KindStreamSync carries the turn's full in-flight state as one composite
+	// snapshot (enhance-resumable-streams design D2): the current model call's
+	// text and reasoning partials, the running tools, and the running
+	// delegated tasks, plus the turn's text-delta count so far for client
+	// rebaselining. Live-only, like the delta kinds: it rides the subscribe
+	// catch-up and resync broadcasts and never persists — the transcript's
+	// durable events are everything replay needs.
+	KindStreamSync Kind = "stream_sync"
+	// KindStreamPing is the streaming turn's liveness beacon
+	// (enhance-resumable-streams design D4): the Event's Deltas field carries
+	// the monotonic count of KindTextDelta emissions for the turn so far —
+	// the comparison basis the client uses to detect missed deltas. Live-only,
+	// like KindStreamSync; it never persists.
+	KindStreamPing Kind = "stream_ping"
 )
 
 // Approval outcomes — the decision recorded on a KindApprovalResolved event.
@@ -338,6 +352,14 @@ type Event struct {
 	Input *Input `json:"input,omitempty"`
 	// Plan carries the task-plan snapshot (KindPlanActivity).
 	Plan *PlanSnapshot `json:"plan,omitempty"`
+	// Stream carries the composite in-flight snapshot (KindStreamSync only,
+	// enhance-resumable-streams design D2): the turn's live text and
+	// reasoning partials, running tools, and running tasks.
+	Stream *StreamSnapshot `json:"stream,omitempty"`
+	// Deltas is the turn's monotonic count of KindTextDelta emissions so far
+	// (KindStreamPing only, enhance-resumable-streams design D4): the client
+	// compares it with its own received count to detect missed deltas.
+	Deltas int64 `json:"deltas,omitempty"`
 }
 
 // PlanSnapshot is the agent's whole task plan at one moment, in plan order.
@@ -357,6 +379,28 @@ type PlanTask struct {
 	Status      string   `json:"status"`
 	ActiveForm  string   `json:"active_form,omitempty"`
 	BlockedBy   []string `json:"blocked_by,omitempty"`
+}
+
+// StreamSnapshot is the composite in-flight snapshot a KindStreamSync event
+// carries (enhance-resumable-streams design D2): everything a reattaching
+// client needs to reconstruct the streaming turn in one atomic fold. The
+// running rows reuse the live-only running forms of ToolActivity and
+// TaskActivity (design D10); their terminal-only fields stay zero here.
+type StreamSnapshot struct {
+	// Text is the current model call's streamed text partial.
+	Text string `json:"text"`
+	// Reasoning is the current model call's streamed reasoning partial.
+	Reasoning string `json:"reasoning"`
+	// Tools are the turn's running tool calls.
+	Tools []ToolActivity `json:"tools"`
+	// Tasks are the turn's running delegated tasks, with their latest live
+	// progress.
+	Tasks []TaskActivity `json:"tasks"`
+	// Deltas is the turn's count of KindTextDelta emissions at emission time.
+	// The client rebaselines its received-delta count on folding a sync, so a
+	// resync never reads as a permanent gap (deliberate extension of D2,
+	// consistent with D6's counter comparison).
+	Deltas int64 `json:"deltas"`
 }
 
 // Approval is the payload of the approval events: the dangerous command a

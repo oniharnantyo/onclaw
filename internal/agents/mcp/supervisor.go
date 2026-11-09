@@ -6,7 +6,9 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"reflect"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"time"
 
@@ -40,11 +42,13 @@ type exitEvent struct {
 	excerpt string
 }
 
-// systemSupervisor keeps the browser-use child alive (design D7): it spawns
-// at manager init, respawns on unexpected child exit or failed spawn attempt
-// with exponential backoff, stops after a bounded consecutive-failure count,
-// and restarts on config change only at an idle boundary — never while a
-// browser-use tool call is in flight (design D8).
+// systemSupervisor keeps one system server's child alive (design D7;
+// add-computer-use design D2 keys supervision by spec ID, one supervisor per
+// registered spec): it spawns at manager init, respawns on unexpected child
+// exit or failed spawn attempt with exponential backoff, stops after a
+// bounded consecutive-failure count, and restarts on config change only at
+// an idle boundary — never while a tool call of that server is in flight
+// (design D8).
 //
 // All state transitions run on the supervisor's single goroutine (run's tick)
 // under the manager's mutex, which it shares with the connection cache; the
@@ -53,11 +57,8 @@ type exitEvent struct {
 // lock is ever held across I/O: config fetches, spawn attempts, and client
 // teardown all run outside it.
 type systemSupervisor struct {
-	m          *MCPManager
-	browserDir string
-	// config supplies the spawn-time flag snapshot (design D8); called fresh
-	// at every spawn boundary.
-	config func(ctx context.Context) (SystemServerConfig, error)
+	m    *MCPManager
+	spec SystemServerSpec
 	// spawn is the process seam (design D7): it launches one child generation
 	// — dial, initialize handshake, and tool listing — and returns the ready
 	// connection whose stderr the supervisor then watches. Production wires
@@ -66,7 +67,7 @@ type systemSupervisor struct {
 	// now is the clock seam: production uses time.Now, tests inject a
 	// stepping clock.
 	now func() time.Time
-	// inflight counts browser-use tool calls in flight (design D8); the
+	// inflight counts this server's tool calls in flight (design D8); the
 	// counting wrappers around the current generation's tools bump it.
 	inflight atomic.Int64
 	// exited carries child-exit notifications from the stderr watchers. The
@@ -76,25 +77,24 @@ type systemSupervisor struct {
 	exited chan exitEvent
 
 	// Guarded by m.mu.
-	gen        int64              // current child generation; 0 = none
-	haveChild  bool               // a live child exists (gen's entry is cached)
-	spawnedCfg SystemServerConfig // the snapshot the current child was spawned with
-	failCount  int                // consecutive failed attempts + unexpected exits
-	backoff    time.Duration      // delay applied after the next failure
-	nextAt     time.Time          // earliest next spawn attempt
-	capped     bool               // gave up: surfaced failed until a probe/restart
-	stopped    bool               // set on Close so a late spawn attempt bails
+	gen        int64         // current child generation; 0 = none
+	haveChild  bool          // a live child exists (gen's entry is cached)
+	spawnedCfg any           // the config snapshot the current child was spawned with
+	failCount  int           // consecutive failed attempts + unexpected exits
+	backoff    time.Duration // delay applied after the next failure
+	nextAt     time.Time     // earliest next spawn attempt
+	capped     bool          // gave up: surfaced failed until a probe/restart
+	stopped    bool          // set on Close so a late spawn attempt bails
 }
 
-// newSystemSupervisor builds the supervisor with production seams: the
-// manager's connector as the spawn step and the real clock.
-func newSystemSupervisor(m *MCPManager, browserDir string, config func(ctx context.Context) (SystemServerConfig, error)) *systemSupervisor {
+// newSystemSupervisor builds the supervisor for one spec with production
+// seams: the manager's connector as the spawn step and the real clock.
+func newSystemSupervisor(m *MCPManager, spec SystemServerSpec) *systemSupervisor {
 	s := &systemSupervisor{
-		m:          m,
-		browserDir: browserDir,
-		config:     config,
-		now:        time.Now,
-		exited:     make(chan exitEvent, 64),
+		m:      m,
+		spec:   spec,
+		now:    time.Now,
+		exited: make(chan exitEvent, 64),
 	}
 	s.spawn = m.connector
 	return s
@@ -170,7 +170,7 @@ func (s *systemSupervisor) reapExits() {
 			s.failCount++
 			failures := s.failCount
 			capped := false
-			reason := systemFailure("browser-use server exited unexpectedly", ev.excerpt)
+			reason := systemFailure(s.spec.ID+" server exited unexpectedly", ev.excerpt)
 			e := &cacheEntry{
 				err:       fmt.Errorf("%s", reason),
 				status:    StatusError,
@@ -181,8 +181,8 @@ func (s *systemSupervisor) reapExits() {
 			if s.haveChild {
 				s.haveChild = false
 				s.gen++ // retire: later watchers of the dead generation are ignored
-				old = s.m.entries[key{SystemServerID}]
-				s.m.entries[key{SystemServerID}] = e
+				old = s.m.entries[key{s.spec.ID}]
+				s.m.entries[key{s.spec.ID}] = e
 			}
 			if failures >= SystemSpawnMaxFailures {
 				capped = true
@@ -196,14 +196,14 @@ func (s *systemSupervisor) reapExits() {
 			if old != nil {
 				// The child is already dead; the close just releases the
 				// client under the usual watchdog.
-				closeClient(key{SystemServerID}, old)
+				closeClient(key{s.spec.ID}, old)
 			}
 			if capped {
-				slog.Warn("browser-use server exits exceeded the supervision cap; respawning stopped",
-					"generation", ev.gen, "consecutive_failures", failures, "stderr", ev.excerpt)
+				slog.Warn("system server exits exceeded the supervision cap; respawning stopped",
+					"server", s.spec.ID, "generation", ev.gen, "consecutive_failures", failures, "stderr", ev.excerpt)
 			} else {
-				slog.Warn("browser-use server exited; supervision engaged",
-					"generation", ev.gen, "consecutive_failures", failures, "stderr", ev.excerpt)
+				slog.Warn("system server exited; supervision engaged",
+					"server", s.spec.ID, "generation", ev.gen, "consecutive_failures", failures, "stderr", ev.excerpt)
 			}
 		default:
 			return
@@ -220,18 +220,21 @@ func (s *systemSupervisor) markStopped() {
 
 // checkConfig compares the persisted settings against the snapshot the
 // current child was spawned with (design D8): a difference schedules a
-// restart that only executes while zero browser-use tool calls are in
+// restart that only executes while zero of that server's tool calls are in
 // flight — deferred otherwise, never mid-action. A config-read failure never
-// tears down a healthy child; it only delays the check.
+// tears down a healthy child; it only delays the check. Snapshots are
+// compared deeply: the spec contract wants a comparable value type, and the
+// deep comparison keeps a non-comparable shape a change signal instead of a
+// panic in the supervision loop.
 func (s *systemSupervisor) checkConfig() {
-	cfg, err := s.config(context.Background())
+	cfg, err := s.spec.Config(context.Background())
 	if err != nil {
-		slog.Debug("browser-use config check failed; keeping the current child",
-			"error", err)
+		slog.Debug("system config check failed; keeping the current child",
+			"server", s.spec.ID, "error", err)
 		return
 	}
 	s.m.mu.Lock()
-	if s.stopped || !s.haveChild || cfg == s.spawnedCfg {
+	if s.stopped || !s.haveChild || reflect.DeepEqual(cfg, s.spawnedCfg) {
 		s.m.mu.Unlock()
 		return
 	}
@@ -243,16 +246,17 @@ func (s *systemSupervisor) checkConfig() {
 	// fresh spawn with the new snapshot.
 	s.haveChild = false
 	s.gen++
-	old := s.m.entries[key{SystemServerID}]
-	delete(s.m.entries, key{SystemServerID})
+	old := s.m.entries[key{s.spec.ID}]
+	delete(s.m.entries, key{s.spec.ID})
 	s.failCount = 0 // a deliberate restart is not a failure
 	s.backoff = SystemSpawnBackoffBase
 	s.nextAt = s.now()
 	s.m.mu.Unlock()
 	if old != nil {
-		closeClient(key{SystemServerID}, old)
+		closeClient(key{s.spec.ID}, old)
 	}
-	slog.Info("browser-use config changed; restarting at idle boundary")
+	slog.Info("system config changed; restarting at idle boundary",
+		"server", s.spec.ID)
 	s.spawnAttempt()
 }
 
@@ -260,15 +264,21 @@ func (s *systemSupervisor) checkConfig() {
 // (design D8), synthesize the definition, and dial the child. Success resets
 // the consecutive-failure count and caches the ready connection — its tools
 // wrapped with the in-flight counter — while failure counts toward the cap
-// and surfaces an errored entry.
+// and surfaces an errored entry. A hold answer (coordination contract C3)
+// is neither: the server is awaiting readiness, so no child spawns and the
+// failure bookkeeping does not move.
 func (s *systemSupervisor) spawnAttempt() {
-	cfg, err := s.config(context.Background())
+	cfg, err := s.spec.Config(context.Background())
+	if isSystemServerHold(err) {
+		s.hold(err)
+		return
+	}
 	var conn *connection
 	if err == nil {
 		exe, exeErr := ownExecutable()
 		if exeErr == nil {
 			cctx, cancel := context.WithTimeout(context.Background(), s.m.connectTimeout)
-			conn, err = s.spawn(cctx, systemBrowserUseRef(exe, s.browserDir, cfg))
+			conn, err = s.spawn(cctx, s.spec.Ref(exe, cfg))
 			cancel()
 		} else {
 			err = exeErr
@@ -289,11 +299,11 @@ func (s *systemSupervisor) spawnAttempt() {
 		capped := s.capped
 		s.m.mu.Unlock()
 		if capped {
-			slog.Warn("browser-use spawn failures exceeded the supervision cap; respawning stopped",
-				"consecutive_failures", failures, "error", err)
+			slog.Warn("system spawn failures exceeded the supervision cap; respawning stopped",
+				"server", s.spec.ID, "consecutive_failures", failures, "error", err)
 		} else {
-			slog.Warn("browser-use spawn attempt failed",
-				"consecutive_failures", failures, "error", err)
+			slog.Warn("system spawn attempt failed",
+				"server", s.spec.ID, "consecutive_failures", failures, "error", err)
 		}
 		return
 	}
@@ -304,7 +314,7 @@ func (s *systemSupervisor) spawnAttempt() {
 	s.spawnedCfg = cfg
 	s.failCount = 0 // a successful probe resets the count (spec browser-use "Supervision")
 	s.backoff = SystemSpawnBackoffBase
-	s.m.entries[key{SystemServerID}] = &cacheEntry{
+	s.m.entries[key{s.spec.ID}] = &cacheEntry{
 		conn:      conn,
 		status:    StatusConnected,
 		toolCount: len(conn.tools),
@@ -314,7 +324,30 @@ func (s *systemSupervisor) spawnAttempt() {
 	if conn.stderr != nil {
 		go s.watchStderr(gen, conn.stderr)
 	}
-	slog.Info("browser-use server spawned", "generation", gen, "tools", len(conn.tools))
+	slog.Info("system server spawned", "server", s.spec.ID, "generation", gen, "tools", len(conn.tools))
+}
+
+// hold records an awaiting-readiness tick (add-computer-use coordination
+// contract C3): the entry surfaces the held status with the provider's
+// reason, no child spawns, the consecutive-failure count and backoff do not
+// move, and the next tick re-checks (nextAt stays due). A held server
+// offers no tools — its entry carries the readable hold reason as the
+// Tools-facing error. Called outside m.mu.
+func (s *systemSupervisor) hold(hold error) {
+	s.m.mu.Lock()
+	if s.stopped {
+		s.m.mu.Unlock()
+		return
+	}
+	s.m.entries[key{s.spec.ID}] = &cacheEntry{
+		err:       holdEntryErr(s.spec.ID, hold),
+		status:    StatusHeld,
+		statusErr: holdErrText(hold),
+		lastUsed:  s.now(),
+	}
+	s.m.mu.Unlock()
+	slog.Info("system server awaiting readiness",
+		"server", s.spec.ID, "reason", holdErrText(hold))
 }
 
 // fail records one failed spawn attempt (config fetch, binary resolution, or
@@ -324,7 +357,7 @@ func (s *systemSupervisor) spawnAttempt() {
 // Called with m.mu held.
 func (s *systemSupervisor) fail(err error) {
 	s.failCount++
-	reason := fmt.Sprintf("browser-use spawn failed: %v", err)
+	reason := fmt.Sprintf("%s spawn failed: %v", s.spec.ID, err)
 	e := &cacheEntry{
 		err:       fmt.Errorf("%s", reason),
 		status:    StatusError,
@@ -338,7 +371,7 @@ func (s *systemSupervisor) fail(err error) {
 	} else {
 		s.scheduleNextLocked()
 	}
-	s.m.entries[key{SystemServerID}] = e
+	s.m.entries[key{s.spec.ID}] = e
 }
 
 // scheduleNextLocked sets the next spawn attempt time at the grown backoff:
@@ -356,7 +389,10 @@ func (s *systemSupervisor) scheduleNextLocked() {
 
 // restart re-arms supervision from any state (the manual path past a crash
 // loop): counters reset, the current child — if any — is torn down, and the
-// next tick respawns with fresh config.
+// next tick respawns with fresh config. The surfaced entry goes with them:
+// an errored (capped) or held entry is the previous supervision epoch's
+// state, and a re-armed supervisor owns none — the state view reads unknown
+// until the next spawn attempt lands.
 func (s *systemSupervisor) restart() {
 	s.m.mu.Lock()
 	if s.stopped {
@@ -370,13 +406,13 @@ func (s *systemSupervisor) restart() {
 	if s.haveChild {
 		s.haveChild = false
 		s.gen++ // retire: the deliberate close's exit event is ignored
-		old = s.m.entries[key{SystemServerID}]
-		delete(s.m.entries, key{SystemServerID})
+		old = s.m.entries[key{s.spec.ID}]
 	}
+	delete(s.m.entries, key{s.spec.ID})
 	s.nextAt = s.now()
 	s.m.mu.Unlock()
 	if old != nil {
-		closeClient(key{SystemServerID}, old)
+		closeClient(key{s.spec.ID}, old)
 	}
 }
 
@@ -400,7 +436,8 @@ func (s *systemSupervisor) watchStderr(gen int64, r io.Reader) {
 	select {
 	case s.exited <- exitEvent{gen: gen, excerpt: tail.excerpt()}:
 	default:
-		slog.Warn("browser-use exit report dropped; supervision buffer full")
+		slog.Warn("system exit report dropped; supervision buffer full",
+			"server", s.spec.ID)
 	}
 }
 
@@ -492,13 +529,19 @@ func (s *systemSupervisor) invokeWithMeta(ctx context.Context, conn *connection,
 }
 
 // stderrTail keeps the last max bytes of a child's stderr: the excerpt a
-// failed connection state carries (spec browser-use "Supervision").
+// failed connection state carries (spec browser-use "Supervision"). Writes
+// and reads may race when a failed dial abandons its bounded read (the
+// withStderrTail timeout path) while the drain goroutine is still appending,
+// so both sides take the lock.
 type stderrTail struct {
+	mu  sync.Mutex
 	buf []byte
 	max int
 }
 
 func (t *stderrTail) write(p []byte) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
 	t.buf = append(t.buf, p...)
 	if len(t.buf) > 2*t.max {
 		t.buf = append([]byte(nil), t.buf[len(t.buf)-t.max:]...)
@@ -507,6 +550,8 @@ func (t *stderrTail) write(p []byte) {
 
 // excerpt returns the captured tail, trimmed to the bound.
 func (t *stderrTail) excerpt() string {
+	t.mu.Lock()
+	defer t.mu.Unlock()
 	if len(t.buf) > t.max {
 		t.buf = t.buf[len(t.buf)-t.max:]
 	}

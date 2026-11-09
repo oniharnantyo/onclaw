@@ -415,6 +415,295 @@ describe("transcript reducer", () => {
   });
 });
 
+describe("stream sync fold (enhance-resumable-streams design D7)", () => {
+  const syncEvent = (stream: Partial<NonNullable<SessionEvent["stream"]>>): SessionEvent =>
+    ev(Kind.KindStreamSync, {
+      turn_id: "t1",
+      stream: { text: "", reasoning: "", tools: [], tasks: [], deltas: 0, ...stream },
+    });
+
+  it("REPLACES the streaming entry with the snapshot text, not appends", () => {
+    const entries = fold(
+      ev(Kind.KindTextDelta, { text: "Hel", turn_id: "t1" }),
+      ev(Kind.KindTextDelta, { text: "lo", turn_id: "t1" }),
+      syncEvent({ text: "Hello world", deltas: 2 })
+    );
+
+    expect(entries).toHaveLength(1);
+    expect(entries[0]).toMatchObject({
+      kind: "assistant",
+      text: "Hello world",
+      streaming: true,
+      turnID: "t1",
+    });
+  });
+
+  it("mints the streaming entry when the turn has none", () => {
+    const entries = fold(
+      ev(Kind.KindUserMessage, { text: "go", turn_id: "t1", id: "e1" }),
+      syncEvent({ text: "mid-stream partial" })
+    );
+
+    expect(entries).toHaveLength(2);
+    expect(entries[1]).toMatchObject({
+      kind: "assistant",
+      text: "mid-stream partial",
+      streaming: true,
+      turnID: "t1",
+    });
+  });
+
+  it("an empty snapshot text mints nothing (an empty bubble would only be dropped at finalize)", () => {
+    const entries = fold(
+      ev(Kind.KindUserMessage, { text: "go", turn_id: "t1", id: "e1" }),
+      syncEvent({ text: "", reasoning: "" })
+    );
+
+    expect(entries).toHaveLength(1);
+    expect(entries[0].kind).toBe("user");
+  });
+
+  it("mint-or-replaces the reasoning entry the same way", () => {
+    const replaced = fold(
+      ev(Kind.KindReasoningDelta, { text: "thi", turn_id: "t1" }),
+      syncEvent({ reasoning: "thinking hard" })
+    );
+
+    expect(replaced).toHaveLength(1);
+    expect(replaced[0]).toMatchObject({
+      kind: "reasoning",
+      text: "thinking hard",
+      streaming: true,
+    });
+
+    const minted = fold(syncEvent({ reasoning: "thinking hard" }));
+
+    expect(minted).toHaveLength(1);
+    expect(minted[0]).toMatchObject({
+      kind: "reasoning",
+      text: "thinking hard",
+      streaming: true,
+    });
+  });
+
+  it("reconciles running tool rows: a known call id mutates in place, an unknown one mints", () => {
+    const entries = fold(
+      ev(Kind.KindToolActivity, {
+        turn_id: "t1",
+        tool: {
+          call_id: "c1",
+          name: "search",
+          arguments: "{}",
+          status: ToolStatus.ToolStatusRunning,
+        },
+      }),
+      syncEvent({
+        tools: [
+          {
+            call_id: "c1",
+            name: "search",
+            arguments: '{"q":"resumable"}',
+            status: ToolStatus.ToolStatusRunning,
+          },
+          {
+            call_id: "c2",
+            name: "read_file",
+            arguments: "{}",
+            status: ToolStatus.ToolStatusRunning,
+          },
+        ],
+      })
+    );
+
+    const toolEntries = entries.filter((e: Entry) => e.kind === "tool");
+
+    expect(toolEntries).toHaveLength(2);
+    expect(toolEntries[0]).toMatchObject({
+      call: { call_id: "c1", arguments: '{"q":"resumable"}' },
+    });
+    expect(toolEntries[1]).toMatchObject({ call: { call_id: "c2" } });
+  });
+
+  it("reconciles running task rows the same way", () => {
+    const entries = fold(
+      ev(Kind.KindTaskActivity, {
+        turn_id: "t1",
+        task: {
+          task_id: "task-1",
+          description: "Research",
+          status: ToolStatus.ToolStatusRunning,
+          background: true,
+        },
+      }),
+      syncEvent({
+        tasks: [
+          {
+            task_id: "task-1",
+            description: "Research",
+            status: ToolStatus.ToolStatusRunning,
+            progress: "reading sources",
+            background: true,
+          },
+          {
+            task_id: "task-2",
+            description: "Draft",
+            status: ToolStatus.ToolStatusRunning,
+            background: true,
+          },
+        ],
+      })
+    );
+
+    const taskEntries = entries.filter((e: Entry) => e.kind === "task");
+
+    expect(taskEntries).toHaveLength(2);
+    expect(taskEntries[0]).toMatchObject({
+      task: { task_id: "task-1", progress: "reading sources" },
+    });
+    expect(taskEntries[1]).toMatchObject({ task: { task_id: "task-2" } });
+  });
+
+  it("a terminal record after a sync finalizes the reconstructed rows exactly like the live ones", () => {
+    const completed = fold(
+      ev(Kind.KindUserMessage, { text: "go", turn_id: "t1", id: "e1" }),
+      syncEvent({ text: "mid-stream partial" }),
+      ev(Kind.KindTurnCompleted, { turn_id: "t1", id: "e2" })
+    );
+
+    expect(completed).toHaveLength(2);
+    expect(completed[1]).toMatchObject({
+      kind: "assistant",
+      text: "mid-stream partial",
+      streaming: false,
+    });
+
+    const failed = fold(
+      syncEvent({ text: "mid-stream partial" }),
+      ev(Kind.KindTurnError, { turn_id: "t1", id: "e2", error: "boom" })
+    );
+
+    expect(failed[0]).toMatchObject({
+      kind: "assistant",
+      text: "mid-stream partial",
+      streaming: false,
+    });
+    expect(failed[1]).toMatchObject({ kind: "error", message: "boom" });
+  });
+
+  it("folds a stream ping as a no-op", () => {
+    const before = fold(ev(Kind.KindTextDelta, { text: "abc", turn_id: "t1" }));
+    const after = applyEvent(
+      before,
+      ev(Kind.KindStreamPing, { turn_id: "t1", deltas: 7 })
+    );
+
+    expect(after).toBe(before);
+  });
+});
+
+describe("delta targeting around a sync-minted sibling pair (design D7)", () => {
+  // A surface that cold-joins a busy session holds nothing streaming, so the
+  // composite sync's fold mints [assistant][reasoning] and leaves the
+  // reasoning sibling LAST; the deltas that follow must still reach their own
+  // sibling instead of minting a duplicate (the live ghost tail).
+  const syncEvent = (stream: Partial<NonNullable<SessionEvent["stream"]>>): SessionEvent =>
+    ev(Kind.KindStreamSync, {
+      turn_id: "t1",
+      stream: { text: "", reasoning: "", tools: [], tasks: [], deltas: 0, ...stream },
+    });
+
+  it("a text delta after a cold-join sync extends the sync-minted assistant entry, not a second one", () => {
+    const entries = fold(
+      syncEvent({ text: "partial text", reasoning: "thinking..." }),
+      ev(Kind.KindTextDelta, { text: " more", turn_id: "t1" })
+    );
+
+    const assistants = entries.filter((e: Entry) => e.kind === "assistant");
+
+    expect(assistants).toHaveLength(1);
+    expect(assistants[0]).toMatchObject({
+      text: "partial text more",
+      streaming: true,
+      turnID: "t1",
+    });
+
+    const reasoning = entries.filter((e: Entry) => e.kind === "reasoning");
+
+    expect(reasoning).toHaveLength(1);
+    expect(reasoning[0]).toMatchObject({
+      text: "thinking...",
+      streaming: true,
+    });
+  });
+
+  it("a reasoning delta after the cold-join sync extends the sync-minted reasoning entry", () => {
+    const entries = fold(
+      syncEvent({ text: "partial text", reasoning: "thinking..." }),
+      ev(Kind.KindReasoningDelta, { text: " harder", turn_id: "t1" })
+    );
+
+    const reasoning = entries.filter((e: Entry) => e.kind === "reasoning");
+
+    expect(reasoning).toHaveLength(1);
+    expect(reasoning[0]).toMatchObject({
+      text: "thinking... harder",
+      streaming: true,
+    });
+
+    const assistants = entries.filter((e: Entry) => e.kind === "assistant");
+
+    expect(assistants).toHaveLength(1);
+    expect(assistants[0]).toMatchObject({ text: "partial text" });
+  });
+
+  it("a text delta after a tool card still opens a new assistant entry (segment boundary kept)", () => {
+    const entries = fold(
+      syncEvent({ text: "partial text", reasoning: "thinking..." }),
+      ev(Kind.KindToolActivity, {
+        turn_id: "t1",
+        tool: { call_id: "c1", name: "search", arguments: "{}" },
+      }),
+      ev(Kind.KindTextDelta, { text: "done", turn_id: "t1" })
+    );
+
+    expect(entries.map((e: Entry) => e.kind)).toEqual([
+      "assistant",
+      "reasoning",
+      "tool",
+      "assistant",
+    ]);
+
+    const assistants = entries.filter((e: Entry) => e.kind === "assistant");
+
+    expect(assistants[0]).toMatchObject({ text: "partial text" });
+    expect(assistants[1]).toMatchObject({ text: "done", streaming: true });
+  });
+
+  it("a text delta after the durable assistant_message finalized the entry opens a new streaming entry", () => {
+    const entries = fold(
+      syncEvent({ text: "partial text", reasoning: "thinking..." }),
+      ev(Kind.KindAssistantMessage, {
+        text: "final answer",
+        turn_id: "t1",
+        id: "e2",
+      }),
+      ev(Kind.KindTextDelta, { text: "post-durable", turn_id: "t1" })
+    );
+
+    const assistants = entries.filter((e: Entry) => e.kind === "assistant");
+
+    expect(assistants).toHaveLength(2);
+    expect(assistants[0]).toMatchObject({
+      text: "final answer",
+      streaming: false,
+    });
+    expect(assistants[1]).toMatchObject({
+      text: "post-durable",
+      streaming: true,
+    });
+  });
+});
+
 describe("artifact stamping (add-turn-artifacts tasks 6.1, design D4)", () => {
   it("a completed turn carries the terminal event's artifacts on its assistant entry", () => {
     const artifacts = [

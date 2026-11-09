@@ -3,8 +3,10 @@ package mcp
 import (
 	"context"
 	"encoding/base64"
+	"errors"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -123,4 +125,40 @@ func TestDialInjectsCredentialHeader(t *testing.T) {
 	}
 	// The configured headers were never mutated with the credential.
 	require.NotContains(t, configured, "X-Api-Key")
+}
+
+// TestConnectFailedStdioDialCarriesStderrTail pins the failed-dial excerpt:
+// a stdio child that dies at startup carries its real reason on stderr, and
+// the connect error must surface it next to the otherwise-opaque handshake
+// failure — a held browser-use ownership lockfile was once reported only as
+// "context deadline exceeded", five times, with the refusal never shown.
+func TestConnectFailedStdioDialCarriesStderrTail(t *testing.T) {
+	// The child writes its refusal and stays alive — never answering the
+	// handshake, never EOF'ing its stderr. The refusal is buffered at exec,
+	// so the excerpt does not race the child's exit: the drain's bound is
+	// what produces it (the wedged-child posture).
+	conn := Connection{
+		Transport: TransportStdio,
+		Command:   "sh",
+		Args:      []string{"-c", "echo browser: browser dir already owned by pid 7 >&2; exec sleep 30"},
+	}
+	// The handshake burns its whole window against the silent child; the
+	// drain then reads the buffered excerpt within its own bound.
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+
+	_, err := connect(ctx, conn)
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "mcp initialize handshake")
+	require.Contains(t, err.Error(), "context deadline exceeded")
+	require.Contains(t, err.Error(), "stderr: browser: browser dir already owned by pid 7")
+}
+
+// TestWithStderrTailNilSafe pins the seam's guards: no stderr stream or no
+// error returns the error untouched.
+func TestWithStderrTailNilSafe(t *testing.T) {
+	boom := errors.New("boom")
+	require.Equal(t, boom, withStderrTail(boom, nil))
+	require.Nil(t, withStderrTail(nil, strings.NewReader("noise")))
+	require.Equal(t, boom, withStderrTail(boom, strings.NewReader("")))
 }

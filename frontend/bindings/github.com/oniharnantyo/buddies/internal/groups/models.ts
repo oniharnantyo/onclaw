@@ -11,34 +11,34 @@ import * as sessions$0 from "../sessions/models.js";
  * from the composer's mention picker, and an optional reply target.
  */
 export interface SendRequest {
-  /**
-   * GroupID names the group the message goes to.
-   */
-  GroupID: string;
+    /**
+     * GroupID names the group the message goes to.
+     */
+    "GroupID": string;
 
-  /**
-   * Text is the message body; mentions (@Name, @everyone) are parsed from
-   * it host-side.
-   */
-  Text: string;
+    /**
+     * Text is the message body; mentions (@Name, @everyone) are parsed from
+     * it host-side.
+     */
+    "Text": string;
 
-  /**
-   * Attachments carries the uploaded files riding the message; empty for
-   * a plain text send.
-   */
-  Attachments: sessions$0.Attachment[] | null;
+    /**
+     * Attachments carries the uploaded files riding the message; empty for
+     * a plain text send.
+     */
+    "Attachments": sessions$0.Attachment[] | null;
 
-  /**
-   * RecipientAgentID names the member the mention picker chose; the same
-   * mechanism as a typed mention (no coordinator line). Empty when the
-   * message is untargeted. A non-roster id falls through to the normal
-   * tiers.
-   */
-  RecipientAgentID: string;
+    /**
+     * RecipientAgentID names the member the mention picker chose; the same
+     * mechanism as a typed mention (no coordinator line). Empty when the
+     * message is untargeted. A non-roster id falls through to the normal
+     * tiers.
+     */
+    "RecipientAgentID": string;
 
-  /**
-   * ReplyToMessageID pins the transcript row this message replies to;
-   * empty when not a reply.
-   */
-  ReplyToMessageID: string;
+    /**
+     * ReplyToMessageID pins the transcript row this message replies to;
+     * empty when not a reply.
+     */
+    "ReplyToMessageID": string;
 }

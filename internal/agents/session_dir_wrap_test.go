@@ -118,7 +118,13 @@ func TestWrapSessionDirToolsStampsTheSessionBrowserDir(t *testing.T) {
 		filepath.Join(wsRoot, slug, "sessions", sessionID, workspaces.DirBrowser),
 		metas[0][MetaScreenshotDir],
 		"the meta carries the calling session's workspace browser directory")
-	require.Len(t, metas[0], 1, "the meta carries exactly the screenshots directory")
+	require.Equal(t,
+		filepath.Join(wsRoot, slug, workspaces.DirBrowserProfile),
+		metas[0][MetaProfileDir],
+		"browser-use calls carry the agent's workspace profile directory")
+	require.Equal(t, slug, metas[0][MetaProfileName],
+		"browser-use calls carry the agent slug as the profile display name")
+	require.Len(t, metas[0], 3, "the meta carries exactly the screenshots dir and the agent's profile binding")
 }
 
 func TestWrapSessionDirToolsDegradesWithoutAScope(t *testing.T) {
@@ -156,4 +162,82 @@ func TestSessionDirToolPropagatesInvokeErrors(t *testing.T) {
 		store.Agent{Slug: "scout"}, attentionScope{sessionID: "e7238190a1b2c3d4e5f60718293a4b5c"})
 	_, err := wrapped[0].(tool.InvokableTool).InvokableRun(context.Background(), `{}`)
 	require.ErrorContains(t, err, "child is down")
+}
+
+// The per-server stamping (add-computer-use coordination contract C1): the
+// computer-use server's calls carry the session's computer screenshots
+// directory plus the workspace-relative facing path, while browser-use keeps
+// stamping exactly what it stamped before — the absolute browser directory,
+// no rel key.
+
+func TestWrapSessionDirToolsStampsTheComputerDirForComputerUse(t *testing.T) {
+	const (
+		slug      = "scout"
+		sessionID = "e7238190a1b2c3d4e5f60718293a4b5c"
+	)
+	m, wsRoot := newWrapManager(t, slug)
+	inv := &fakeMetaInvoker{out: `{"ok":true}`}
+	m.mcpManager = inv
+
+	ref := mcp.Ref{ServerID: computerUseServerID, Name: computerUseServerID}
+	wrapped := m.wrapSessionDirTools(ref, []tool.BaseTool{&stubRawTool{name: "observe_window"}},
+		store.Agent{Slug: slug}, attentionScope{sessionID: sessionID})
+	require.Len(t, wrapped, 1)
+
+	_, err := wrapped[0].(tool.InvokableTool).InvokableRun(context.Background(), `{}`)
+	require.NoError(t, err)
+
+	_, _, metas := inv.snapshot()
+	require.Len(t, metas, 1)
+	require.Equal(t,
+		filepath.Join(wsRoot, slug, "sessions", sessionID, workspaces.DirComputer),
+		metas[0][MetaScreenshotDir],
+		"the meta carries the calling session's computer directory")
+	require.Equal(t,
+		workspaces.SessionRel(sessionID, workspaces.DirComputer),
+		metas[0][MetaScreenshotRel],
+		"the meta carries the workspace-relative facing path")
+	require.Len(t, metas[0], 2, "computer-use calls stamp exactly the dir and the rel key")
+}
+
+func TestWrapSessionDirToolsKeepsBrowserUseStampUnchanged(t *testing.T) {
+	const (
+		slug      = "scout"
+		sessionID = "e7238190a1b2c3d4e5f60718293a4b5c"
+	)
+	m, wsRoot := newWrapManager(t, slug)
+	inv := &fakeMetaInvoker{out: `{"ok":true}`}
+	m.mcpManager = inv
+
+	wrapped := m.wrapSessionDirTools(mcp.Ref{ServerID: mcp.SystemServerID}, []tool.BaseTool{&stubRawTool{name: "screenshot"}},
+		store.Agent{Slug: slug}, attentionScope{sessionID: sessionID})
+	require.Len(t, wrapped, 1)
+
+	_, err := wrapped[0].(tool.InvokableTool).InvokableRun(context.Background(), `{}`)
+	require.NoError(t, err)
+
+	_, _, metas := inv.snapshot()
+	require.Len(t, metas, 1)
+	require.Equal(t,
+		filepath.Join(wsRoot, slug, "sessions", sessionID, workspaces.DirBrowser),
+		metas[0][MetaScreenshotDir],
+		"browser-use keeps the session's browser directory")
+	require.Equal(t, filepath.Join(wsRoot, slug, workspaces.DirBrowserProfile), metas[0][MetaProfileDir])
+	require.Equal(t, slug, metas[0][MetaProfileName])
+	require.Len(t, metas[0], 3, "browser-use calls carry no rel key, only the session dir and the profile binding")
+}
+
+func TestWrapSessionDirToolsDegradesForComputerUseWithoutScope(t *testing.T) {
+	m, _ := newWrapManager(t, "scout")
+	inv := &fakeMetaInvoker{out: `{"ok":true}`}
+	m.mcpManager = inv
+
+	// An invalid session id resolves no computer directory: the tools
+	// degrade to unwrapped, like the other scope-less shapes.
+	wrapped := m.wrapSessionDirTools(mcp.Ref{ServerID: computerUseServerID},
+		[]tool.BaseTool{&stubRawTool{name: "observe_window"}},
+		store.Agent{Slug: "scout"}, attentionScope{sessionID: "not-a-session-id"})
+	require.Len(t, wrapped, 1)
+	_, isWrap := wrapped[0].(*sessionDirTool)
+	require.False(t, isWrap, "no session to name a computer directory with — the tool passes through unwrapped")
 }

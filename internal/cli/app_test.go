@@ -11,6 +11,7 @@ import (
 
 	"github.com/stretchr/testify/require"
 
+	"github.com/oniharnantyo/buddies/internal/agents/mcp"
 	"github.com/oniharnantyo/buddies/internal/gateway"
 	"github.com/oniharnantyo/buddies/internal/scheduler"
 	"github.com/oniharnantyo/buddies/internal/services"
@@ -35,7 +36,7 @@ func TestAssemble_BuildsFullServiceSet(t *testing.T) {
 	ctx := context.Background()
 	emitter := &recordingEmitter{}
 
-	app, err := Assemble(ctx, emitter, services.NoBrowser{}, WithoutSystemBrowserUse())
+	app, err := Assemble(ctx, emitter, services.NoBrowser{}, nil, WithoutSystemBrowserUse())
 	require.NoError(t, err)
 	defer func() { require.NoError(t, app.Close()) }()
 
@@ -83,7 +84,12 @@ func TestAssemble_BuildsFullServiceSet(t *testing.T) {
 	require.Empty(t, hooks)
 	mcpServers, err := app.Services.Settings.MCPServers(ctx)
 	require.NoError(t, err)
-	require.Empty(t, mcpServers)
+	// The computer-use system row is synthesized even while the lane is
+	// disabled (held supervision state — add-computer-use design D2/D6);
+	// browser-use is unsupervised in this fixture, so exactly one row.
+	require.Len(t, mcpServers, 1)
+	require.True(t, mcpServers[0].System)
+	require.Equal(t, mcp.ComputerUseServerID, mcpServers[0].ID)
 
 	// MCP: a definition round trip exercises the invalidate-on-write wiring
 	// into the runtime's connection cache (design D7); Close below reaps the
@@ -138,7 +144,7 @@ func TestAssemble_Close_StopsGatewayAndIsIdempotent(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
 	ctx := context.Background()
 
-	app, err := Assemble(ctx, &recordingEmitter{}, services.NoBrowser{}, WithoutSystemBrowserUse())
+	app, err := Assemble(ctx, &recordingEmitter{}, services.NoBrowser{}, nil, WithoutSystemBrowserUse())
 	require.NoError(t, err)
 
 	require.NoError(t, app.Services.Gateway.Start(ctx))
@@ -159,7 +165,7 @@ func TestAssemble_FailsStartupOnBrokenDatabase(t *testing.T) {
 	require.NoError(t, os.MkdirAll(filepath.Join(home, ".buddies"), 0o700))
 	require.NoError(t, os.WriteFile(filepath.Join(home, ".buddies", "buddies.db"), []byte("not a database"), 0o600))
 
-	_, err := Assemble(context.Background(), &recordingEmitter{}, services.NoBrowser{})
+	_, err := Assemble(context.Background(), &recordingEmitter{}, services.NoBrowser{}, nil)
 	require.Error(t, err)
 }
 
@@ -174,7 +180,7 @@ func TestRootCommand_Default_RunsGUIWithAssembledApp(t *testing.T) {
 	cmd := NewRootCommand(&recordingEmitter{}, services.NoBrowser{}, func(_ context.Context, app *App) error {
 		ran = app
 		return nil
-	}, WithoutSystemBrowserUse())
+	}, nil, WithoutSystemBrowserUse())
 
 	require.NoError(t, cmd.Run(context.Background(), []string{services.AppName}))
 	require.NotNil(t, ran)
@@ -190,7 +196,7 @@ func TestRootCommand_Default_RunsGUIWithAssembledApp(t *testing.T) {
 func TestRootCommand_Version_PrintsNameAndVersion(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
 
-	cmd := NewRootCommand(&recordingEmitter{}, services.NoBrowser{}, guiShouldNotRun)
+	cmd := NewRootCommand(&recordingEmitter{}, services.NoBrowser{}, guiShouldNotRun, nil)
 	buf := &bytes.Buffer{}
 	cmd.Writer = buf
 

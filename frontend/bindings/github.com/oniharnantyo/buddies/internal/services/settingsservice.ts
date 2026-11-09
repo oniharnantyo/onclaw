@@ -12,10 +12,7 @@
 
 // eslint-disable-next-line @typescript-eslint/ban-ts-comment
 // @ts-ignore: Unused imports
-import {
-  Call as $Call,
-  CancellablePromise as $CancellablePromise,
-} from "@wailsio/runtime";
+import { Call as $Call, CancellablePromise as $CancellablePromise } from "@wailsio/runtime";
 
 // eslint-disable-next-line @typescript-eslint/ban-ts-comment
 // @ts-ignore: Unused imports
@@ -29,10 +26,8 @@ import * as $models from "./models.js";
  * AgentHooks returns the hooks assigned to an agent, in evaluation order
  * (position then name). The result is never nil.
  */
-export function AgentHooks(
-  agentID: string
-): $CancellablePromise<$models.AgentHookAssignment[] | null> {
-  return $Call.ByID(2136768263, agentID);
+export function AgentHooks(agentID: string): $CancellablePromise<$models.AgentHookAssignment[] | null> {
+    return $Call.ByID(2136768263, agentID);
 }
 
 /**
@@ -40,12 +35,8 @@ export function AgentHooks(
  * replaces its position. The hook moves out of the global tier for every
  * agent (design D4). Absent agent or hook is store.ErrNotFound.
  */
-export function AssignHook(
-  agentID: string,
-  hookID: string,
-  position: number
-): $CancellablePromise<void> {
-  return $Call.ByID(3207662974, agentID, hookID, position);
+export function AssignHook(agentID: string, hookID: string, position: number): $CancellablePromise<void> {
+    return $Call.ByID(3207662974, agentID, hookID, position);
 }
 
 /**
@@ -63,7 +54,7 @@ export function AssignHook(
  * authorization of the same server are errors; store.ErrNotFound when absent.
  */
 export function AuthorizeMCPServer(id: string): $CancellablePromise<void> {
-  return $Call.ByID(2889316166, id);
+    return $Call.ByID(2889316166, id);
 }
 
 /**
@@ -72,7 +63,7 @@ export function AuthorizeMCPServer(id: string): $CancellablePromise<void> {
  * system server's config provider resolves them (browseruse.DefaultConfig).
  */
 export function BrowserConfig(): $CancellablePromise<$models.BrowserConfig> {
-  return $Call.ByID(1864738190);
+    return $Call.ByID(1864738190);
 }
 
 /**
@@ -82,10 +73,46 @@ export function BrowserConfig(): $CancellablePromise<$models.BrowserConfig> {
  * size is the sum of its files' sizes; unreadable entries are skipped so the
  * listing stays usable. The result is never nil.
  */
-export function BrowserProfiles(): $CancellablePromise<
-  $models.BrowserProfile[] | null
-> {
-  return $Call.ByID(2592868674);
+export function BrowserProfiles(): $CancellablePromise<$models.BrowserProfile[] | null> {
+    return $Call.ByID(2592868674);
+}
+
+/**
+ * CheckComputerPermissions re-probes and applies a grant change (spec
+ * settings "Computer Use pane": the Check again action "re-probes and applies
+ * a grant change (restarting the driver when one occurred)"). The fresh probe
+ * is compared against the baseline the pane's earlier status read seeded: a
+ * change in any permission's granted state invokes the restart hook exactly
+ * once (permission answers are cached per daemon process — spec computer-use
+ * "Driver daemon lifecycle"), updates the baseline, and returns the fresh
+ * status. No change, no restart. Returns the server-unavailable status in
+ * server mode.
+ */
+export function CheckComputerPermissions(): $CancellablePromise<$models.ComputerStatus> {
+    return $Call.ByID(2870012391);
+}
+
+/**
+ * ComputerConfig returns the persisted Computer Use configuration. A missing
+ * row — or stored keys left out — falls back to the default (disabled,
+ * computeruse.DefaultConfig): Computer Use is opt-in end to end (design D2).
+ */
+export function ComputerConfig(): $CancellablePromise<$models.ComputerConfigView> {
+    return $Call.ByID(40751307);
+}
+
+/**
+ * ComputerStatus aggregates the pane's status read: enabled, the
+ * per-permission list (live granted state + Manage deep links), the driver's
+ * download state, and the adapter's live supervision status, resolved into
+ * the status line. Probing never raises a prompt. The first read also seeds
+ * the permission baseline CheckComputerPermissions compares against — the
+ * pane cannot press Check again without having rendered a status first, so
+ * the baseline is always older than the user's grant (later reads do not
+ * re-seed: a poll must not absorb a grant the user is about to Check).
+ */
+export function ComputerStatus(): $CancellablePromise<$models.ComputerStatus> {
+    return $Call.ByID(4213296603);
 }
 
 /**
@@ -114,10 +141,8 @@ export function BrowserProfiles(): $CancellablePromise<
  * returned. An unknown auth method, a method missing its inputs, an empty
  * service, endpoint, or product id is an error; so is a duplicate row name.
  */
-export function ConnectIntegration(
-  input: $models.IntegrationConnectInput
-): $CancellablePromise<store$0.MCPServer> {
-  return $Call.ByID(2590097584, input);
+export function ConnectIntegration(input: $models.IntegrationConnectInput): $CancellablePromise<store$0.MCPServer> {
+    return $Call.ByID(2590097584, input);
 }
 
 /**
@@ -126,7 +151,7 @@ export function ConnectIntegration(
  * profiles on demand — no runtime call is needed.
  */
 export function CreateBrowserProfile(name: string): $CancellablePromise<void> {
-  return $Call.ByID(2960679249, name);
+    return $Call.ByID(2960679249, name);
 }
 
 /**
@@ -135,12 +160,8 @@ export function CreateBrowserProfile(name: string): $CancellablePromise<void> {
  * config valid JSON; names are unique per format case-insensitively — a
  * collision is store.ErrDuplicate.
  */
-export function CreateDocumentPreset(
-  format: string,
-  name: string,
-  configJSON: string
-): $CancellablePromise<$models.DocumentPresetEntry> {
-  return $Call.ByID(761483398, format, name, configJSON);
+export function CreateDocumentPreset(format: string, name: string, configJSON: string): $CancellablePromise<$models.DocumentPresetEntry> {
+    return $Call.ByID(761483398, format, name, configJSON);
 }
 
 /**
@@ -148,10 +169,8 @@ export function CreateDocumentPreset(
  * A duplicate hook name is an error; unknown events, unsupported handler
  * types, and invalid configs are rejected before the write.
  */
-export function CreateHook(
-  hook: store$0.Hook
-): $CancellablePromise<store$0.Hook> {
-  return $Call.ByID(85503419, hook);
+export function CreateHook(hook: store$0.Hook): $CancellablePromise<store$0.Hook> {
+    return $Call.ByID(85503419, hook);
 }
 
 /**
@@ -161,10 +180,8 @@ export function CreateHook(
  * through the sheet is stored but never returned — only its key-set state and
  * last-four hint.
  */
-export function CreateMCPServer(
-  server: store$0.MCPServer
-): $CancellablePromise<store$0.MCPServer> {
-  return $Call.ByID(847961307, server);
+export function CreateMCPServer(server: store$0.MCPServer): $CancellablePromise<store$0.MCPServer> {
+    return $Call.ByID(847961307, server);
 }
 
 /**
@@ -172,11 +189,8 @@ export function CreateMCPServer(
  * are store-assigned. A duplicate (provider_id, model_id) returns an error
  * wrapping store.ErrDuplicate.
  */
-export function CreateModel(
-  providerID: string,
-  input: $models.ProviderModelInput
-): $CancellablePromise<$models.ProviderModelView | null> {
-  return $Call.ByID(3721470889, providerID, input);
+export function CreateModel(providerID: string, input: $models.ProviderModelInput): $CancellablePromise<$models.ProviderModelView | null> {
+    return $Call.ByID(3721470889, providerID, input);
 }
 
 /**
@@ -186,10 +200,8 @@ export function CreateModel(
  * compatible endpoints may legitimately need none — and verification flags
  * it instead.
  */
-export function CreateProvider(
-  input: $models.ProviderInput
-): $CancellablePromise<$models.ProviderView> {
-  return $Call.ByID(1893942537, input);
+export function CreateProvider(input: $models.ProviderInput): $CancellablePromise<$models.ProviderView> {
+    return $Call.ByID(1893942537, input);
 }
 
 /**
@@ -201,10 +213,8 @@ export function CreateProvider(
  * when the per-format map has no entry, so rows written before the
  * per-format map keep working.
  */
-export function DefaultDocumentPreset(
-  format: string
-): $CancellablePromise<string> {
-  return $Call.ByID(2754689611, format);
+export function DefaultDocumentPreset(format: string): $CancellablePromise<string> {
+    return $Call.ByID(2754689611, format);
 }
 
 /**
@@ -221,7 +231,7 @@ export function DefaultDocumentPreset(
  * unknown profile is a no-op: the end state (no such profile) already holds.
  */
 export function DeleteBrowserProfile(name: string): $CancellablePromise<void> {
-  return $Call.ByID(1387225402, name);
+    return $Call.ByID(1387225402, name);
 }
 
 /**
@@ -236,14 +246,14 @@ export function DeleteBrowserProfile(name: string): $CancellablePromise<void> {
  * tool_settings row transactionally.
  */
 export function DeleteDocumentPreset(id: string): $CancellablePromise<void> {
-  return $Call.ByID(3823308581, id);
+    return $Call.ByID(3823308581, id);
 }
 
 /**
  * DeleteHook removes the hook; store.ErrNotFound when absent.
  */
 export function DeleteHook(id: string): $CancellablePromise<void> {
-  return $Call.ByID(2023657036, id);
+    return $Call.ByID(2023657036, id);
 }
 
 /**
@@ -253,21 +263,21 @@ export function DeleteHook(id: string): $CancellablePromise<void> {
  * the write.
  */
 export function DeleteMCPServer(id: string): $CancellablePromise<void> {
-  return $Call.ByID(2909939910, id);
+    return $Call.ByID(2909939910, id);
 }
 
 /**
  * DeleteModel removes a model row by ID; store.ErrNotFound when absent.
  */
 export function DeleteModel(id: number): $CancellablePromise<void> {
-  return $Call.ByID(3920155328, id);
+    return $Call.ByID(3920155328, id);
 }
 
 /**
  * DeleteProvider removes the provider; store.ErrNotFound when absent.
  */
 export function DeleteProvider(id: string): $CancellablePromise<void> {
-  return $Call.ByID(2778946866, id);
+    return $Call.ByID(2778946866, id);
 }
 
 /**
@@ -278,10 +288,8 @@ export function DeleteProvider(id: string): $CancellablePromise<void> {
  * — stale cache entries are skipped — and the `Default` directory is listed
  * even when the cache does not name it yet. The result is never nil.
  */
-export function DetectChromeProfiles(): $CancellablePromise<
-  $models.ChromeProfileCandidate[] | null
-> {
-  return $Call.ByID(2967230395);
+export function DetectChromeProfiles(): $CancellablePromise<$models.ChromeProfileCandidate[] | null> {
+    return $Call.ByID(2967230395);
 }
 
 /**
@@ -291,7 +299,7 @@ export function DetectChromeProfiles(): $CancellablePromise<
  * invalidated. store.ErrNotFound when absent.
  */
 export function DisconnectIntegration(id: string): $CancellablePromise<void> {
-  return $Call.ByID(3047730948, id);
+    return $Call.ByID(3047730948, id);
 }
 
 /**
@@ -304,10 +312,8 @@ export function DisconnectIntegration(id: string): $CancellablePromise<void> {
  * re-registers (design D4). store.ErrNotFound when absent; a server that is
  * not in OAuth mode has nothing to disconnect.
  */
-export function DisconnectMCPServer(
-  id: string
-): $CancellablePromise<store$0.MCPServer> {
-  return $Call.ByID(3963527337, id);
+export function DisconnectMCPServer(id: string): $CancellablePromise<store$0.MCPServer> {
+    return $Call.ByID(3963527337, id);
 }
 
 /**
@@ -319,11 +325,8 @@ export function DisconnectMCPServer(
  * whose skeleton file has gone missing fails the copy rather than produce a
  * preset claiming a template it cannot render with.
  */
-export function DuplicateDocumentPreset(
-  id: string,
-  newName: string
-): $CancellablePromise<$models.DocumentPresetEntry> {
-  return $Call.ByID(82822463, id, newName);
+export function DuplicateDocumentPreset(id: string, newName: string): $CancellablePromise<$models.DocumentPresetEntry> {
+    return $Call.ByID(82822463, id, newName);
 }
 
 /**
@@ -331,17 +334,15 @@ export function DuplicateDocumentPreset(
  * saved the defaults are returned: the gateway enabled, no default agent.
  */
 export function Gateway(): $CancellablePromise<store$0.GatewaySettings> {
-  return $Call.ByID(2079562838);
+    return $Call.ByID(2079562838);
 }
 
 /**
  * HookExecutions returns the audit trail, newest first. The result is never
  * nil.
  */
-export function HookExecutions(): $CancellablePromise<
-  store$0.HookExecution[] | null
-> {
-  return $Call.ByID(3046478948);
+export function HookExecutions(): $CancellablePromise<store$0.HookExecution[] | null> {
+    return $Call.ByID(3046478948);
 }
 
 /**
@@ -349,7 +350,7 @@ export function HookExecutions(): $CancellablePromise<
  * nil.
  */
 export function Hooks(): $CancellablePromise<store$0.Hook[] | null> {
-  return $Call.ByID(111503052);
+    return $Call.ByID(111503052);
 }
 
 /**
@@ -361,11 +362,8 @@ export function Hooks(): $CancellablePromise<store$0.Hook[] | null> {
  * name the data actually landed under; the source directory is left
  * untouched either way.
  */
-export function ImportBrowserProfile(
-  sourcePath: string,
-  name: string
-): $CancellablePromise<string> {
-  return $Call.ByID(3973153984, sourcePath, name);
+export function ImportBrowserProfile(sourcePath: string, name: string): $CancellablePromise<string> {
+    return $Call.ByID(3973153984, sourcePath, name);
 }
 
 /**
@@ -378,30 +376,24 @@ export function ImportBrowserProfile(
  * "chrome"; a collision suffixes (ImportBrowserProfile's engine). The
  * returned finalName is the registry name the data landed under.
  */
-export function ImportChromeProfile(
-  dirName: string
-): $CancellablePromise<string> {
-  return $Call.ByID(265374780, dirName);
+export function ImportChromeProfile(dirName: string): $CancellablePromise<string> {
+    return $Call.ByID(265374780, dirName);
 }
 
 /**
  * ListDocumentPresets returns the format's presets, ordered by name. The
  * result is never nil.
  */
-export function ListDocumentPresets(
-  format: string
-): $CancellablePromise<$models.DocumentPresetEntry[] | null> {
-  return $Call.ByID(1947546555, format);
+export function ListDocumentPresets(format: string): $CancellablePromise<$models.DocumentPresetEntry[] | null> {
+    return $Call.ByID(1947546555, format);
 }
 
 /**
  * ListProviderModels returns all stored models (both enabled and disabled) for
  * a provider, ordered by ID ascending.
  */
-export function ListProviderModels(
-  providerID: string
-): $CancellablePromise<($models.ProviderModelView | null)[] | null> {
-  return $Call.ByID(998396691, providerID);
+export function ListProviderModels(providerID: string): $CancellablePromise<($models.ProviderModelView | null)[] | null> {
+    return $Call.ByID(998396691, providerID);
 }
 
 /**
@@ -410,53 +402,82 @@ export function ListProviderModels(
  * CredentialSet and the last-four CredentialHint are exposed.
  */
 export function MCPServer(id: string): $CancellablePromise<store$0.MCPServer> {
-  return $Call.ByID(3024141407, id);
+    return $Call.ByID(3024141407, id);
 }
 
 /**
  * MCPServers returns all MCP servers, oldest first, with integration
- * credentials redacted (design D4), followed by the synthesized system row
- * when the runtime supervises one (rebrand-browser-use-system-mcp task 3.3):
- * id browser-use, always enabled, its connection status and discovered-tool
- * count read from live supervision state rather than any store row. The
- * result is never nil.
+ * credentials redacted (design D4), followed by one synthesized row per
+ * registered system server (rebrand-browser-use-system-mcp task 3.3;
+ * add-computer-use design D2 generalizes the synthesis to the registry):
+ * always enabled, each row's connection status and discovered-tool count
+ * read from live supervision state rather than any store row, named by its
+ * spec's display name. The result is never nil.
  */
-export function MCPServers(): $CancellablePromise<
-  $models.MCPServerView[] | null
-> {
-  return $Call.ByID(3991419204);
+export function MCPServers(): $CancellablePromise<$models.MCPServerView[] | null> {
+    return $Call.ByID(3991419204);
 }
 
 /**
- * ProbeMCPServer dials the stored server definition on demand, discovers its
- * tools, and persists the outcome onto the row's status fields (spec
- * agent-mcp "Probe and tool discovery"): connected with the discovered-tool
- * count, or error with the underlying reason and a zero count. Refresh is
- * invalidate-then-probe (design D6, spec "Connection refresh"): the row's
- * cached connection is dropped before dialing — always, even when the probe
- * then fails — so what the row shows and what agents use never diverge. An
- * authorization-required outcome (design D5) persists StatusAuthRequired
- * with the Authorize-call-to-action for the row's auth mode. A probe never
- * mutates the definition — the row is read first and only the
- * status/status_error/tool_count columns are rewritten. The dial is bounded
- * at the manager's connect timeout; store.ErrNotFound when absent. The
- * system-provided server is rejected: its row is fed by live supervision
- * state, so there is nothing to probe on demand.
+ * OpenComputerManageURL opens one of the Computer Use pane's Manage deep
+ * links (add-computer-use design D6/D8) into the matching system settings
+ * pane. The URL must be one the service itself issued in a permission
+ * probe — a custom scheme (x-apple.systempreferences:…) the webview cannot
+ * open itself, so it rides the host's URL opener. Anything else is refused:
+ * the bridge must not become a generic URL opener.
  */
-export function ProbeMCPServer(
-  id: string
-): $CancellablePromise<store$0.MCPServer> {
-  return $Call.ByID(2734115705, id);
+export function OpenComputerManageURL(url: string): $CancellablePromise<void> {
+    return $Call.ByID(1437933131, url);
+}
+
+/**
+ * ProbeMCPServer reports a row's connection state on demand (spec agent-mcp
+ * "Probe and tool discovery"). A stored server is dialed fresh and the
+ * outcome persists onto the row's status fields: connected with the
+ * discovered-tool count, or error with the underlying reason and a zero
+ * count. Refresh is invalidate-then-probe (design D6, spec "Connection
+ * refresh"): the row's cached connection is dropped before dialing — always,
+ * even when the probe then fails — so what the row shows and what agents use
+ * never diverge. An authorization-required outcome (design D5) persists
+ * StatusAuthRequired with the Authorize-call-to-action for the row's auth
+ * mode. A probe never mutates the definition — the row is read first and
+ * only the status/status_error/tool_count columns are rewritten. The dial is
+ * bounded at the manager's connect timeout; store.ErrNotFound when absent.
+ * 
+ * A supervised system server has no stored definition to dial: the
+ * supervision loop is its prober — it spawns the child and feeds the row's
+ * status and tool count continuously — so the on-demand probe reports the
+ * live supervision state (spec agent-mcp "System-provided server": the
+ * system server behaves exactly like a user server, probed on demand). When
+ * that supervision has hit its crash-loop cap — respawning stopped, nothing
+ * recovers it automatically — the on-demand probe is the manual path past
+ * the cap: it re-arms supervision (the supervisor's explicit restart) and
+ * reports the re-armed state; the next tick's spawn attempt lands the real
+ * outcome. A registered system id the runtime does not supervise has no row
+ * to report and stays rejected with ErrSystemMCPServer.
+ */
+export function ProbeMCPServer(id: string): $CancellablePromise<$models.MCPServerView> {
+    return $Call.ByID(2734115705, id);
+}
+
+/**
+ * PromptComputerPermissions raises the OS permission prompts — the pane's
+ * enable action calls it host-side; the driver never prompts (add-computer-use
+ * design D6; embedded mode enforces this on the driver side). Probing stays
+ * prompt-free; this is the only path that raises a prompt. On platforms with
+ * no permission ceremony there is nothing to raise and the wired hook is a
+ * no-op.
+ */
+export function PromptComputerPermissions(): $CancellablePromise<void> {
+    return $Call.ByID(132037797);
 }
 
 /**
  * Provider returns the provider with the given ID; store.ErrNotFound when
  * absent. The response is the secret-free ProviderView.
  */
-export function Provider(
-  id: string
-): $CancellablePromise<$models.ProviderView> {
-  return $Call.ByID(533085077, id);
+export function Provider(id: string): $CancellablePromise<$models.ProviderView> {
+    return $Call.ByID(533085077, id);
 }
 
 /**
@@ -467,27 +488,23 @@ export function Provider(
  * tier every connector family understands — with no catalog or heuristic
  * fallback for stored rows.
  */
-export function ProviderModels(
-  id: string
-): $CancellablePromise<$models.ModelCapability[] | null> {
-  return $Call.ByID(3206136603, id);
+export function ProviderModels(id: string): $CancellablePromise<$models.ModelCapability[] | null> {
+    return $Call.ByID(3206136603, id);
 }
 
 /**
  * Providers returns all providers, oldest first, projected onto the
  * secret-free ProviderView. The result is never nil.
  */
-export function Providers(): $CancellablePromise<
-  $models.ProviderView[] | null
-> {
-  return $Call.ByID(3943713554);
+export function Providers(): $CancellablePromise<$models.ProviderView[] | null> {
+    return $Call.ByID(3943713554);
 }
 
 /**
  * RemoveVaultLogin deletes one saved login; an unknown id is an error.
  */
 export function RemoveVaultLogin(id: string): $CancellablePromise<void> {
-  return $Call.ByID(3421052889, id);
+    return $Call.ByID(3421052889, id);
 }
 
 /**
@@ -496,7 +513,7 @@ export function RemoveVaultLogin(id: string): $CancellablePromise<void> {
  * must never be logged or persisted.
  */
 export function RevealVaultLogin(id: string): $CancellablePromise<string> {
-  return $Call.ByID(3943593740, id);
+    return $Call.ByID(3943593740, id);
 }
 
 /**
@@ -504,25 +521,38 @@ export function RevealVaultLogin(id: string): $CancellablePromise<string> {
  * default profile must be a valid profile name (empty means the default
  * profile), the idle timeout must sit between 1 and 3600 seconds, and the
  * action timeout between 1 and 600 seconds.
- *
+ * 
  * The change takes effect at the server's next spawn boundary (design D8):
  * the supervisor fetches this document fresh on every supervision tick and
  * at every spawn, and restarts the child at the next idle boundary — never
  * mid-action — so no separate notification is needed.
  */
-export function SaveBrowserConfig(
-  cfg: $models.BrowserConfig
-): $CancellablePromise<void> {
-  return $Call.ByID(1994278861, cfg);
+export function SaveBrowserConfig(cfg: $models.BrowserConfig): $CancellablePromise<void> {
+    return $Call.ByID(1994278861, cfg);
+}
+
+/**
+ * SaveComputerConfig create-or-replaces the Computer Use configuration and
+ * fires the enabled-change hook once when the toggle actually moved: disable
+ * stops the daemon and adapter (no tools from the next turn on), enable kicks
+ * the ensure path (spec computer-use "Configuration and spawn boundaries":
+ * changes take effect at spawn boundaries, never mid-action — the hook is the
+ * boundary, not a mid-action restart). The document persists first and
+ * immediately even when the hook then fails: the stored choice is the truth
+ * supervision converges on at the next boundary.
+ * 
+ * The server build refuses the save outright (ErrComputerUnavailable): there
+ * is no lane to configure (design D9).
+ */
+export function SaveComputerConfig(view: $models.ComputerConfigView): $CancellablePromise<void> {
+    return $Call.ByID(1252849286, view);
 }
 
 /**
  * SaveGateway create-or-replaces the gateway settings singleton.
  */
-export function SaveGateway(
-  settings: store$0.GatewaySettings
-): $CancellablePromise<void> {
-  return $Call.ByID(249597577, settings);
+export function SaveGateway(settings: store$0.GatewaySettings): $CancellablePromise<void> {
+    return $Call.ByID(249597577, settings);
 }
 
 /**
@@ -531,27 +561,25 @@ export function SaveGateway(
  * derived from the origin's host. Upsert semantics live in the vault
  * service (design D5).
  */
-export function SaveVaultLogin(
-  name: string,
-  origin: string,
-  username: string,
-  password: string,
-  addedBy: string
-): $CancellablePromise<void> {
-  return $Call.ByID(314361748, name, origin, username, password, addedBy);
+export function SaveVaultLogin(name: string, origin: string, username: string, password: string, addedBy: string): $CancellablePromise<void> {
+    return $Call.ByID(314361748, name, origin, username, password, addedBy);
 }
 
 /**
- * SaveWebSearchConfig create-or-replaces the web_search chain configuration.
- * Every entry's provider must be in the catalog, and an entry whose provider
- * requires a credential must carry it — a chain entry without its API key or
- * base URL is rejected with an error naming both. Entries are stored in the
- * given order (the failover order); entries lacking an ID get one assigned.
+ * SaveWebSearchConfig create-or-replaces the web_search chain configuration,
+ * merging incoming entries against the stored config by stable entry ID
+ * (design D4): a blank API key on an entry whose ID exists in storage keeps
+ * the stored key, a non-blank key replaces it, and a blank key that cannot
+ * resolve — a new entry, or an ID absent from storage — is rejected with the
+ * provider named. After the merge, every entry's provider must be in the
+ * catalog and carry its provider's required credential, so a provider change
+ * with a blank key is validated against the new provider's requirement.
+ * Entries are stored in the given order (the failover order); entries
+ * lacking an ID get one assigned. The merged API keys persist but never
+ * return on a read.
  */
-export function SaveWebSearchConfig(
-  cfg: $models.WebSearchConfig
-): $CancellablePromise<void> {
-  return $Call.ByID(3242774159, cfg);
+export function SaveWebSearchConfig(cfg: $models.WebSearchConfigInput): $CancellablePromise<void> {
+    return $Call.ByID(3242774159, cfg);
 }
 
 /**
@@ -561,7 +589,7 @@ export function SaveWebSearchConfig(
  * preserved (design D3).
  */
 export function SeedCanonicalModels(): $CancellablePromise<void> {
-  return $Call.ByID(4140107107);
+    return $Call.ByID(4140107107);
 }
 
 /**
@@ -572,11 +600,8 @@ export function SeedCanonicalModels(): $CancellablePromise<void> {
  * rides the v1 flat field, so the stored document keeps every reader
  * working; the other formats' entries live only in the per-format map.
  */
-export function SetDefaultDocumentPreset(
-  format: string,
-  name: string
-): $CancellablePromise<void> {
-  return $Call.ByID(2211022059, format, name);
+export function SetDefaultDocumentPreset(format: string, name: string): $CancellablePromise<void> {
+    return $Call.ByID(2211022059, format, name);
 }
 
 /**
@@ -588,34 +613,24 @@ export function SetDefaultDocumentPreset(
  * .pptx for a PPTX preset; PDF presets are config-only and take no
  * template. Unknown id is store.ErrNotFound.
  */
-export function SetDocumentPresetTemplate(
-  presetID: string,
-  filename: string,
-  base64Data: string
-): $CancellablePromise<void> {
-  return $Call.ByID(2287111156, presetID, filename, base64Data);
+export function SetDocumentPresetTemplate(presetID: string, filename: string, base64Data: string): $CancellablePromise<void> {
+    return $Call.ByID(2287111156, presetID, filename, base64Data);
 }
 
 /**
  * SetSkillEnabled toggles the global enable flag of the named skill;
  * store.ErrNotFound when absent.
  */
-export function SetSkillEnabled(
-  name: string,
-  enabled: boolean
-): $CancellablePromise<void> {
-  return $Call.ByID(2675561854, name, enabled);
+export function SetSkillEnabled(name: string, enabled: boolean): $CancellablePromise<void> {
+    return $Call.ByID(2675561854, name, enabled);
 }
 
 /**
  * SetToolEnabled toggles the global enable state of the named built-in
  * tool; an error for a name outside the catalog.
  */
-export function SetToolEnabled(
-  name: string,
-  enabled: boolean
-): $CancellablePromise<void> {
-  return $Call.ByID(3406812623, name, enabled);
+export function SetToolEnabled(name: string, enabled: boolean): $CancellablePromise<void> {
+    return $Call.ByID(3406812623, name, enabled);
 }
 
 /**
@@ -623,7 +638,7 @@ export function SetToolEnabled(
  * ordered by name. The result is never nil.
  */
 export function Skills(): $CancellablePromise<store$0.Skill[] | null> {
-  return $Call.ByID(161249314);
+    return $Call.ByID(161249314);
 }
 
 /**
@@ -632,20 +647,15 @@ export function Skills(): $CancellablePromise<store$0.Skill[] | null> {
  * event, returning the decision, reason, timing, and handler detail. Nothing
  * is persisted — the dry run never appends to the execution audit.
  */
-export function TestHook(
-  id: string
-): $CancellablePromise<$models.HookTestResult> {
-  return $Call.ByID(1614821979, id);
+export function TestHook(id: string): $CancellablePromise<$models.HookTestResult> {
+    return $Call.ByID(1614821979, id);
 }
 
 /**
  * ToggleModel updates the enabled state of a model row by ID.
  */
-export function ToggleModel(
-  id: number,
-  enabled: boolean
-): $CancellablePromise<$models.ProviderModelView | null> {
-  return $Call.ByID(1687135889, id, enabled);
+export function ToggleModel(id: number, enabled: boolean): $CancellablePromise<$models.ProviderModelView | null> {
+    return $Call.ByID(1687135889, id, enabled);
 }
 
 /**
@@ -653,18 +663,15 @@ export function ToggleModel(
  * in stable catalog order. The result is never nil.
  */
 export function Tools(): $CancellablePromise<$models.ToolEntry[] | null> {
-  return $Call.ByID(1949247683);
+    return $Call.ByID(1949247683);
 }
 
 /**
  * UnassignHook removes the link; store.ErrNotFound when absent. The hook
  * returns to the global tier.
  */
-export function UnassignHook(
-  agentID: string,
-  hookID: string
-): $CancellablePromise<void> {
-  return $Call.ByID(2763910749, agentID, hookID);
+export function UnassignHook(agentID: string, hookID: string): $CancellablePromise<void> {
+    return $Call.ByID(2763910749, agentID, hookID);
 }
 
 /**
@@ -673,50 +680,41 @@ export function UnassignHook(
  * store.ErrNotFound; a name colliding with another preset of the same format
  * case-insensitively is store.ErrDuplicate.
  */
-export function UpdateDocumentPreset(
-  id: string,
-  name: string,
-  configJSON: string
-): $CancellablePromise<$models.DocumentPresetEntry> {
-  return $Call.ByID(3868538575, id, name, configJSON);
+export function UpdateDocumentPreset(id: string, name: string, configJSON: string): $CancellablePromise<$models.DocumentPresetEntry> {
+    return $Call.ByID(3868538575, id, name, configJSON);
 }
 
 /**
  * UpdateHook rewrites an existing hook definition, addressed by hook.ID;
  * store.ErrNotFound when absent. Validation matches CreateHook.
  */
-export function UpdateHook(
-  hook: store$0.Hook
-): $CancellablePromise<store$0.Hook> {
-  return $Call.ByID(289612110, hook);
+export function UpdateHook(hook: store$0.Hook): $CancellablePromise<store$0.Hook> {
+    return $Call.ByID(289612110, hook);
 }
 
 /**
  * UpdateMCPServer rewrites an existing MCP server definition, addressed by
  * server.ID; store.ErrNotFound when absent. Connection status fields
  * (Status, StatusError, ToolCount) persist the last probe outcome and are
- * rewritten as given. A blank integration credential preserves the stored one
- * — the redacted reads mean an edit round-trips no credential — while a
- * non-blank value replaces it (design D4). A successful update invalidates
+ * rewritten as given. Blank write-only secrets — the integration credential
+ * and the OAuth client secret, pre-registered or DCR-issued alike — preserve
+ * the stored ones: the redacted reads mean an edit round-trips no secret —
+ * while a non-blank value replaces it (add-integrations design D4,
+ * fix-bridge-secret-redaction design D2). A successful update invalidates
  * the server's cached connection so the new definition takes effect on the
  * next use (design D7); invalidation never fails the write. The returned
  * definition is redacted.
  */
-export function UpdateMCPServer(
-  server: store$0.MCPServer
-): $CancellablePromise<store$0.MCPServer> {
-  return $Call.ByID(2502306300, server);
+export function UpdateMCPServer(server: store$0.MCPServer): $CancellablePromise<store$0.MCPServer> {
+    return $Call.ByID(2502306300, server);
 }
 
 /**
  * UpdateModel rewrites an existing model row addressed by id; store.ErrNotFound
  * when absent. A duplicate (provider_id, model_id) returns store.ErrDuplicate.
  */
-export function UpdateModel(
-  id: number,
-  input: $models.ProviderModelInput
-): $CancellablePromise<$models.ProviderModelView | null> {
-  return $Call.ByID(3458364142, id, input);
+export function UpdateModel(id: number, input: $models.ProviderModelInput): $CancellablePromise<$models.ProviderModelView | null> {
+    return $Call.ByID(3458364142, id, input);
 }
 
 /**
@@ -725,11 +723,8 @@ export function UpdateModel(
  * A blank APIKey preserves the stored key — the edit form resubmits only
  * what changed — while a non-blank key replaces it.
  */
-export function UpdateProvider(
-  id: string,
-  input: $models.ProviderInput
-): $CancellablePromise<$models.ProviderView> {
-  return $Call.ByID(685791392, id, input);
+export function UpdateProvider(id: string, input: $models.ProviderInput): $CancellablePromise<$models.ProviderView> {
+    return $Call.ByID(685791392, id, input);
 }
 
 /**
@@ -737,10 +732,8 @@ export function UpdateProvider(
  * password — in the store's stable order. The result is never nil. Unwired
  * vault is a wiring bug: a readable error, not an empty listing.
  */
-export function VaultLogins(): $CancellablePromise<
-  $models.VaultLogin[] | null
-> {
-  return $Call.ByID(2043161174);
+export function VaultLogins(): $CancellablePromise<$models.VaultLogin[] | null> {
+    return $Call.ByID(2043161174);
 }
 
 /**
@@ -749,10 +742,8 @@ export function VaultLogins(): $CancellablePromise<
  * result; the error is reserved for store failures and unknown provider
  * types.
  */
-export function VerifyProvider(
-  id: string
-): $CancellablePromise<$models.VerifyResult> {
-  return $Call.ByID(2543123276, id);
+export function VerifyProvider(id: string): $CancellablePromise<$models.VerifyResult> {
+    return $Call.ByID(2543123276, id);
 }
 
 /**
@@ -763,28 +754,25 @@ export function VerifyProvider(
  * back in the result; the error is reserved for store failures and unknown
  * provider types.
  */
-export function VerifyProviderDraft(
-  input: $models.ProviderInput,
-  providerID: string
-): $CancellablePromise<$models.VerifyResult> {
-  return $Call.ByID(2463746303, input, providerID);
+export function VerifyProviderDraft(input: $models.ProviderInput, providerID: string): $CancellablePromise<$models.VerifyResult> {
+    return $Call.ByID(2463746303, input, providerID);
 }
 
 /**
  * WebSearchConfig returns the persisted web_search chain configuration. A
+ * chain read never returns an entry's API key: each entry is projected onto
+ * the redacted read shape — whether a key is set and its last-4 hint. A
  * tool_settings row that never existed (or holds an empty document) comes
  * back as the zero config with a non-nil, empty Entries slice.
  */
 export function WebSearchConfig(): $CancellablePromise<$models.WebSearchConfig> {
-  return $Call.ByID(428179768);
+    return $Call.ByID(428179768);
 }
 
 /**
  * WebSearchProviders returns the registered search providers with their
  * credential requirements, ordered by ID. The result is never nil.
  */
-export function WebSearchProviders(): $CancellablePromise<
-  $models.WebSearchProviderInfo[] | null
-> {
-  return $Call.ByID(918031656);
+export function WebSearchProviders(): $CancellablePromise<$models.WebSearchProviderInfo[] | null> {
+    return $Call.ByID(918031656);
 }

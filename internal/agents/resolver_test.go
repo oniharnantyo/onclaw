@@ -472,11 +472,11 @@ func TestCapabilityResolver_EffortValidation(t *testing.T) {
 	}
 
 	// EffortMinimal is in the row's declared set
-	_, err := reg.Build(ctx, agent, ModelOverride{Effort: EffortMinimal})
+	_, err := reg.Build(ctx, agent, ModelOverride{Effort: EffortMinimal}, observationContext{})
 	require.NoError(t, err)
 
 	// An effort not in any reasoning set fails
-	_, err = reg.Build(ctx, agent, ModelOverride{Effort: "extreme"})
+	_, err = reg.Build(ctx, agent, ModelOverride{Effort: "extreme"}, observationContext{})
 	require.ErrorIs(t, err, ErrEffortUnsupported)
 }
 

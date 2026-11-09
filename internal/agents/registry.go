@@ -36,8 +36,9 @@ type modelRegistry interface {
 	// the override applied; a typed error (ErrProviderNotConfigured,
 	// ErrProviderUnsupported, ErrModelNotListed, ErrEffortUnsupported) when
 	// the provider cannot serve the agent or the override is not valid for
-	// it.
-	Build(ctx context.Context, agent store.Agent, override ModelOverride) (model.BaseModel[*schema.AgenticMessage], error)
+	// it. obs carries the observation image lane's session context
+	// (add-computer-use design D5): the zero value is the lane absent.
+	Build(ctx context.Context, agent store.Agent, override ModelOverride, obs observationContext) (model.BaseModel[*schema.AgenticMessage], error)
 	// Models lists the catalog's model ids for a provider type, sorted.
 	Models(providerType string) []string
 }
@@ -55,7 +56,7 @@ func newModelRegistry(s store.Store) modelRegistry {
 	}
 }
 
-func (r *storeModelRegistry) Build(ctx context.Context, agent store.Agent, override ModelOverride) (model.BaseModel[*schema.AgenticMessage], error) {
+func (r *storeModelRegistry) Build(ctx context.Context, agent store.Agent, override ModelOverride, obs observationContext) (model.BaseModel[*schema.AgenticMessage], error) {
 	if agent.ProviderID == "" {
 		return nil, fmt.Errorf("%w: agent %q has no provider selected", ErrProviderNotConfigured, agent.Name)
 	}
@@ -102,7 +103,33 @@ func (r *storeModelRegistry) Build(ctx context.Context, agent store.Agent, overr
 	// Sanitize outbound history: a truncated tool-call arguments fragment
 	// must never reach the connector as raw JSON (design D2 of
 	// fix-truncated-toolcall-request).
-	return newSanitizeModel(mdl), nil
+	sanitized := newSanitizeModel(mdl)
+	// Observation image lane (add-computer-use design D5): when the turn
+	// carries session context and the effective model reads images, wrap
+	// the sanitized model so computer-use screenshot markers deliver their
+	// pixels. Any other context — summarizer calls, a manager without a
+	// workspace mount, a text-only model — is the lane absent.
+	if obs.present() && r.supportsImageInput(ctx, provider, modelName) {
+		obs.images = true
+		return newObservationModel(sanitized, obs), nil
+	}
+	return sanitized, nil
+}
+
+// supportsImageInput resolves the effective model's image-input capability
+// (add-computer-use design D5's caps gate, the turninput.go supportsImageInput
+// precedent): the resolver's stored-row value when one resolves, the static
+// catalog otherwise. An unknown model degrades to text-only.
+func (r *storeModelRegistry) supportsImageInput(ctx context.Context, provider *store.Provider, modelName string) bool {
+	resolver := r.resolver
+	if resolver == nil {
+		resolver = NewCapabilityResolver(r.store)
+	}
+	caps, err := resolver.Resolve(ctx, provider.ID, modelName)
+	if err != nil && !errors.Is(err, ErrModelDisabled) {
+		return SupportsImageInput(provider.Type, modelName)
+	}
+	return caps.ImageInput
 }
 
 // checkModelEnabled rejects a model selection (from agent configuration or a

@@ -78,11 +78,14 @@ type MCPManager struct {
 	stop     chan struct{} // closed by Close to stop the janitor
 	stopped  sync.WaitGroup
 
-	// system supervises the app-provided browser-use server (design D6/D7);
-	// nil unless WithSystemBrowserUse configured it. The supervisor shares
-	// this manager's mutex and stop channel.
-	system *systemSupervisor
-	// manualSupervision keeps the supervisor's loop goroutine from starting,
+	// systems are the supervised system servers (design D6/D7;
+	// add-computer-use design D2 generalizes the single field to a registry):
+	// one supervisor per registered spec, in registration order, each keyed
+	// by its spec's ID in the shared connection cache. Empty unless a
+	// WithSystemServer* option configured one. The supervisors share this
+	// manager's mutex and stop channel.
+	systems []*systemSupervisor
+	// manualSupervision keeps the supervisors' loop goroutines from starting,
 	// so tests drive ticks by hand. In-package test seam only.
 	manualSupervision bool
 
@@ -141,9 +144,10 @@ func withManualSupervision() ManagerOption {
 	}
 }
 
-// NewMCPManager builds the manager and starts its idle janitor. With
-// WithSystemBrowserUse it also starts the system server's supervisor, which
-// spawns the child at init.
+// NewMCPManager builds the manager and starts its idle janitor. With the
+// WithSystemServer* options it also starts each registered system server's
+// supervisor, which spawns the child at init (add-computer-use design D2:
+// one supervisor per registered spec).
 func NewMCPManager(opts ...ManagerOption) *MCPManager {
 	m := &MCPManager{
 		idleTTL:        DefaultIdleTTL,
@@ -161,8 +165,10 @@ func NewMCPManager(opts ...ManagerOption) *MCPManager {
 	}
 	m.stopped.Add(1)
 	go m.janitor()
-	if m.system != nil && !m.manualSupervision {
-		m.system.start()
+	if !m.manualSupervision {
+		for _, s := range m.systems {
+			s.start()
+		}
 	}
 	return m
 }
@@ -192,10 +198,10 @@ func (m *MCPManager) janitor() {
 }
 
 // sweepIdle closes and drops entries whose last access exceeds the idle TTL.
-// The supervised system server's entry is exempt: the supervisor keeps that
-// child warm by design (spawned at init so the first browser action pays no
-// spawn cost), and reaping it would kill the child just to have the
-// supervisor respawn it.
+// A supervised system server's entry is exempt: its supervisor keeps that
+// child warm by design (spawned at init so the first action pays no spawn
+// cost), and reaping it would kill the child just to have the supervisor
+// respawn it.
 func (m *MCPManager) sweepIdle() {
 	m.mu.Lock()
 	if m.idleTTL <= 0 {
@@ -227,7 +233,7 @@ func (m *MCPManager) sweepIdle() {
 // Tools implements ToolSource: cache hit returns the cached tools and touches
 // the entry's idle clock; miss connects (bounded by the connect timeout),
 // handshakes, and lists tools once per key — concurrent first Gets share one
-// attempt through the per-key singleflight record. The supervised system
+// attempt through the per-key singleflight record. A supervised system
 // server is the exception: its entry is owned by its supervisor (spawned at
 // init, respawned with backoff), so a miss or a stale error returns the
 // supervisor's state instead of dialing — a spawn attempt outside the
@@ -243,7 +249,7 @@ func (m *MCPManager) Tools(ctx context.Context, ref Ref) ([]tool.BaseTool, error
 			if ok && e.err != nil {
 				return nil, e.err
 			}
-			return nil, fmt.Errorf("browser-use system server is starting")
+			return nil, fmt.Errorf("%s system server is starting", ref.ServerID)
 		}
 		return e.conn.tools, nil
 	}
@@ -289,27 +295,28 @@ func (m *MCPManager) Tools(ctx context.Context, ref Ref) ([]tool.BaseTool, error
 	return entry.conn.tools, nil
 }
 
-// Invoke calls one tool on the system browser-use server directly, carrying
-// the given metadata as the call's _meta — the per-call channel the parent
+// Invoke calls one tool on a supervised system server directly, carrying the
+// given metadata as the call's _meta — the per-call channel the parent
 // stamps the calling session's workspace screenshots directory through
 // (internal/browseruse.MetaScreenshotDir), so the child writes captures
 // inside the model's workspace jail. argsJSON passes through verbatim, and
 // the result is the same unwrapped payload text the listed eino tools'
 // InvokableRun returns (mcp-result-unwrapping), so callers parse both
 // identically. System refs only: third-party servers have no meta contract.
-// The call counts toward the supervisor's in-flight gauge like every listed
-// tool's invocation.
+// The call counts toward the owning supervisor's in-flight gauge like every
+// listed tool's invocation.
 func (m *MCPManager) Invoke(ctx context.Context, ref Ref, name, argsJSON string, meta map[string]any) (string, error) {
-	if !m.supervised(ref.ServerID) || ref.ServerID != SystemServerID {
+	sup, ok := m.systemSupervisor(ref.ServerID)
+	if !ok {
 		return "", fmt.Errorf("mcp invoke: %s does not carry the system server's meta contract", ref.Name)
 	}
 	m.mu.Lock()
 	e, ok := m.entries[key{ref.ServerID}]
 	m.mu.Unlock()
 	if !ok || e.err != nil || e.conn == nil {
-		return "", fmt.Errorf("mcp invoke: browser-use system server is not ready")
+		return "", fmt.Errorf("mcp invoke: %s system server is not ready", ref.ServerID)
 	}
-	return m.system.invokeWithMeta(ctx, e.conn, name, argsJSON, meta)
+	return sup.invokeWithMeta(ctx, e.conn, name, argsJSON, meta)
 }
 
 // connect dials ref within the connect timeout and returns the entry to
@@ -373,7 +380,7 @@ func (m *MCPManager) Invalidate(serverID string) {
 	}
 }
 
-// Close stops the janitor, stops the system server's supervisor, closes
+// Close stops the janitor, stops every system server's supervisor, closes
 // every cached connection in parallel, and empties the cache. Used by the
 // composition root's shutdown path.
 func (m *MCPManager) Close() {
@@ -384,8 +391,8 @@ func (m *MCPManager) Close() {
 	default:
 		close(m.stop)
 	}
-	if m.system != nil {
-		m.system.markStopped()
+	for _, s := range m.systems {
+		s.markStopped()
 	}
 	entries := m.entries
 	m.entries = make(map[key]*cacheEntry)

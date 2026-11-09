@@ -18,12 +18,18 @@ import { useNavStore } from "../stores/nav";
 import { usePlatformStore } from "../stores/platform";
 import { renderUI } from "./test-utils";
 
-// The shell subscribes to the settings signal, and the theme store's platform
-// sync touches windowTheme; both route through the mocked client.
+// The shell subscribes to the settings signal and the notification deep
+// links (add-desktop-notifications task 6.3), and the theme store's platform
+// sync touches windowTheme; all route through the mocked client.
 vi.mock("../lib/client", () => ({
   client: {
     events: {
       onSettingsOpen: vi.fn((_handler: () => void) => (): void => undefined),
+    },
+    notifications: {
+      onNotificationOpen: vi.fn(
+        (_handler: () => void) => (): void => undefined
+      ),
     },
     windowTheme: {
       setLight: vi.fn((): Promise<void> => Promise.resolve()),

@@ -26,6 +26,10 @@ import type {
   ChannelStateEvent,
   ChannelView,
   ChromeProfileCandidate,
+  ComputerConfigView,
+  ComputerDriverState,
+  ComputerPermission,
+  ComputerStatus,
   CreateAgentInput,
   DocumentPresetEntry,
   GatewayStateEvent,
@@ -34,6 +38,7 @@ import type {
   GroupsChangedEvent,
   IntegrationConnectInput,
   KnowledgeDocument,
+  MCPServerView,
   Metadata,
   ModelCapability,
   PromptDocuments,
@@ -45,7 +50,9 @@ import type {
   TurnStateResult,
   VaultLogin,
   VerifyResult,
+  WebSearchChainEntryInput,
   WebSearchConfig,
+  WebSearchConfigInput,
   WebSearchProviderInfo,
   WorkspaceEntry,
   WorkspaceFileBinaryContent,
@@ -63,6 +70,7 @@ import type {
   Hook,
   HookExecution,
   MCPServer,
+  NotificationSettings,
   Session,
   Skill,
 } from "../../bindings/github.com/oniharnantyo/buddies/internal/store/models";
@@ -78,6 +86,7 @@ import {
   GROUPS_CHANGED_EVENT,
   KNOWLEDGE_CHANGED_EVENT,
   MCP_OAUTH_COMPLETED_EVENT,
+  NOTIFICATIONS_OPEN_EVENT,
   SCHEDULES_CHANGED_EVENT,
   SETTINGS_OPEN_EVENT,
   TURNS_CHANGED_EVENT,
@@ -85,6 +94,7 @@ import {
   sessionEventName,
   type KnowledgeChangedEvent,
   type MCPOAuthCompletedEvent,
+  type NotificationOpenEvent,
   type SchedulesChangedEvent,
   type TurnsChangedEvent,
 } from "./events";
@@ -160,6 +170,35 @@ export type { Preview, ScheduleInput, ScheduleView };
  * re-exported so feature code imports one surface. */
 export type { KnowledgeDocument };
 
+/**
+ * The web_search chain editor's types (fix-bridge-secret-redaction design
+ * D5): the redacted read shape (WebSearchConfig/WebSearchChainEntry — key
+ * set-state plus hint, never the key) and the write shape
+ * (WebSearchConfigInput/WebSearchChainEntryInput — api_key stays
+ * write-only), re-exported so feature code imports one surface.
+ */
+export type {
+  WebSearchChainEntryInput,
+  WebSearchConfig,
+  WebSearchConfigInput,
+  WebSearchProviderInfo,
+};
+
+/**
+ * The Computer Use settings pane's bound types (add-computer-use tasks 3.1,
+ * design D6): the toggle's read/write shape (ComputerConfigView), the pane's
+ * status aggregate with its per-permission list and driver download state
+ * (ComputerStatus/ComputerPermission/ComputerDriverState), re-exported so
+ * feature code imports one surface. The status/driver vocabulary values ride
+ * the fields as plain strings (the Go constants do not generate bindings).
+ */
+export type {
+  ComputerConfigView,
+  ComputerDriverState,
+  ComputerPermission,
+  ComputerStatus,
+};
+
 /** A document's scope: every agent, or one agent (add-knowledge-corpus D6). */
 export type KnowledgeScope = "global" | "agent";
 
@@ -191,6 +230,10 @@ export type GroupsChangedHandler = (event: GroupsChangedEvent) => void;
 /** Handler receiving one group's live transcript/task update (add-agent-groups
  * design D9). */
 export type GroupEventHandler = (event: GroupEvent) => void;
+
+/** Handler receiving one clicked-notification deep link (add-desktop-
+ * notifications design D5): the payload names the session or group to open. */
+export type NotificationOpenHandler = (event: NotificationOpenEvent) => void;
 
 export interface Client {
   appInfo: {
@@ -361,6 +404,18 @@ export interface Client {
       name: string
     ): Promise<BrowserScreenshotContent>;
     /**
+     * Serves one computer-use observation screenshot's bytes by the file name
+     * the observation wrote (add-computer-use, spec chat-tool-cards): base64
+     * PNG plus the dimensions the observation reported, the browser read's
+     * same content shape. The backend validates the name shape
+     * (`^\d+\.png$`) and resolves it solely inside the calling session's
+     * computer screenshots directory; a refused or missing file rejects.
+     */
+    computerScreenshot(
+      sessionID: string,
+      name: string
+    ): Promise<BrowserScreenshotContent>;
+    /**
      * Serves one generated document's bytes by the file name the
      * create_document tool reported (add-create-document D7): base64 plus
      * the byte size. The backend refuses any name carrying directory
@@ -416,6 +471,12 @@ export interface Client {
     ): Promise<Unsubscribe>;
     /** Detaches the session's live event stream on the backend. */
     unsubscribe(sessionID: string): Promise<void>;
+    /**
+     * Re-fires the session's composite in-flight snapshot to every live
+     * subscriber (enhance-resumable-streams design D5): the resync triggers'
+     * bound call (design D6). Idle or unknown sessions are a safe no-op.
+     */
+    resync(sessionID: string): Promise<void>;
     /** Reports whether the session has a turn in flight and its turn ID. */
     turnState(sessionID: string): Promise<TurnStateResult>;
     /** Context-window fill state (used vs the model's limit) for the session. */
@@ -485,17 +546,38 @@ export interface Client {
     setToolEnabled(name: string, enabled: boolean): Promise<void>;
     /** The registered web_search providers with their credential kinds. */
     webSearchProviders(): Promise<WebSearchProviderInfo[]>;
-    /** The persisted web_search failover chain (design D8). */
+    /**
+     * The persisted web_search failover chain (design D8). The redacted read
+     * shape: each entry carries KeySet/KeyHint, never the key itself.
+     */
     webSearchConfig(): Promise<WebSearchConfig>;
     /**
      * Create-or-replaces the web_search failover chain. Rejects when an
-     * entry's provider is unknown or its required credential is missing.
+     * entry's provider is unknown or its required credential is missing. A
+     * blank api_key on an entry carrying its stable ID keeps the stored key
+     * backend-side (merge-by-ID, fix-bridge-secret-redaction design D4); a
+     * non-blank key replaces it.
      */
-    saveWebSearchConfig(config: WebSearchConfig): Promise<void>;
+    saveWebSearchConfig(config: WebSearchConfigInput): Promise<void>;
     /** The persisted browser tool configuration (spec add-browser-tool D9). */
     browserConfig(): Promise<BrowserConfig>;
     /** Stores the browser tool configuration; validates name and timeouts. */
     saveBrowserConfig(config: BrowserConfig): Promise<void>;
+    /**
+     * The Computer Use pane's surface (add-computer-use tasks 3.1, design
+     * D6): the config round trip, the status aggregate (available flag,
+     * per-permission grants with Manage deep links, driver download state,
+     * supervision status), the Check again re-probe (restarting the driver
+     * on a grant change), and the enable action's host-side prompt raise.
+     * Server builds answer computerStatus with available=false and refuse
+     * the save/prompt (design D9).
+     */
+    computerConfig(): Promise<ComputerConfigView>;
+    saveComputerConfig(view: ComputerConfigView): Promise<void>;
+    computerStatus(): Promise<ComputerStatus>;
+    checkComputerPermissions(): Promise<ComputerStatus>;
+    promptComputerPermissions(): Promise<void>;
+    openComputerManageURL(url: string): Promise<void>;
     /**
      * The browser profiles sorted by name; always includes "default", even
      * before its directory exists.
@@ -607,12 +689,16 @@ export interface Client {
     updateMCPServer(server: MCPServer): Promise<MCPServer>;
     deleteMCPServer(id: string): Promise<void>;
     /**
-     * Dials the stored server definition on demand, discovers its tools, and
-     * persists the outcome onto the row's status fields. A failed probe
-     * reports on the row (status "error" with the reason) instead of
-     * rejecting; it never mutates the definition.
+     * Reports a row's connection state on demand (spec agent-mcp "Probe and
+     * tool discovery"). A stored server is dialed fresh and the outcome
+     * persists onto the row's status fields; a supervised system server has
+     * no stored definition — the supervision loop is its prober — so its
+     * probe reports the live state (spec agent-mcp "System-provided server":
+     * probed on demand like a user row). A failed probe reports on the row
+     * (status "error" with the reason) instead of rejecting; it never
+     * mutates a definition.
      */
-    probeMCPServer(id: string): Promise<MCPServer>;
+    probeMCPServer(id: string): Promise<MCPServerView>;
     /**
      * Starts the server's OAuth authorization flow (design D2): the system
      * browser opens the server's authorization page and the call returns
@@ -798,10 +884,36 @@ export interface Client {
     ): Promise<KnowledgeDocument>;
     /** Rewrites one document's description. */
     setDescription(id: string, description: string): Promise<KnowledgeDocument>;
-    /** One document's base64-encoded bytes, for previews. */
-    content(id: string): Promise<string>;
-  };
-  events: {
+      /** One document's base64-encoded bytes, for previews. */
+      content(id: string): Promise<string>;
+    };
+    notifications: {
+      /**
+       * The desktop-notification settings singleton (add-desktop-
+       * notifications design D4); when nothing was ever saved the backend
+       * answers the defaults — notifications on, every category on.
+       */
+      getNotificationSettings(): Promise<NotificationSettings>;
+      /**
+       * Create-or-replaces the settings singleton; the save path refreshes
+       * the engine's cache, so changes apply immediately without a restart.
+       */
+      saveNotificationSettings(settings: NotificationSettings): Promise<void>;
+      /**
+       * Mirrors the currently viewed context for foreground suppression
+       * (design D3): kind is "session" or "group" and id names the
+       * conversation on screen; an empty id or unknown kind clears the
+       * mirror, so an uninformative report just delivers.
+       */
+      reportFocus(kind: string, id: string): Promise<void>;
+      /**
+       * Subscribes to clicked-notification deep links (`notifications:open`,
+       * design D5): emitted when the user clicks a notification, with the
+       * session or group that notification concerned.
+       */
+      onNotificationOpen(handler: NotificationOpenHandler): Unsubscribe;
+    };
+    events: {
     /**
      * Subscribes to the native menu's Settings… signal (`settings:open`,
      * design D5). The event carries no payload.
@@ -991,6 +1103,11 @@ export function createClient(transport: Transport = wailsTransport): Client {
         name: string
       ): Promise<BrowserScreenshotContent> =>
         unwrap(await transport.chat.BrowserScreenshot(sessionID, name)),
+      computerScreenshot: async (
+        sessionID: string,
+        name: string
+      ): Promise<BrowserScreenshotContent> =>
+        unwrap(await transport.chat.ComputerScreenshot(sessionID, name)),
       generatedDocument: async (
         agentID: string,
         sessionID: string,
@@ -1021,8 +1138,11 @@ export function createClient(transport: Transport = wailsTransport): Client {
         sessionID: string,
         handler: SessionEventHandler
       ): Promise<Unsubscribe> => {
-        await transport.chat.Subscribe(sessionID);
-
+        // Listener-before-subscribe: the backend starts pumping the
+        // subscribe-time catch-up snapshot before the Subscribe RPC returns,
+        // and the Wails dispatch only reaches currently registered listeners —
+        // so events emitted in that window must already have a listener
+        // (enhance-resumable-streams design D1).
         const off = transport.onEvent(
           sessionEventName(sessionID),
           (data: EventPayload): void => {
@@ -1031,12 +1151,16 @@ export function createClient(transport: Transport = wailsTransport): Client {
           }
         );
 
+        await transport.chat.Subscribe(sessionID);
+
         return (): void => {
           off();
         };
       },
       unsubscribe: (sessionID: string): Promise<void> =>
         transport.chat.Unsubscribe(sessionID),
+      resync: (sessionID: string): Promise<void> =>
+        transport.chat.Resync(sessionID),
       turnState: (sessionID: string): Promise<TurnStateResult> =>
         transport.chat.TurnState(sessionID),
       contextUsage: (sessionID: string): Promise<ContextUsage> =>
@@ -1140,12 +1264,27 @@ export function createClient(transport: Transport = wailsTransport): Client {
           entries: Array.isArray(config.entries) ? config.entries : [],
         };
       },
-      saveWebSearchConfig: (config: WebSearchConfig): Promise<void> =>
+      saveWebSearchConfig: (config: WebSearchConfigInput): Promise<void> =>
         transport.settings.SaveWebSearchConfig(config),
       browserConfig: (): Promise<BrowserConfig> =>
         transport.settings.BrowserConfig(),
       saveBrowserConfig: (config: BrowserConfig): Promise<void> =>
         transport.settings.SaveBrowserConfig(config),
+      // The Computer Use pane's round trips (add-computer-use tasks 3.1):
+      // thin pass-throughs — the status aggregate and vocabulary live
+      // backend-side, the pane renders them verbatim.
+      computerConfig: (): Promise<ComputerConfigView> =>
+        transport.settings.ComputerConfig(),
+      saveComputerConfig: (view: ComputerConfigView): Promise<void> =>
+        transport.settings.SaveComputerConfig(view),
+      computerStatus: (): Promise<ComputerStatus> =>
+        transport.settings.ComputerStatus(),
+      checkComputerPermissions: (): Promise<ComputerStatus> =>
+        transport.settings.CheckComputerPermissions(),
+      promptComputerPermissions: (): Promise<void> =>
+        transport.settings.PromptComputerPermissions(),
+      openComputerManageURL: (url: string): Promise<void> =>
+        transport.settings.OpenComputerManageURL(url),
       // The bridge maps an empty Go slice to null; the profile list iterates
       // the result, so normalize it once here.
       browserProfiles: async (): Promise<BrowserProfile[]> =>
@@ -1271,7 +1410,7 @@ export function createClient(transport: Transport = wailsTransport): Client {
         transport.settings.UpdateMCPServer(server),
       deleteMCPServer: (id: string): Promise<void> =>
         transport.settings.DeleteMCPServer(id),
-      probeMCPServer: (id: string): Promise<MCPServer> =>
+      probeMCPServer: (id: string): Promise<MCPServerView> =>
         transport.settings.ProbeMCPServer(id),
       authorizeMCPServer: (id: string): Promise<void> =>
         transport.settings.AuthorizeMCPServer(id),
@@ -1436,6 +1575,25 @@ export function createClient(transport: Transport = wailsTransport): Client {
       ): Promise<KnowledgeDocument> =>
         transport.knowledge.SetDescription(id, description),
       content: (id: string): Promise<string> => transport.knowledge.Content(id),
+    },
+    notifications: {
+      getNotificationSettings: (): Promise<NotificationSettings> =>
+        transport.notifications.GetNotificationSettings(),
+      saveNotificationSettings: (
+        settings: NotificationSettings
+      ): Promise<void> =>
+        transport.notifications.SaveNotificationSettings(settings),
+      reportFocus: (kind: string, id: string): Promise<void> =>
+        transport.notifications.ReportFocus(kind, id),
+      onNotificationOpen: (handler: NotificationOpenHandler): Unsubscribe =>
+        transport.onEvent(
+          NOTIFICATIONS_OPEN_EVENT,
+          (data: EventPayload): void => {
+            // SAFETY: NOTIFICATIONS_OPEN_EVENT only carries
+            // NotificationOpenEvents.
+            handler(data as NotificationOpenEvent);
+          }
+        ),
     },
     events: {
       onSettingsOpen: (handler: () => void): Unsubscribe =>

@@ -83,6 +83,92 @@ func (m *ToolErrorResult) WrapInvokableToolCall(_ context.Context, endpoint adk.
 	}, nil
 }
 
+// WrapEnhancedInvokableToolCall converts failures on the enhanced-invokable
+// flavor too: the agentic ToolsNode routes tool calls through it
+// ("[EnhancedLocalFunc]"), so a flavor left unwrapped lets a jail rejection
+// or a 404 surface as a NodeRunError and kill the turn (the live
+// /tmp/openbot_check.png read_file refusal) instead of feeding back as the
+// readable error result the model can retry from.
+func (m *ToolErrorResult) WrapEnhancedInvokableToolCall(_ context.Context, endpoint adk.EnhancedInvokableToolCallEndpoint, tCtx *adk.ToolContext) (adk.EnhancedInvokableToolCallEndpoint, error) {
+	return func(ctx context.Context, toolArgument *schema.ToolArgument, opts ...tool.Option) (*schema.ToolResult, error) {
+		out, err := endpoint(ctx, toolArgument, opts...)
+		if err == nil || ctx.Err() != nil {
+			return out, err
+		}
+		var interrupt *adk.InterruptSignal
+		if errors.As(err, &interrupt) {
+			return out, err
+		}
+		if tCtx != nil {
+			m.RecordFailure(tCtx.CallID, err.Error())
+		}
+		return enhancedErrorResult(errorResultPayload(err, tCtx.Name)), nil
+	}, nil
+}
+
+// WrapEnhancedStreamableToolCall mirrors the conversion on the enhanced
+// streamable flavor — the sync and stream flavors are separate endpoints and
+// a wrapper on one leaves the other exposed.
+func (m *ToolErrorResult) WrapEnhancedStreamableToolCall(_ context.Context, endpoint adk.EnhancedStreamableToolCallEndpoint, tCtx *adk.ToolContext) (adk.EnhancedStreamableToolCallEndpoint, error) {
+	return func(ctx context.Context, toolArgument *schema.ToolArgument, opts ...tool.Option) (*schema.StreamReader[*schema.ToolResult], error) {
+		sr, err := endpoint(ctx, toolArgument, opts...)
+		if err != nil {
+			var interrupt *adk.InterruptSignal
+			if ctx.Err() != nil || errors.As(err, &interrupt) {
+				return nil, err
+			}
+			if tCtx != nil {
+				m.RecordFailure(tCtx.CallID, err.Error())
+			}
+			return enhancedErrorStream(enhancedErrorResult(errorResultPayload(err, tCtx.Name))), nil
+		}
+		out, sender := schema.Pipe[*schema.ToolResult](1)
+		go func() {
+			defer sender.Close()
+			for {
+				chunk, rerr := sr.Recv()
+				if rerr != nil {
+					if errors.Is(rerr, io.EOF) {
+						return
+					}
+					var interrupt *adk.InterruptSignal
+					if ctx.Err() != nil || errors.As(rerr, &interrupt) {
+						sr.Close()
+						return
+					}
+					if tCtx != nil {
+						m.RecordFailure(tCtx.CallID, rerr.Error())
+					}
+					_ = sender.Send(enhancedErrorResult(errorResultPayload(rerr, tCtx.Name)), nil)
+					return
+				}
+				if sender.Send(chunk, nil) {
+					sr.Close()
+					return
+				}
+			}
+		}()
+		return out, nil
+	}, nil
+}
+
+// enhancedErrorResult renders one JSON error payload as a text-only
+// schema.ToolResult — the enhanced flavor's result type.
+func enhancedErrorResult(payload string) *schema.ToolResult {
+	return &schema.ToolResult{
+		Parts: []schema.ToolOutputPart{{Type: schema.ToolPartTypeText, Text: payload}},
+	}
+}
+
+// enhancedErrorStream wraps one rendered error result in a single-frame
+// stream of the enhanced flavor.
+func enhancedErrorStream(result *schema.ToolResult) *schema.StreamReader[*schema.ToolResult] {
+	sr, sender := schema.Pipe[*schema.ToolResult](1)
+	_ = sender.Send(result, nil)
+	sender.Close()
+	return sr
+}
+
 func (m *ToolErrorResult) WrapStreamableToolCall(_ context.Context, endpoint adk.StreamableToolCallEndpoint, tCtx *adk.ToolContext) (adk.StreamableToolCallEndpoint, error) {
 	return func(ctx context.Context, argumentsInJSON string, opts ...tool.Option) (*schema.StreamReader[string], error) {
 		sr, err := endpoint(ctx, argumentsInJSON, opts...)

@@ -185,6 +185,8 @@ function makeSystemServer(patch: Partial<MCPServer> = {}): MCPServer {
     Service: "",
     CredentialSet: false,
     CredentialHint: "",
+    ClientSecretSet: false,
+    ClientSecretHint: "",
     Enabled: true,
     Status: "connected",
     StatusError: "",

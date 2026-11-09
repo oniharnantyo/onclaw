@@ -79,7 +79,7 @@ func TestTelegramSmoke(t *testing.T) {
 	// the Submit's Origin) to the hook's stdin, which this appends to a file.
 	hookLog := filepath.Join(t.TempDir(), "hook-run-started.jsonl")
 
-	app, err := cli.Assemble(ctx, services.Noop{}, services.NoBrowser{})
+	app, err := cli.Assemble(ctx, services.Noop{}, services.NoBrowser{}, nil)
 	require.NoError(t, err)
 	defer func() { require.NoError(t, app.Close()) }()
 

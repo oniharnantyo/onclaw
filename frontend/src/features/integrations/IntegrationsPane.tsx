@@ -939,6 +939,21 @@ export default function IntegrationsPane({
                       updateSheet({ clientSecret: e.target.value })
                     }
                   />
+                  {sheet.mode === "edit" && storedRow?.ClientSecretSet ? (
+                    // The field stays write-only (always starts empty); the
+                    // redacted hint is the only stored-secret state the edit
+                    // sheet shows (fix-bridge-secret-redaction design D5).
+                    // Mono + text-muted matches the provider key-hint
+                    // convention; both ride theme tokens.
+                    <p
+                      className="font-mono text-[11px] text-muted"
+                      data-testid="integrations-client-secret-hint"
+                    >
+                      {storedRow.ClientSecretHint
+                        ? `configured (···${storedRow.ClientSecretHint})`
+                        : "configured"}
+                    </p>
+                  ) : null}
                 </FormField>
               </>
             )}

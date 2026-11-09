@@ -240,7 +240,7 @@ func (s *SettingsService) DisconnectMCPServer(ctx context.Context, id string) (s
 	if err := s.store.MCPServers().Update(ctx, stored); err != nil {
 		return store.MCPServer{}, fmt.Errorf("disconnect mcp server: %w", err)
 	}
-	redactIntegrationCredential(stored)
+	redactServerSecrets(stored)
 	return *stored, nil
 }
 

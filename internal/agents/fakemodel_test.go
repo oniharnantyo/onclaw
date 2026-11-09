@@ -229,7 +229,7 @@ type fakeRegistry struct {
 	overrides []ModelOverride
 }
 
-func (r *fakeRegistry) Build(_ context.Context, agent store.Agent, override ModelOverride) (model.BaseModel[*schema.AgenticMessage], error) {
+func (r *fakeRegistry) Build(_ context.Context, agent store.Agent, override ModelOverride, _ observationContext) (model.BaseModel[*schema.AgenticMessage], error) {
 	r.mu.Lock()
 	r.agents = append(r.agents, agent)
 	r.overrides = append(r.overrides, override)

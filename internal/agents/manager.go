@@ -113,6 +113,13 @@ type Manager interface {
 	// before Subscribe (or dropped under backpressure) are recovered by
 	// replaying the session's events from the store.
 	Subscribe(ctx context.Context, sessionID string) (Subscription, error)
+	// Resync re-fires the running turn's composite in-flight snapshot
+	// (enhance-resumable-streams design D5) to ALL of the session's live
+	// subscribers — the multi-tab reconcile: every attached surface folds the
+	// same one-event state and rebaselines its delta count. Idle or unknown
+	// sessions are a safe no-op. Cheap and side-effect-free: the snapshot is
+	// one mutex build, it never persists, and the running turn is untouched.
+	Resync(ctx context.Context, sessionID string) error
 	// ContextUsage reports the session's context-window fill state against
 	// the agent's resolved limit (its override when set, the model catalog
 	// window otherwise); store.ErrNotFound for an unknown session.
@@ -299,6 +306,69 @@ func WithTurnTransition(cb func(sessionID string, busy bool)) Option {
 	}
 }
 
+// TurnOutcome discriminates a turn's terminal outcome
+// (add-desktop-notifications design D2): what the WithTurnFinished callback
+// reports, mapped from the turn's terminal error.
+type TurnOutcome string
+
+const (
+	// TurnCompleted marks a turn that ran to its normal completion.
+	TurnCompleted TurnOutcome = "completed"
+	// TurnFailed marks a turn whose terminal error was a failure — a model,
+	// provider, or composition error surfaced as the turn's outcome.
+	TurnFailed TurnOutcome = "failed"
+	// TurnCancelled marks a turn stopped on the user's request, in flight or
+	// parked on a pending approval.
+	TurnCancelled TurnOutcome = "cancelled"
+)
+
+// ParkKind discriminates why a session parked with its turn still in flight
+// (add-desktop-notifications design D2): what the WithSessionParked callback
+// reports. A park fires no transition — the turn stays busy throughout — so
+// without this callback the strongest attention trigger would be invisible.
+type ParkKind string
+
+const (
+	// ParkApproval marks a turn parked on a pending shell-command approval.
+	ParkApproval ParkKind = "approval"
+	// ParkInput marks a turn parked on a browser attention request — a
+	// secret submission or a takeover handover.
+	ParkInput ParkKind = "input"
+)
+
+// WithTurnFinished supplies the callback fired once per non-group turn's
+// terminal outcome (add-desktop-notifications design D2): the session, the
+// dispatch's origin, the outcome mapped from the terminal error, and the turn
+// id. It fires after the busy record clears, exactly at the turn-terminal
+// sites — completed, failed, and cancelled alike, whatever the origin (a
+// scheduler-origin run reports truthfully; the consumer filters). Group-lane
+// turns never fire: their task-level terminal is the group report, and a
+// turn-level report would double-notify. Unset — the default — finished
+// turns go unobserved.
+func WithTurnFinished(cb func(sessionID string, origin hooks.Origin, outcome TurnOutcome, turnID string)) Option {
+	return func(m *manager) {
+		if cb != nil {
+			m.onTurnFinished = cb
+		}
+	}
+}
+
+// WithSessionParked supplies the callback fired when a turn parks the session
+// on an attention request (add-desktop-notifications design D2): the session,
+// the park kind, the interrupt id (design D5's deterministic
+// park:<sessionID>:<interruptID> notification id's key), and the detail
+// describing the request — the command awaiting approval, or the prompt/method
+// of a browser attention card. It fires only at the park installs; the
+// resolve, cancel, and completion paths never fire it. Unset — the default —
+// parks go unobserved.
+func WithSessionParked(cb func(sessionID string, kind ParkKind, interruptID, detail string)) Option {
+	return func(m *manager) {
+		if cb != nil {
+			m.onSessionParked = cb
+		}
+	}
+}
+
 // NewManager wires the agent runtime onto the store: sessions persist
 // through the sessions service and models build through the provider
 // registry over the store's provider configurations. Options apply
@@ -327,6 +397,7 @@ func newManager(s store.Store, svc sessions.Service, registry modelRegistry, opt
 		resolvingInputs: make(map[string]bool),
 		sessionTasks:    make(map[string]*subagents.TaskRegistry),
 		agentLanes:      make(map[string]*agentLane),
+		beaconInterval:  streamBeaconInterval,
 	}
 	for _, opt := range opts {
 		opt(m)

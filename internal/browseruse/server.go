@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"os"
 	"path/filepath"
 	"strings"
 
@@ -37,9 +38,77 @@ func (b *browserTools) allowPrivate() bool {
 
 // profile resolves a call's profile name: explicit argument, configured
 // default, then DefaultBrowserProfile — validated before any filesystem
-// access.
+// access. Handler code goes through resolveProfile instead, which layers the
+// host's bound-profile meta on top; this stays for direct resolution.
 func (b *browserTools) profile(arg string) (string, error) {
 	return ResolveProfile(arg, b.cfg.DefaultProfile)
+}
+
+// profileResolution is one call's resolved profile: Key is the sessions-map
+// key and the ProfileDir input — a validated profile name, or the bound
+// profile's absolute directory — and Name is the display-only name for
+// receipts. Unbound, Key and Name are the same string.
+type profileResolution struct {
+	Key  string
+	Name string
+}
+
+// resolveProfile is the one seam every handler resolves its profile through
+// (design D3 of add-per-agent-browser-profiles): a host-stamped profile-dir
+// meta wins over the profile argument entirely — the directory is created on
+// demand, keys the sessions map, and never touches ValidateBrowserProfile —
+// while any call without the binding resolves exactly like direct CLI use.
+// The values ride the request metadata, never the arguments, so the model can
+// neither see nor influence the binding.
+func (b *browserTools) resolveProfile(req mcp.CallToolRequest, arg string) (profileResolution, error) {
+	if dir, ok := metaProfileDir(req); ok {
+		// The bound directory is created on first use (private to the user) so
+		// a fresh agent's first action — and its takeover readiness check —
+		// never needs a pre-existing profile.
+		if err := os.MkdirAll(dir, 0o700); err != nil {
+			return profileResolution{}, fmt.Errorf("browser: create profile dir: %w", err)
+		}
+		name := metaProfileName(req)
+		if name == "" {
+			name = filepath.Base(dir)
+		}
+		return profileResolution{Key: dir, Name: name}, nil
+	}
+	key, err := b.profile(arg)
+	if err != nil {
+		return profileResolution{}, err
+	}
+	return profileResolution{Key: key, Name: key}, nil
+}
+
+// metaProfileDir parses the host-stamped profile-dir binding off the call's
+// meta: accepted only as a clean absolute path without ".." (the
+// screenshotDir precedent's tolerance); absent, empty, relative, or
+// traversal-shaped values leave the named-profile path in charge.
+func metaProfileDir(req mcp.CallToolRequest) (string, bool) {
+	if req.Params.Meta == nil {
+		return "", false
+	}
+	raw, ok := req.Params.Meta.AdditionalFields[MetaProfileDir].(string)
+	if !ok || raw == "" {
+		return "", false
+	}
+	cleaned := filepath.Clean(raw)
+	if filepath.IsAbs(cleaned) && !strings.Contains(cleaned, "..") {
+		return cleaned, true
+	}
+	return "", false
+}
+
+// metaProfileName parses the display-only profile-name binding: any non-empty
+// string the host stamped is echoed as-is (an agent slug can exceed the
+// profile-name contract by design); empty falls back to the directory's base.
+func metaProfileName(req mcp.CallToolRequest) string {
+	if req.Params.Meta == nil {
+		return ""
+	}
+	name, _ := req.Params.Meta.AdditionalFields[MetaProfileName].(string)
+	return name
 }
 
 // ctxTimeout bounds one action by the configured action timeout.
@@ -253,7 +322,7 @@ func (b *browserTools) handleNavigate(ctx context.Context, req mcp.CallToolReque
 	if err := req.BindArguments(&args); err != nil {
 		return errResult(fmt.Errorf("browser: bad arguments: %w", err)), nil
 	}
-	profile, err := b.profile(args.Profile)
+	prof, err := b.resolveProfile(req, args.Profile)
 	if err != nil {
 		return errResult(err), nil
 	}
@@ -269,7 +338,7 @@ func (b *browserTools) handleNavigate(ctx context.Context, req mcp.CallToolReque
 	// session lock releases (never hold s.mu while taking the registry's
 	// mutex).
 	var releasedWeakID string
-	res, err := b.withSession(ctx, profile, func(actx context.Context, s *profileSession) (any, error) {
+	res, err := b.withSession(ctx, prof.Key, func(actx context.Context, s *profileSession) (any, error) {
 		// The urlCarriesSecret guard blocks any navigation whose URL would
 		// carry the protected value (design D1's page-echo closure).
 		if err := s.guardNavigation(u.String()); err != nil {
@@ -294,11 +363,11 @@ func (b *browserTools) handleSnapshot(ctx context.Context, req mcp.CallToolReque
 	if err := req.BindArguments(&args); err != nil {
 		return errResult(fmt.Errorf("browser: bad arguments: %w", err)), nil
 	}
-	profile, err := b.profile(args.Profile)
+	prof, err := b.resolveProfile(req, args.Profile)
 	if err != nil {
 		return errResult(err), nil
 	}
-	res, err := b.withSession(ctx, profile, func(actx context.Context, s *profileSession) (any, error) {
+	res, err := b.withSession(ctx, prof.Key, func(actx context.Context, s *profileSession) (any, error) {
 		// Protection freeze: inspection is refused from request to
 		// scrub-release (design D1).
 		if err := s.guardInspection(); err != nil {
@@ -324,7 +393,7 @@ func (b *browserTools) handleClick(ctx context.Context, req mcp.CallToolRequest)
 	if args.Ref == "" && args.Name == "" {
 		return errResult(errors.New("browser: either ref or name is required for click")), nil
 	}
-	res, err := b.targetSessionAction(ctx, args, func(actx context.Context, s *profileSession) (SlimActionResult, error) {
+	res, err := b.targetSessionAction(ctx, req, args, func(actx context.Context, s *profileSession) (SlimActionResult, error) {
 		return s.clickTarget(actx, TargetQuery{Ref: args.Ref, Name: args.Name, Role: args.Role})
 	})
 	return renderResult(res, err)
@@ -341,20 +410,21 @@ func (b *browserTools) handleType(ctx context.Context, req mcp.CallToolRequest) 
 	if args.Ref == "" && args.Name == "" {
 		return errResult(errors.New("browser: either ref or name is required for type")), nil
 	}
-	res, err := b.targetSessionAction(ctx, args, func(actx context.Context, s *profileSession) (SlimActionResult, error) {
+	res, err := b.targetSessionAction(ctx, req, args, func(actx context.Context, s *profileSession) (SlimActionResult, error) {
 		return s.typeTarget(actx, TargetQuery{Ref: args.Ref, Name: args.Name, Role: args.Role}, args.Text)
 	})
 	return renderResult(res, err)
 }
 
 // targetSessionAction resolves the profile and runs a click/type flow under
-// the session's action timeout.
-func (b *browserTools) targetSessionAction(ctx context.Context, args targetArgs, fn func(actx context.Context, s *profileSession) (SlimActionResult, error)) (any, error) {
-	profile, err := b.profile(args.Profile)
+// the session's action timeout. The request rides along so the resolution
+// sees the host's profile binding.
+func (b *browserTools) targetSessionAction(ctx context.Context, req mcp.CallToolRequest, args targetArgs, fn func(actx context.Context, s *profileSession) (SlimActionResult, error)) (any, error) {
+	prof, err := b.resolveProfile(req, args.Profile)
 	if err != nil {
 		return nil, err
 	}
-	return b.withSession(ctx, profile, func(actx context.Context, s *profileSession) (any, error) {
+	return b.withSession(ctx, prof.Key, func(actx context.Context, s *profileSession) (any, error) {
 		return fn(actx, s)
 	})
 }
@@ -364,7 +434,7 @@ func (b *browserTools) handlePressKey(ctx context.Context, req mcp.CallToolReque
 	if err := req.BindArguments(&args); err != nil {
 		return errResult(fmt.Errorf("browser: bad arguments: %w", err)), nil
 	}
-	profile, err := b.profile(args.Profile)
+	prof, err := b.resolveProfile(req, args.Profile)
 	if err != nil {
 		return errResult(err), nil
 	}
@@ -377,7 +447,7 @@ func (b *browserTools) handlePressKey(ctx context.Context, req mcp.CallToolReque
 	if !ok {
 		return errResult(fmt.Errorf("browser: unsupported key %q; use Enter, Tab, Escape, Backspace, Delete, Space, ArrowUp, ArrowDown, ArrowLeft, ArrowRight, Home, End, PageUp, PageDown, or a single character", args.Key)), nil
 	}
-	res, err := b.withSession(ctx, profile, func(actx context.Context, s *profileSession) (any, error) {
+	res, err := b.withSession(ctx, prof.Key, func(actx context.Context, s *profileSession) (any, error) {
 		return s.pressKey(actx, key, args.Key)
 	})
 	return renderResult(res, err)
@@ -388,7 +458,7 @@ func (b *browserTools) handleScroll(ctx context.Context, req mcp.CallToolRequest
 	if err := req.BindArguments(&args); err != nil {
 		return errResult(fmt.Errorf("browser: bad arguments: %w", err)), nil
 	}
-	profile, err := b.profile(args.Profile)
+	prof, err := b.resolveProfile(req, args.Profile)
 	if err != nil {
 		return errResult(err), nil
 	}
@@ -397,7 +467,7 @@ func (b *browserTools) handleScroll(ctx context.Context, req mcp.CallToolRequest
 	default:
 		return errResult(fmt.Errorf("browser: direction must be up or down, got %q", args.Direction)), nil
 	}
-	res, err := b.withSession(ctx, profile, func(actx context.Context, s *profileSession) (any, error) {
+	res, err := b.withSession(ctx, prof.Key, func(actx context.Context, s *profileSession) (any, error) {
 		return s.scroll(actx, args.Direction)
 	})
 	return renderResult(res, err)
@@ -408,11 +478,11 @@ func (b *browserTools) handleBack(ctx context.Context, req mcp.CallToolRequest) 
 	if err := req.BindArguments(&args); err != nil {
 		return errResult(fmt.Errorf("browser: bad arguments: %w", err)), nil
 	}
-	profile, err := b.profile(args.Profile)
+	prof, err := b.resolveProfile(req, args.Profile)
 	if err != nil {
 		return errResult(err), nil
 	}
-	res, err := b.withSession(ctx, profile, func(actx context.Context, s *profileSession) (any, error) {
+	res, err := b.withSession(ctx, prof.Key, func(actx context.Context, s *profileSession) (any, error) {
 		return s.back(actx)
 	})
 	return renderResult(res, err)
@@ -423,11 +493,11 @@ func (b *browserTools) handleScreenshot(ctx context.Context, req mcp.CallToolReq
 	if err := req.BindArguments(&args); err != nil {
 		return errResult(fmt.Errorf("browser: bad arguments: %w", err)), nil
 	}
-	profile, err := b.profile(args.Profile)
+	prof, err := b.resolveProfile(req, args.Profile)
 	if err != nil {
 		return errResult(err), nil
 	}
-	res, err := b.withSession(ctx, profile, func(actx context.Context, s *profileSession) (any, error) {
+	res, err := b.withSession(ctx, prof.Key, func(actx context.Context, s *profileSession) (any, error) {
 		// Protection freeze: inspection is refused from request to
 		// scrub-release (design D1).
 		if err := s.guardInspection(); err != nil {
@@ -444,6 +514,21 @@ func (b *browserTools) handleScreenshot(ctx context.Context, req mcp.CallToolReq
 // The value rides the request metadata — never the arguments, which the
 // transcript records — so the model can neither see nor influence it.
 const MetaScreenshotDir = "buddies.dev/screenshot-dir"
+
+// MetaProfileDir is the _meta key the parent stamps on every browser-use tool
+// call it forwards on behalf of an agent, carrying the agent's own profile
+// directory (<workspaces>/<slug>/browser-profile). A call carrying it binds
+// the profile: the bound directory becomes the user-data directory and the
+// sessions key, and the profile argument is ignored entirely — the model can
+// neither see nor influence the binding (design D3). Accepted only as a clean
+// absolute path; anything else falls back to named resolution.
+const MetaProfileDir = "buddies.dev/profile-dir"
+
+// MetaProfileName is the _meta key carrying the bound profile's display name
+// (the agent slug) for receipts such as the takeover-ready echo. Display
+// only: any non-empty value is accepted and never validated against the
+// profile-name contract, because bound profiles never touch it.
+const MetaProfileName = "buddies.dev/profile-name"
 
 // screenshotDir resolves where one screenshot call writes: the meta dir when
 // the host supplied a clean absolute path, otherwise the browser dir's own
@@ -467,14 +552,14 @@ func (b *browserTools) handleCookies(ctx context.Context, req mcp.CallToolReques
 	if err := req.BindArguments(&args); err != nil {
 		return errResult(fmt.Errorf("browser: bad arguments: %w", err)), nil
 	}
-	profile, err := b.profile(args.Profile)
+	prof, err := b.resolveProfile(req, args.Profile)
 	if err != nil {
 		return errResult(err), nil
 	}
 	if err := validateCookiesOp(args); err != nil {
 		return errResult(err), nil
 	}
-	res, err := b.withSession(ctx, profile, func(actx context.Context, s *profileSession) (any, error) {
+	res, err := b.withSession(ctx, prof.Key, func(actx context.Context, s *profileSession) (any, error) {
 		// Protection freeze: inspection is refused from request to
 		// scrub-release (design D1).
 		if err := s.guardInspection(); err != nil {
@@ -508,7 +593,7 @@ func (b *browserTools) handleRead(ctx context.Context, req mcp.CallToolRequest) 
 	if err := req.BindArguments(&args); err != nil {
 		return errResult(fmt.Errorf("browser: bad arguments: %w", err)), nil
 	}
-	profile, err := b.profile(args.Profile)
+	prof, err := b.resolveProfile(req, args.Profile)
 	if err != nil {
 		return errResult(err), nil
 	}
@@ -516,7 +601,7 @@ func (b *browserTools) handleRead(ctx context.Context, req mcp.CallToolRequest) 
 	if args.MaxLength != nil {
 		maxLength = *args.MaxLength
 	}
-	res, err := b.withSession(ctx, profile, func(actx context.Context, s *profileSession) (any, error) {
+	res, err := b.withSession(ctx, prof.Key, func(actx context.Context, s *profileSession) (any, error) {
 		// Protection freeze + SPA-keep hold: the evaluate paths are refused
 		// for the full protection arc (design D1/D4).
 		if err := s.guardEvaluate(); err != nil {
@@ -532,11 +617,11 @@ func (b *browserTools) handleWait(ctx context.Context, req mcp.CallToolRequest) 
 	if err := req.BindArguments(&args); err != nil {
 		return errResult(fmt.Errorf("browser: bad arguments: %w", err)), nil
 	}
-	profile, err := b.profile(args.Profile)
+	prof, err := b.resolveProfile(req, args.Profile)
 	if err != nil {
 		return errResult(err), nil
 	}
-	res, err := b.withSession(ctx, profile, func(actx context.Context, s *profileSession) (any, error) {
+	res, err := b.withSession(ctx, prof.Key, func(actx context.Context, s *profileSession) (any, error) {
 		if err := s.waitSettle(actx, args.Ms); err != nil {
 			return nil, err
 		}

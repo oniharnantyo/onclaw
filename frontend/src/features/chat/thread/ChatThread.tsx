@@ -10,7 +10,9 @@
  * hasEarlier/onLoadEarlier at the top; the viewport's prepend anchor keeps
  * the reader's position when a page lands above. The viewport wrapper is
  * the relative anchor for the floating run surfaces (top-right, never over
- * the composer) and the conversation-map rail stands beside it.
+ * the composer) and the conversation-map rail stands beside it. On a fresh
+ * transcript the intro owns the viewport: the identity greeting centers in
+ * it (ThreadEmptyState) and the messages wrapper stays unmounted.
  */
 import { ArrowDown } from "lucide-react";
 import { useEffect, useState } from "react";
@@ -25,6 +27,7 @@ import {
   type ThreadViewportState,
 } from "@assistant-ui/react";
 
+import type { Agent } from "../../../../bindings/github.com/oniharnantyo/buddies/internal/store/models";
 import { cn } from "../../../lib/cn";
 import { RunSurfaces } from "../run/RunSurfaces";
 import { useChatStore, type ExtendedChatStore } from "../store";
@@ -33,6 +36,7 @@ import { GroupStoppedNotice } from "../../groups/GroupStoppedNotice";
 import { ChatAssistantMessage } from "./ChatAssistantMessage";
 import { ChatUserMessage } from "./ChatUserMessage";
 import { ConversationMapRail } from "./ConversationMapRail";
+import { ThreadEmptyState } from "./ThreadEmptyState";
 import { TurnActivity } from "./TurnActivity";
 
 // The vendored element set constructs ResizeObserver unconditionally (the
@@ -87,11 +91,40 @@ function LoadEarlierSlot(): ReactElement | null {
   );
 }
 
+/** Whether the fresh-transcript intro owns the viewport: the transcript is
+ * empty and no session load is in flight. TranscriptLog's centering and the
+ * messages wrapper's skip both key off this one predicate so they can never
+ * disagree (enhance-chat-empty-state design D3): the greeting's block lands
+ * mid-viewport, and a rendered-but-empty messages wrapper — a zero-height
+ * flex item the log's gap would pad with phantom space — does not mount.
+ * The skeleton stays top-aligned, so the predicate must be false while it
+ * shows. */
+function useIntroVisible(): boolean {
+  const loadingSession = useChatStore(
+    (s: ExtendedChatStore) => s.loadingSession
+  );
+
+  const empty = useAuiState(
+    (s: AssistantState) => s.thread.messages.length === 0
+  );
+
+  return empty && !loadingSession;
+}
+
 /** The empty/loading stand-ins: skeleton rows while a session loads, the
- * quiet hint on a fresh one. */
+ * identity greeting on a fresh one (ThreadEmptyState). The agent resolves
+ * the same way ChatHeader does — the active agent's row from the store, or
+ * null when there is none (a group transcript, an unknown id), which the
+ * greeting degrades on. */
 function ThreadIntro(): ReactElement | null {
   const loadingSession = useChatStore(
     (s: ExtendedChatStore) => s.loadingSession
+  );
+
+  const agents = useChatStore((s: ExtendedChatStore) => s.agents);
+
+  const activeAgentID = useChatStore(
+    (s: ExtendedChatStore) => s.activeAgentID
   );
 
   const empty = useAuiState(
@@ -114,11 +147,9 @@ function ThreadIntro(): ReactElement | null {
 
   if (!empty) return null;
 
-  return (
-    <p className="py-16 text-center text-sm text-muted">
-      No messages yet — say hello below.
-    </p>
-  );
+  const agent = agents.find((a: Agent) => a.ID === activeAgentID) ?? null;
+
+  return <ThreadEmptyState agent={agent} />;
 }
 
 /** The jump-to-latest pill: visible only while the reader is not at the
@@ -152,11 +183,20 @@ function JumpToLatest(): ReactElement | null {
 function TranscriptLog({ children }: { children: ReactNode }): ReactElement {
   const isRunning = useAuiState((s: AssistantState) => s.thread.isRunning);
 
+  const introVisible = useIntroVisible();
+
   return (
     <div
       role="log"
       aria-busy={isRunning || undefined}
-      className="mx-auto flex w-full max-w-3xl flex-col gap-3 px-4 py-4"
+      className={cn(
+        "mx-auto flex w-full max-w-3xl flex-col gap-3 px-4 py-4",
+        // The intro's column centers in the viewport: min-height resolves
+        // against the definite-height scrollport (the vendored
+        // thread.aui.tsx column idiom), so the greeting lands mid-viewport.
+        // The skeleton keeps the top-aligned default.
+        introVisible && "min-h-full justify-center"
+      )}
       data-testid="transcript-log"
     >
       {children}
@@ -173,6 +213,10 @@ export function ChatThread(): ReactElement {
   // viewport inside the relative wrapper, so the map floats over the
   // scrollport without touching the scroll height.
   const [overlay, setOverlay] = useState<HTMLElement | null>(null);
+
+  // The intro and the messages wrapper are mutually exclusive (see
+  // useIntroVisible).
+  const introVisible = useIntroVisible();
 
   // Warm the completed-text chunk while the transcript is still empty. The
   // assistant message loads the vendored markdown element lazily (the
@@ -200,12 +244,20 @@ export function ChatThread(): ReactElement {
           <TranscriptLog>
             <LoadEarlierSlot />
             <ThreadIntro />
-            <div className="flex flex-col gap-4">
-              <ThreadPrimitive.Messages components={MESSAGE_COMPONENTS} />
-              <TurnActivity />
-              <GroupActivity />
-              <GroupStoppedNotice />
-            </div>
+            {/* The wrapper skips while the intro shows: a rendered-but-empty
+             * flex column is zero-height, and the log's gap-3 would pad it
+             * with phantom space around the centered greeting. */}
+            {!introVisible && (
+              <div
+                className="flex flex-col gap-4"
+                data-testid="transcript-messages"
+              >
+                <ThreadPrimitive.Messages components={MESSAGE_COMPONENTS} />
+                <TurnActivity />
+                <GroupActivity />
+                <GroupStoppedNotice />
+              </div>
+            )}
           </TranscriptLog>
           {/* The map renders into the overlay layer, OUTSIDE the scrollport:
            * its zero-height sticky rail inside the scrollport inflates the

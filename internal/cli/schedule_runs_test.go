@@ -79,6 +79,9 @@ func (m *fakeAgentsManager) Regenerate(context.Context, string, string) (*agents
 func (m *fakeAgentsManager) Subscribe(context.Context, string) (agents.Subscription, error) {
 	return nil, panicUnexpected()
 }
+func (m *fakeAgentsManager) Resync(context.Context, string) error {
+	return panicUnexpected()
+}
 func (m *fakeAgentsManager) ContextUsage(context.Context, string) (agents.ContextUsage, error) {
 	return agents.ContextUsage{}, panicUnexpected()
 }

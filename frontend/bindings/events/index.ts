@@ -44,6 +44,11 @@ export const KnowledgeChanged = "knowledge:changed";
 export const McpOauthCompleted = "mcp:oauth:completed";
 
 /**
+ * Name of the custom event "notifications:open".
+ */
+export const NotificationsOpen = "notifications:open";
+
+/**
  * Name of the custom event "schedules:changed".
  */
 export const SchedulesChanged = "schedules:changed";
@@ -52,3 +57,4 @@ export const SchedulesChanged = "schedules:changed";
  * Name of the custom event "turns:changed".
  */
 export const TurnsChanged = "turns:changed";
+

@@ -9,7 +9,7 @@
 import { act } from "react";
 import { mockedSurface } from "./mockedSurface";
 import { waitFor } from "@testing-library/dom";
-import { beforeEach, describe, expect, it, vi } from "vite-plus/test";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vite-plus/test";
 
 import {
   Kind,
@@ -26,7 +26,12 @@ import type {
 } from "../../../../bindings/github.com/oniharnantyo/buddies/internal/services/models";
 import type { TurnsChangedEvent } from "../../../lib/events";
 import type { Client } from "../../../lib/client";
-import { connectRunningSessions, useChatStore } from "../store";
+import {
+  connectRunningSessions,
+  STREAM_BEACON_INTERVAL_MS,
+  STREAM_STALENESS_MS,
+  useChatStore,
+} from "../store";
 import type { Entry, PanelTab, PickerSkill } from "../types";
 
 const agents: Agent[] = [
@@ -140,6 +145,7 @@ type MockedClient = Client & {
     send: MockFn;
     subscribe: MockFn;
     unsubscribe: MockFn;
+    resync: MockFn;
     turnState: MockFn;
     transcript: MockFn;
     transcriptPage: MockFn;
@@ -192,6 +198,7 @@ function makeClient(): MockedClient {
         }
       ),
       unsubscribe: vi.fn(async () => undefined),
+      resync: vi.fn(async () => undefined),
       turnState: vi.fn(async () => ({ busy: false, turn_id: "" })),
       transcript: vi.fn(async () => []),
       transcriptPage: vi.fn(
@@ -453,15 +460,35 @@ describe("chat store overrides (task 2.1)", () => {
   it("newChat opens the fresh-chat state without minting a session", async () => {
     // The agent has sessions; + must not pick one and must not create one —
     // the view clears and the send path mints the session on the first send.
+    // The windowing marker of the session just left must not survive: a
+    // stale oldestSeq offered "load earlier" on the session-less transcript.
+    useChatStore.setState({ oldestSeq: 41, loadingEarlier: false });
+
     await useChatStore.getState().newChat();
 
     expect(mockedClient.chat.createSession).not.toHaveBeenCalled();
     expect(useChatStore.getState().activeSessionID).toBeNull();
     expect(useChatStore.getState().entries).toEqual([]);
+    // The windowing state restarts with the fresh chat (task 6.1).
+    expect(useChatStore.getState().oldestSeq).toBeNull();
+    expect(useChatStore.getState().loadingEarlier).toBe(false);
     // The composer is immediately sendable: nothing in flight, nothing
     // queued (the fresh-chat reset mirrors deleteSession's empty state).
     expect(useChatStore.getState().busy).toBe(false);
     expect(useChatStore.getState().queue).toEqual([]);
+  });
+
+  it("selectAgent with no sessions resets the windowing marker too", async () => {
+    // The no-sessions fallback lands on the same session-less transcript as
+    // the rail's +; both paths must clear the windowing state.
+    useChatStore.setState({ oldestSeq: 41, loadingEarlier: false });
+    mockedClient.chat.allSessions.mockResolvedValueOnce([]);
+
+    await useChatStore.getState().selectAgent("a1");
+
+    expect(useChatStore.getState().activeSessionID).toBeNull();
+    expect(useChatStore.getState().oldestSeq).toBeNull();
+    expect(useChatStore.getState().loadingEarlier).toBe(false);
   });
 
   it("selectAgent populates the all-agents list (add-grouped-session-rail design D1)", async () => {
@@ -1256,6 +1283,244 @@ describe("re-adopt in-flight turn on re-entry (task 4.2)", () => {
     expect(useChatStore.getState().activeTurnID).toBeNull();
     expect(useChatStore.getState().busy).toBe(false);
     expect(useChatStore.getState().runningSessions.has("s1")).toBe(false);
+  });
+});
+
+describe("catch-up sync on session open (enhance-resumable-streams tasks 1.2, design D1/D7)", () => {
+  it("a mid-stream sync delivered at Subscribe resolution reconstructs the full partial", async () => {
+    // The incident (tasks.md 1.2): pre-D1 the listener attached AFTER the
+    // Subscribe RPC resolved, while the backend pumps the catch-up snapshot
+    // before Subscribe returns — the snapshot landed listener-less and the
+    // transcript opened without the in-flight partial. Post-D1 the sync is
+    // delivered around Subscribe's resolution and must survive the
+    // initial-load window (the eventBuffer seam) to fold on top of the
+    // transcript page. Against the pre-D1 ordering this emission never
+    // reaches the store and the streaming entry is missing entirely.
+    mockedClient.chat.subscribe.mockImplementationOnce(
+      async (
+        id: string,
+        handler: (e: SessionEvent) => void
+      ): Promise<() => void> => {
+        liveHandler = handler;
+        liveHandlers.set(id, handler);
+
+        // The backend pumps the catch-up snapshot before the RPC returns.
+        handler(
+          ev(Kind.KindStreamSync, {
+            turn_id: "t-mid",
+            stream: {
+              text: "full partial text",
+              reasoning: "mid-thought",
+              tools: [],
+              tasks: [],
+              deltas: 4,
+            },
+          })
+        );
+
+        return (): void => {
+          if (liveHandler === handler) liveHandler = null;
+          liveHandlers.delete(id);
+        };
+      }
+    );
+
+    await useChatStore.getState().selectSession("s1");
+
+    const entries = useChatStore.getState().entries;
+
+    expect(entries).toHaveLength(2);
+    expect(entries[0]).toMatchObject({
+      kind: "assistant",
+      text: "full partial text",
+      streaming: true,
+      turnID: "t-mid",
+    });
+    expect(entries[1]).toMatchObject({
+      kind: "reasoning",
+      text: "mid-thought",
+      streaming: true,
+    });
+    expect(useChatStore.getState().loadingSession).toBe(false);
+  });
+});
+
+describe("resync triggers (enhance-resumable-streams design D6)", () => {
+  beforeEach(() => {
+    // The tunables the watch and the assertions share are Date-driven, so
+    // the fake clock must move both the timers and Date.now().
+    vi.useFakeTimers({
+      toFake: ["setTimeout", "clearTimeout", "setInterval", "clearInterval", "Date"],
+    });
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  /** Opens s1 with a turn already in flight through the store's real
+   * re-entry path (turnState adoption) — the busy flip arms the staleness
+   * watch, exactly as a send or a re-entry would. */
+  async function openBusyTurn(): Promise<void> {
+    mockedClient.chat.turnState.mockResolvedValueOnce({
+      busy: true,
+      turn_id: "turn-1",
+    });
+    await useChatStore.getState().selectSession("s1");
+
+    expect(useChatStore.getState().busy).toBe(true);
+  }
+
+  async function endBusyTurn(): Promise<void> {
+    await emit(
+      ev(Kind.KindTurnCompleted, { turn_id: "turn-1", id: "e-done" })
+    );
+  }
+
+  it("a beacon whose counter exceeds the received deltas fires exactly one resync", async () => {
+    await openBusyTurn();
+
+    liveHandler?.(ev(Kind.KindTextDelta, { text: "a", turn_id: "turn-1" }));
+    liveHandler?.(ev(Kind.KindTextDelta, { text: "b", turn_id: "turn-1" }));
+    expect(mockedClient.chat.resync).not.toHaveBeenCalled();
+
+    liveHandler?.(ev(Kind.KindStreamPing, { turn_id: "turn-1", deltas: 5 }));
+    expect(mockedClient.chat.resync).toHaveBeenCalledTimes(1);
+    expect(mockedClient.chat.resync).toHaveBeenCalledWith("s1");
+
+    // The in-flight guard collapses the burst: pings that keep mismatching
+    // while the resync round-trip is still open do not stack calls.
+    liveHandler?.(ev(Kind.KindStreamPing, { turn_id: "turn-1", deltas: 6 }));
+    expect(mockedClient.chat.resync).toHaveBeenCalledTimes(1);
+
+    // The guard clears when the promise settles: the next gap heals again.
+    await act(async (): Promise<void> => {});
+    liveHandler?.(ev(Kind.KindStreamPing, { turn_id: "turn-1", deltas: 7 }));
+    expect(mockedClient.chat.resync).toHaveBeenCalledTimes(2);
+
+    await endBusyTurn();
+  });
+
+  it("a busy session silent past the staleness window fires one resync, not a timer loop", async () => {
+    await openBusyTurn();
+
+    vi.advanceTimersByTime(STREAM_BEACON_INTERVAL_MS);
+    expect(mockedClient.chat.resync).not.toHaveBeenCalled();
+
+    vi.advanceTimersByTime(STREAM_BEACON_INTERVAL_MS);
+    expect(mockedClient.chat.resync).toHaveBeenCalledTimes(1);
+    expect(mockedClient.chat.resync).toHaveBeenCalledWith("s1");
+
+    // Design D6: triggers fire on transitions, not on a busy timer loop —
+    // the silence episode fired once and stays quiet without a liveness
+    // observation.
+    vi.advanceTimersByTime(STREAM_BEACON_INTERVAL_MS * 4);
+    expect(mockedClient.chat.resync).toHaveBeenCalledTimes(1);
+
+    // A beacon re-arms the episode: the next silent window fires again.
+    liveHandler?.(ev(Kind.KindStreamPing, { turn_id: "turn-1", deltas: 0 }));
+    // The first resync's promise settles between the episodes.
+    await act(async (): Promise<void> => {});
+    vi.advanceTimersByTime(STREAM_STALENESS_MS);
+    expect(mockedClient.chat.resync).toHaveBeenCalledTimes(2);
+
+    await endBusyTurn();
+  });
+
+  it("regaining focus while busy fires one resync; focus while idle never does", async () => {
+    const off = connectRunningSessions();
+
+    try {
+      await openBusyTurn();
+
+      window.dispatchEvent(new Event("focus"));
+      expect(mockedClient.chat.resync).toHaveBeenCalledTimes(1);
+      expect(mockedClient.chat.resync).toHaveBeenCalledWith("s1");
+
+      await endBusyTurn();
+
+      window.dispatchEvent(new Event("focus"));
+      expect(mockedClient.chat.resync).toHaveBeenCalledTimes(1);
+    } finally {
+      off();
+    }
+  });
+
+  it("a burst of all three triggers collapses to exactly one resync", async () => {
+    const off = connectRunningSessions();
+
+    try {
+      await openBusyTurn();
+
+      // All three fire in one tick: a mismatching beacon, the staleness
+      // window, and focus regain.
+      liveHandler?.(ev(Kind.KindStreamPing, { turn_id: "turn-1", deltas: 9 }));
+      window.dispatchEvent(new Event("focus"));
+      vi.advanceTimersByTime(STREAM_STALENESS_MS);
+
+      expect(mockedClient.chat.resync).toHaveBeenCalledTimes(1);
+      expect(mockedClient.chat.resync).toHaveBeenCalledWith("s1");
+    } finally {
+      off();
+    }
+
+    await endBusyTurn();
+  });
+
+  it("a folded sync rebaselines the counter, so stale pings stop firing", async () => {
+    await openBusyTurn();
+
+    liveHandler?.(
+      ev(Kind.KindStreamSync, {
+        turn_id: "turn-1",
+        stream: {
+          text: "healed partial",
+          reasoning: "",
+          tools: [],
+          tasks: [],
+          deltas: 7,
+        },
+      })
+    );
+    expect(mockedClient.chat.resync).not.toHaveBeenCalled();
+
+    // Stale beacons from before the gap: their counters no longer exceed
+    // the rebaselined received count.
+    liveHandler?.(ev(Kind.KindStreamPing, { turn_id: "turn-1", deltas: 7 }));
+    liveHandler?.(ev(Kind.KindStreamPing, { turn_id: "turn-1", deltas: 5 }));
+    expect(mockedClient.chat.resync).not.toHaveBeenCalled();
+
+    // The sync also folded: the streaming entry carries the snapshot text.
+    const streaming = useChatStore
+      .getState()
+      .entries.find((en: Entry) => en.kind === "assistant");
+
+    expect(streaming).toMatchObject({
+      kind: "assistant",
+      text: "healed partial",
+      streaming: true,
+    });
+
+    // A fresh gap still heals: the rebaseline only covers stale pings.
+    liveHandler?.(ev(Kind.KindStreamPing, { turn_id: "turn-1", deltas: 8 }));
+    expect(mockedClient.chat.resync).toHaveBeenCalledTimes(1);
+
+    await endBusyTurn();
+  });
+
+  it("an idle session never resyncs", async () => {
+    const off = connectRunningSessions();
+
+    try {
+      await useChatStore.getState().selectSession("s1");
+
+      window.dispatchEvent(new Event("focus"));
+      vi.advanceTimersByTime(STREAM_STALENESS_MS * 4);
+
+      expect(mockedClient.chat.resync).not.toHaveBeenCalled();
+    } finally {
+      off();
+    }
   });
 });
 

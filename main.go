@@ -11,17 +11,21 @@ import (
 	"embed"
 	"fmt"
 	"log"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"runtime"
+	"sync"
 	"sync/atomic"
 
 	"github.com/oniharnantyo/buddies/internal/cli"
 	"github.com/oniharnantyo/buddies/internal/desktop"
 	"github.com/oniharnantyo/buddies/internal/gateway"
+	"github.com/oniharnantyo/buddies/internal/notifications"
 	"github.com/oniharnantyo/buddies/internal/services"
 	"github.com/wailsapp/wails/v3/pkg/application"
 	"github.com/wailsapp/wails/v3/pkg/events"
+	wailsnotifications "github.com/wailsapp/wails/v3/pkg/services/notifications"
 )
 
 // Wails uses Go's `embed` package to embed the frontend files into the
@@ -56,6 +60,7 @@ func init() {
 	application.RegisterEvent[services.ChannelStateEvent](services.EventChannelState)
 	application.RegisterEvent[services.GroupsChangedEvent](services.EventGroupsChanged)
 	application.RegisterEvent[services.GroupEvent]("group:<id>:event")
+	application.RegisterEvent[services.NotificationOpenEvent](services.EventNotificationOpen)
 }
 
 // wailsEmitter adapts services.Emitter onto the Wails event bus. The app
@@ -88,12 +93,162 @@ func (o *wailsURLOpener) Open(url string) error {
 	return a.Browser.OpenURL(url)
 }
 
+// wailsNotifier implements cli.Notifier over Wails' notifications service
+// (add-desktop-notifications design D1/D6): lazy one-time authorization
+// immediately before the first send, delivery on the host's own goroutine
+// (the macOS authorization request blocks on the OS prompt, and the seam
+// contract requires prompt returns), and click-to-open through the
+// notification response callback. The engine's route resolver and the main
+// window handle are late-bound — the engine is built inside cli.Assemble and
+// the window after it — mirroring the scheduleRuns fields-bound-after-
+// construction precedent; both bind before the application runs, which is
+// the earliest a send or a click can arrive.
+type wailsNotifier struct {
+	svc     *wailsnotifications.NotificationService
+	emitter *wailsEmitter
+
+	// authorized latches the one-time lazy authorization (design D6): the
+	// first send requests it — no prompt at startup — and a denial or error
+	// leaves it false, dropping every send at debug from then on (no
+	// re-prompting; the OS remembers the answer anyway).
+	authorized atomic.Bool
+	authOnce   sync.Once
+
+	// resolveRoute maps a delivered notification's deterministic id back to
+	// its route (design D5); showWindow is the tray-click window reveal.
+	// Nil until bound, which only drops clicks that cannot resolve anyway.
+	resolveRoute atomic.Pointer[func(string) (notifications.Route, bool)]
+	showWindow   atomic.Pointer[func()]
+
+	// window is the main window handle behind the engine's visibility query
+	// (design D3); nil until the window exists, which reads as hidden —
+	// suppression requires positive knowledge, so nothing is silenced.
+	window atomic.Pointer[application.WebviewWindow]
+}
+
+// newWailsNotifier constructs the desktop notifier over the Wails
+// notifications service singleton and registers the click-response callback.
+func newWailsNotifier(emitter *wailsEmitter) *wailsNotifier {
+	n := &wailsNotifier{svc: wailsnotifications.New(), emitter: emitter}
+	n.svc.OnNotificationResponse(n.handleResponse)
+	return n
+}
+
+// Send hands one built payload to the native service. The seam contract
+// requires prompt returns — the one-time authorization and the native send
+// block on OS surfaces — so the delivery runs on its own goroutine and Send
+// only rejects payloads the service would refuse outright.
+func (n *wailsNotifier) Send(p notifications.Payload) error {
+	if p.ID == "" || p.Title == "" {
+		return fmt.Errorf("notification payload missing id or title")
+	}
+	go n.deliver(p)
+	return nil
+}
+
+// deliver performs the native send off the trigger source's goroutine: the
+// one-time lazy authorization (design D6), then the send with
+// ThreadID = conversation id so bursts stack per conversation. Every
+// failure — denial, error, panic — logs at debug and drops; delivery is
+// never propagated as a turn failure.
+func (n *wailsNotifier) deliver(p notifications.Payload) {
+	defer func() {
+		if r := recover(); r != nil {
+			slog.Debug("notifications: delivery panicked", "id", p.ID, "panic", r)
+		}
+	}()
+	n.authOnce.Do(func() {
+		ok, err := n.svc.RequestNotificationAuthorization()
+		switch {
+		case err != nil:
+			slog.Debug("notifications: authorization request failed", "error", err)
+		case !ok:
+			slog.Debug("notifications: authorization denied")
+		default:
+			n.authorized.Store(true)
+		}
+	})
+	if !n.authorized.Load() {
+		return
+	}
+	if err := n.svc.SendNotification(wailsnotifications.NotificationOptions{
+		ID:       p.ID,
+		Title:    p.Title,
+		Body:     p.Body,
+		ThreadID: p.ThreadID,
+	}); err != nil {
+		slog.Debug("notifications: send dropped", "id", p.ID, "error", err)
+	}
+}
+
+// handleResponse resolves one notification click (design D5): an error
+// response or an unknown id — pruned, suppressed, or a failed delivery —
+// drops; a known one reveals the main window, the same call the tray's
+// OnClick uses, and emits the open event the frontend navigates on. Kind is
+// the route kind's string form ("session"/"group"), the event payload's json
+// contract.
+func (n *wailsNotifier) handleResponse(result wailsnotifications.NotificationResult) {
+	defer func() {
+		if r := recover(); r != nil {
+			slog.Debug("notifications: click handling panicked", "panic", r)
+		}
+	}()
+	if result.Error != nil {
+		slog.Debug("notifications: click response error", "error", result.Error)
+		return
+	}
+	id := result.Response.ID
+	resolve := n.resolveRoute.Load()
+	if resolve == nil || id == "" {
+		return
+	}
+	route, ok := (*resolve)(id)
+	if !ok {
+		return
+	}
+	if show := n.showWindow.Load(); show != nil {
+		(*show)()
+	}
+	n.emitter.Emit(services.EventNotificationOpen, services.NotificationOpenEvent{
+		Kind: string(route.Kind),
+		ID:   route.ID,
+	})
+}
+
+// setRouteResolver late-binds the engine's route lookup (design D5); called
+// once after cli.Assemble returns.
+func (n *wailsNotifier) setRouteResolver(resolve func(string) (notifications.Route, bool)) {
+	n.resolveRoute.Store(&resolve)
+}
+
+// bindWindow installs the main window handle for the click reveal and the
+// engine's visibility query; called once after the window is created.
+func (n *wailsNotifier) bindWindow(window *application.WebviewWindow) {
+	n.window.Store(window)
+	show := func() { window.Show() }
+	n.showWindow.Store(&show)
+}
+
+// WindowVisible answers the engine's suppression query (design D3) with the
+// main window's native visibility state, queried fresh per call — Wails'
+// WebviewWindow.IsVisible dispatches to the window's live implementation on
+// every call (no cached flag). A not-yet-created or destroyed window reads
+// as hidden, which delivers.
+func (n *wailsNotifier) WindowVisible() bool {
+	w := n.window.Load()
+	if w == nil {
+		return false
+	}
+	return w.IsVisible()
+}
+
 func main() {
 	emitter := &wailsEmitter{}
 	opener := &wailsURLOpener{}
+	notifier := newWailsNotifier(emitter)
 	cmd := cli.NewRootCommand(emitter, opener, func(ctx context.Context, app *cli.App) error {
-		return runDesktop(ctx, app, emitter, opener)
-	})
+		return runDesktop(ctx, app, emitter, opener, notifier)
+	}, notifier)
 	if err := cmd.Run(context.Background(), os.Args); err != nil {
 		log.Fatal(err)
 	}
@@ -110,7 +265,14 @@ const (
 // runDesktop builds the Wails app: bound services, the main window
 // (hide-on-close), and the system tray. It returns when the application
 // quits; the assembled app is closed by the CLI action's defer.
-func runDesktop(ctx context.Context, app *cli.App, emitter *wailsEmitter, opener *wailsURLOpener) error {
+func runDesktop(ctx context.Context, app *cli.App, emitter *wailsEmitter, opener *wailsURLOpener, notifier *wailsNotifier) error {
+	// The click-to-open resolver binds after Assemble returns (design D5):
+	// the engine is built inside Assemble, so the notification id → route
+	// lookup cannot exist earlier.
+	if app.NotificationsEngine != nil {
+		notifier.setRouteResolver(app.NotificationsEngine.ResolveRoute)
+	}
+
 	// The single-instance callback fires on the first instance when a second
 	// launch arrives — possibly before the window exists. The handle is
 	// filled once the window is created; the callback re-shows it (D1).
@@ -143,6 +305,12 @@ func runDesktop(ctx context.Context, app *cli.App, emitter *wailsEmitter, opener
 			application.NewService(app.Services.Schedule),
 			application.NewService(app.Services.Knowledge),
 			application.NewService(app.Services.Channels),
+			// The notifications preferences service (add-desktop-notifications
+			// design D5) and the Wails notifications service itself (its
+			// platform startup installs the UNUserNotificationCenter delegate
+			// and the click-response plumbing).
+			application.NewService(app.Services.Notifications),
+			application.NewService(notifier.svc),
 			application.NewService(services.NewClipboardService()),
 			application.NewService(windowTheme),
 		},
@@ -220,6 +388,9 @@ func runDesktop(ctx context.Context, app *cli.App, emitter *wailsEmitter, opener
 	applySavedFrame(app, wailsApp, &windowOptions)
 	window := wailsApp.Window.NewWithOptions(windowOptions)
 	windowHandle.Store(window)
+	// The main window handle feeds the click-to-open reveal and the engine's
+	// visibility query (add-desktop-notifications design D3/D5).
+	notifier.bindWindow(window)
 
 	// Closing the window hides it; the process keeps running.
 	window.RegisterHook(events.Common.WindowClosing, func(e *application.WindowEvent) {

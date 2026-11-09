@@ -18,9 +18,10 @@ import type { ReactElement } from "react";
 import { ToolFallback } from "@/components/assistant-ui/elements/tool-fallback.aui";
 
 import { BrowserTool } from "./BrowserTool";
+import { ComputerTool } from "./ComputerTool";
 import { unwrapMCPResultText } from "../parse";
 
-export { BrowserTool };
+export { BrowserTool, ComputerTool };
 
 import { CreateDocumentTool } from "./CreateDocumentTool";
 import { prettyOrVerbatim } from "./fallbackBody";
@@ -109,9 +110,15 @@ export const toolRenderers = {
  * PREFIX, never exact equality. */
 export const BROWSER_USE_PREFIX = "mcp__browser-use__";
 
+/** The MCP namespace prefix the Computer Use system server surfaces its
+ * tools under (add-computer-use design D4); the trajectory card renders any
+ * name carrying it, the collision suffix included. */
+export const COMPUTER_USE_PREFIX = "mcp__computer-use__";
+
 /**
  * Resolves one tool name to its renderer: the exact map entry when the name
- * is keyed, the browser card for any `mcp__browser-use__*` name, and the
+ * is keyed, the browser card for any `mcp__browser-use__*` name, the
+ * computer-use trajectory card for any `mcp__computer-use__*` name, and the
  * fallback otherwise. Historical transcripts still carrying the retired
  * built-in `browser` name fall through to the fallback card.
  */
@@ -121,6 +128,8 @@ export function resolveToolRenderer(toolName: string): ToolRenderer {
   if (exact !== undefined) return exact;
 
   if (toolName.startsWith(BROWSER_USE_PREFIX)) return BrowserTool;
+
+  if (toolName.startsWith(COMPUTER_USE_PREFIX)) return ComputerTool;
 
   return toolRenderers.fallback;
 }
