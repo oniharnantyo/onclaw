@@ -1,0 +1,28 @@
+# Tasks
+
+## 1. Go — MCP client-secret redaction (design D1/D2)
+
+- [x] 1.1 Add `ClientSecretSet bool` / `ClientSecretHint string` plain row fields to `store.MCPServer` in `internal/store/types.go`, directly below `CredentialSet`/`CredentialHint`, with the same never-persisted computed-view comment. Verify: `go build ./...` passes.
+- [x] 1.2 Rename `redactIntegrationCredential` → `redactServerSecrets` in `internal/services/settings_mcp.go`; also clear `Auth.ClientSecret` and compute `ClientSecretSet`/`ClientSecretHint` (reuse `keyHint`, `settings_providers.go:54`); rewrite the doc comment to state the invariant: no settings-service read or listing ever returns a client secret or integration credential, whatever created the definition. Verify: `go build ./internal/...` passes and `grep -rn redactIntegrationCredential internal/` is empty.
+- [x] 1.3 In `UpdateMCPServer` (`settings_mcp.go:120`), blank-preserve `Auth.ClientSecret` exactly like `Auth.IntegrationCredential`: empty incoming copies the stored row's value before persisting; non-blank replaces. Update the method doc comment. Verify: `go build ./internal/...` passes.
+- [x] 1.4 Extend `settings_mcp_test.go` + `settings_mcp_oauth_test.go`: table-driven test asserting every read path (`MCPServer`, `MCPServers`, `UpdateMCPServer` return, `ProbeMCPServer`, `ConnectIntegration`, `DisconnectMCPServer`) returns `Auth.ClientSecret == ""` with correct `ClientSecretSet`/`ClientSecretHint` for both a pre-registered-secret row and a DCR-issued-secret row; test that an `UpdateMCPServer` with blank client secret preserves the stored one and a non-blank replaces it; test that a row that went through Authorize/DCR still authorizes after a blank-secret edit. Verify: `go test ./internal/services/ -run 'MCP'` passes.
+- [x] 1.5 Guard test: assert the JSON marshal of every read-path return contains no non-empty `client_secret` value (fails loudly if a future read method forgets the choke point). Verify: `go test ./internal/services/ -run 'SecretRedaction'` passes; temporarily removing the redaction line makes it fail.
+
+## 2. Go — web_search chain redaction + merge (design D3/D4)
+
+- [x] 2.1 Rework `WebSearchChainEntry` in `internal/services/settings_websearch.go`: drop `APIKey`, add `KeySet bool` / `KeyHint string` (via `keyHint`); `BaseURL` round-trips unchanged; `WebSearchConfig` read maps stored entries to the hint shape. Verify: `go build ./internal/...` passes (test updates follow in 2.3).
+- [x] 2.2 Rework `SaveWebSearchConfig` to merge by stable entry ID per design D4: load the stored config first; blank key + existing ID resolves to the stored key; blank key + no ID is rejected unchanged; non-blank replaces; catalog/credential validation runs on the merged entry so a provider change with a blank key keeps the stored key and is validated against the new provider. Update the method doc comment. Verify: `go build ./internal/...` passes.
+- [x] 2.3 Rewrite `settings_websearch_test.go` expectations + add merge cases: read shows `KeySet`/`KeyHint` and never the key; reorder/rename with blank keys keeps stored keys; new entry without a key still rejected with the provider named; provider change with blank key keeps the stored key and validates; non-blank key replaces. Verify: `go test ./internal/services/ -run 'WebSearch'` passes.
+
+## 3. Bindings + frontend (design D5)
+
+- [x] 3.1 Regenerate bindings via `task generate:bindings` (`build/Taskfile.yml:176`, `wails3 generate bindings -clean`). Verify: `frontend/bindings/.../store/models.ts` contains no `client_secret` on the MCPServer row (it legitimately remains inside the persisted `MCPServerAuth` write shape per design D1); `services/models.ts` chain entry has `keySet`/`keyHint`. Known gotcha: regen widens `lib/__test__/client.test.ts` mocks — commit generated files without the `--no-verify` bypass if pre-commit allows.
+- [x] 3.2 Rework `frontend/src/features/settings/components/WebSearchConfigDialog.tsx`: stop reading `entry.api_key` (line 115); render the key input empty with a mono-face placeholder from `keySet`/`keyHint` ("Saved ··abcd — leave blank to keep"); require a key only for entries without a stable ID; submit blank for untouched existing keys, typed value to replace. Update `ToolsPane.test.tsx` for the hint display and blank-keeps save. Verify: `npm test -- ToolsPane` passes and `tsc` is clean.
+- [x] 3.3 `frontend/src/features/integrations/IntegrationsPane.tsx`: add a "configured (···abcd)" hint line under the client-secret field on the edit sheet when `ClientSecretSet`, styled per the provider key-hint mono convention, legible in both themes. Verify: `npm test -- SettingsView` passes; light/dark visually confirmed in dev.
+- [x] 3.4 `frontend/src/lib/client.ts`: widen type re-exports (lines 126–157) for the renamed chain-entry and new server view fields; fix any mock drift in `lib/__test__/client.test.ts` from the regen. Verify: `npm test -- client` passes.
+
+## 4. Integration verification
+
+- [x] 4.1 Go gate per AGENTS.md: `gofmt -w .`, `go vet ./...`, `go test ./...`. Verify: all three clean (known full-suite flakes rerun-once).
+- [x] 4.2 Frontend gate: `npm run build` (tsc + vp build) and `npm test` from `frontend/`. Verify: both pass.
+- [ ] 4.3 Live smoke (dev app restart required — Go watcher restart gotcha): MCP pane OAuth row exposes no client secret in the bindings payloads (devtools); editing an integration without re-entering its secret then Authorize still completes; chain reorder/rename without retyping a key still authenticates a brave entry. Verify: observed in the running app (may be deferred to the user, per house pattern).

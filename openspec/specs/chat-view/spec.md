@@ -619,19 +619,37 @@ view (stop returns to send, the rail's running indicator retires, and any
 queued messages proceed). Reconstructing this state MUST consult the
 backend's turn state, not only the frontend's own dispatch lifecycle, so a
 turn that started before the session was opened is tracked exactly like one
-the user dispatched.
+the user dispatched. The view SHALL attach the session's live event feed
+before the backend registration completes, so every event the backend
+emits for the new subscription — the subscribe-time reconstruction
+included — reaches the view rather than being dispatched before any
+listener exists.
 
 Re-entering a session mid-turn SHALL reconstruct the turn's in-flight state
 in the transcript: partial output streamed before re-entry appears and
-continues streaming, and a tool call that is running appears as a running
-row that the tool's terminal record later finalizes. Reconstructed
-in-flight state MUST NOT duplicate or displace the durable transcript: a
-reloaded transcript shows only the durable events, and a message that
-completes after re-entry appears exactly once.
+continues streaming, the in-flight call's reasoning appears as the
+reasoning streamed so far, a tool call that is running appears as a running
+row that the tool's terminal record later finalizes, and a delegated task
+that is running appears as a running row that the task's terminal record
+later finalizes. Reconstructed in-flight state MUST NOT duplicate or
+displace the durable transcript: a reloaded transcript shows only the
+durable events, and a message that completes after re-entry appears exactly
+once.
 
 Switching to a session MUST leave that session's live event feed working:
 events emitted after the switch continue to update its transcript, its
 running indicator, and its turn lifecycle without requiring another switch.
+
+While the open session is busy, the view SHALL watch the stream's liveness
+beacon: when a beacon reports more deltas emitted than the view has
+received, or no beacon has arrived within the staleness window, or the
+window regains focus while the turn is still in flight after a possible
+interruption, the view SHALL request the backend resync and reconcile the
+delivered in-flight state by replacing the reconstructed streaming entries
+— the streamed text and reasoning — rather than appending to them, so the
+stream continues exactly from the producer's position with nothing missing
+and nothing doubled. Resync-triggered reconstruction obeys the same
+exactly-once durable rules as re-entry reconstruction.
 
 #### Scenario: Stop control after switching back
 
@@ -652,11 +670,31 @@ running indicator, and its turn lifecycle without requiring another switch.
 - **THEN** the text streamed so far is visible, continues streaming to
   completion, and the completed message appears once
 
+#### Scenario: Subscribe-time reconstruction reaches the view
+
+- **WHEN** the user opens a session while a model call is streaming and the
+  backend emits the reconstruction for the new subscription
+- **THEN** the streamed-so-far text is visible even though the backend
+  emitted it as part of the subscription call, without requiring any
+  further live delta to arrive first
+
+#### Scenario: Reasoning reconstructed on re-entry
+
+- **WHEN** the user opens a session while the model call is mid-reasoning
+- **THEN** the reasoning streamed so far is visible and continues streaming
+  to completion
+
+#### Scenario: Running task reconstructed on re-entry
+
+- **WHEN** the user opens a session while a delegated task is running
+- **THEN** the transcript shows the task as running, and its terminal
+  record finalizes that row when the task ends
+
 #### Scenario: Running tool reconstructed on re-entry
 
 - **WHEN** the user opens a session while a tool call is executing
-- **THEN** the transcript shows the call as running, and its terminal record
-  finalizes that row when the tool ends
+- **THEN** the transcript shows the call as running, and its terminal
+  record finalizes that row when the tool ends
 
 #### Scenario: Live feed survives the switch
 
@@ -664,6 +702,27 @@ running indicator, and its turn lifecycle without requiring another switch.
   are emitted afterwards
 - **THEN** the transcript continues to update live without the user
   switching away and back
+
+#### Scenario: Resync heals a detected gap
+
+- **WHEN** the open session is busy, a beacon reports more deltas emitted
+  than the view has received, and the resync delivers the in-flight state
+- **THEN** the streaming text is replaced with the producer's current
+  partial — nothing missing, nothing doubled — and subsequent deltas
+  continue from there
+
+#### Scenario: Focus resyncs a busy session
+
+- **WHEN** the window regains focus while the open session's turn is in
+  flight
+- **THEN** the view requests the resync and the reconstructed state matches
+  the producer's current position
+
+#### Scenario: Resync does not displace durable records
+
+- **WHEN** a resync delivery lands in a transcript whose turn later completes
+- **THEN** the completed message appears exactly once and no resync row
+  survives the reload
 
 ### Requirement: Turn attribution
 
@@ -813,3 +872,32 @@ element.
 - **WHEN** the user opens a session and its messages are still loading
 - **THEN** the transcript exposes a busy state that assistive technology
   announces, and the state clears when the messages arrive
+
+### Requirement: Empty transcript greeting
+
+An empty agent transcript SHALL render a centered identity greeting in place of the placeholder hint line: the agent's avatar above an animated greeting line ("How can I help you today?") above an identity line carrying the agent's name and the first line of its description when one exists. The identity SHALL resolve from the chat view's active agent — the same identity the chat header shows before a session exists — so a brand-new chat and a fresh session of the same agent render the same greeting. The entrance animation (avatar, greeting, identity in a short stagger) SHALL be suppressed under reduced motion, and all greeting surfaces SHALL ride the ported theme tokens so both themes render the block. When no agent identity applies — a group transcript, whose identity the chat header already carries, or an agent that cannot be resolved — the block SHALL render the greeting without the avatar and identity line rather than an identity mismatch.
+
+#### Scenario: Fresh chat shows the agent's identity greeting
+
+- **WHEN** a new chat is opened for an agent whose description is non-empty
+- **THEN** the empty transcript shows the agent's avatar centered above the greeting line, above an identity line carrying the agent's name and the first line of its description
+
+#### Scenario: Empty description degrades to the name alone
+
+- **WHEN** the active agent has an empty description and its transcript is empty
+- **THEN** the identity line carries the agent's name without a description segment, and the block renders no empty gap in its place
+
+#### Scenario: Group transcript falls back to the generic greeting
+
+- **WHEN** a group transcript with no messages is open
+- **THEN** the greeting renders centered without an avatar or identity line, and the group's identity stays in the chat header
+
+#### Scenario: Reduced motion stills the entrance
+
+- **WHEN** reduced motion is enabled and an empty agent transcript renders the greeting
+- **THEN** the avatar, greeting, and identity line render fully visible without entrance animation
+
+#### Scenario: Loading history never flashes the greeting
+
+- **WHEN** the chat view switches to a session whose transcript history is still loading
+- **THEN** the transcript shows the loading skeleton, and the identity greeting MUST NOT render before the history lands

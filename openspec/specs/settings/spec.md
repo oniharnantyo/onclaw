@@ -4,6 +4,20 @@ Provide the settings menu with panes for providers, skills, tools, hooks, and MC
 
 ## Requirements
 
+### Requirement: Notifications pane
+
+The settings menu SHALL provide a Notifications pane presenting the notification preferences: a master enable toggle and one toggle per notification category (agent turns, needs attention, schedules, groups). The pane SHALL load the persisted settings on open, save changes durably on toggle, and reflect the saved state. The pane SHALL present identically in both themes.
+
+#### Scenario: Edit preferences
+
+- **WHEN** the user opens the Notifications pane and toggles the Schedules category off
+- **THEN** the change is persisted and the pane still shows the master flag enabled with the other categories unchanged
+
+#### Scenario: Master toggle gates categories
+
+- **WHEN** the user turns the master toggle off
+- **THEN** the category toggles render as disabled (visually inactive) while keeping their stored values
+
 ### Requirement: Providers pane
 
 The settings menu SHALL let the user add, edit, and remove model providers
@@ -133,12 +147,12 @@ verification MUST NOT block saving.
 
 ### Requirement: Settings navigation layout
 
-The settings menu SHALL present a two-column layout: a left settings-nav sidebar and a right content pane. The sidebar SHALL list the settings panes grouped into sections — Providers under MODELS; Integrations, Channels, and Browser Use under INTEGRATIONS; Skills, Tools, Hooks, and MCP under AUTOMATION — each with an icon and its label, and SHALL offer a search input that filters the pane list by label. The content pane SHALL show the active pane's title, a one-line description, and the pane body. Selecting a sidebar entry switches the content pane.
+The settings menu SHALL present a two-column layout: a left settings-nav sidebar and a right content pane. The sidebar SHALL list the settings panes grouped into sections — Notifications under APP first, then Providers under MODELS; Integrations, Channels, Browser Use, and Computer Use under INTEGRATIONS; Skills, Tools, Hooks, and MCP under AUTOMATION — each with an icon and its label, and SHALL offer a search input that filters the pane list by label. The content pane SHALL show the active pane's title, a one-line description, and the pane body. Selecting a sidebar entry switches the content pane.
 
 #### Scenario: Open settings
 
 - **WHEN** the user opens the settings menu
-- **THEN** the sidebar shows the grouped pane list, including Integrations, Channels, and Browser Use, and the content pane shows the first pane (Providers)
+- **THEN** the sidebar shows the grouped pane list, including Integrations, Channels, Browser Use, Computer Use, and Notifications, and the content pane shows the first pane (Providers)
 
 #### Scenario: Switch panes
 
@@ -167,7 +181,7 @@ The settings menu SHALL list skills discovered from the skills directory, showin
 
 ### Requirement: Tools pane
 
-The settings menu SHALL list the available tools with their descriptions and SHALL allow enabling or disabling each tool. Disabled tools MUST NOT be offered to agents. The pane SHALL also configure the web_search provider chain: providers are chosen from the catalog (brave, exa, perplexity, and firecrawl, each requiring an API key; searxng requiring a base URL), ordered into a failover chain, and persisted for the runtime. Saving a chain provider without its required credential SHALL be rejected.
+The settings menu SHALL list the available tools with their descriptions and SHALL allow enabling or disabling each tool. Disabled tools MUST NOT be offered to agents. The pane SHALL also configure the web_search provider chain: providers are chosen from the catalog (brave, exa, perplexity, and firecrawl, each requiring an API key; searxng requiring a base URL), ordered into a failover chain, and persisted for the runtime. A chain read SHALL NOT return an entry's API key — it SHALL expose only whether the key is set and at most a short non-secret hint derived from it (the last 4 characters); the base-URL credential is not a secret and continues to round-trip. Saving a NEW chain provider without its required credential SHALL be rejected. Saving an entry that carries its stable identifier with a blank API key SHALL keep the stored credential; a non-blank key replaces it. A saved entry whose provider changes while its key field is blank SHALL keep the stored credential (the key is re-validated against the new provider's requirement after the merge).
 
 #### Scenario: Toggle a tool
 
@@ -184,6 +198,20 @@ The settings menu SHALL list the available tools with their descriptions and SHA
 - **WHEN** the user adds a chain provider that requires an API key and submits without one
 - **THEN** the form rejects the submission and explains which credential is missing
 
+#### Scenario: Chain read shows the hint, not the key
+
+- **WHEN** the frontend reads the web_search chain with a stored brave API key
+- **THEN** the response contains the key-set state and the last-4 hint, never the key itself
+
+#### Scenario: Edit without retyping the key
+
+- **WHEN** the user reorders an existing chain or renames an entry, leaving the key field blank
+- **THEN** the save succeeds and the stored API key is unchanged
+
+#### Scenario: Runtime still resolves the chain
+
+- **WHEN** web_search runs after any redacted read and blank-key save
+- **THEN** each entry authenticates with its stored key exactly as before redaction
 
 ### Requirement: Hooks pane
 
@@ -295,6 +323,20 @@ The Browser Use pane SHALL present a profiles-first configuration surface: a ser
 
 - **WHEN** the user creates profile `test` and later deletes it
 - **THEN** `~/.buddies/browser/profiles/test/` exists after creation, and after deletion it is gone and no longer listed
+
+### Requirement: Computer Use pane
+
+The settings menu SHALL present a Computer Use pane with: an enable toggle; a system-permissions section listing each required permission with its live granted state, a Manage action opening the matching system settings pane, and a Check again action that re-probes and applies a grant change (restarting the driver when one occurred); a one-time download state for the vendored driver with its verification outcome; and a status line fed by the live supervision state (ready, awaiting permissions, downloading, failed with reason, or unavailable in server mode). The pane SHALL work in both app themes.
+
+#### Scenario: Fresh enable shows the permission path
+
+- **WHEN** the user enables Computer Use before granting permissions
+- **THEN** the pane lists the missing permissions with Manage actions, the status line reports awaiting permissions, and no daemon is running
+
+#### Scenario: Check again applies a grant
+
+- **WHEN** the user grants a missing permission in system settings and presses Check again
+- **THEN** the pane re-probes, reports the permission granted, and the status line advances toward ready
 
 ### Requirement: Theme parity
 
