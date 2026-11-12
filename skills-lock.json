@@ -1,45 +1,51 @@
 {
-  "version": 1,
+  "version": 2,
   "skills": {
+    "design-taste-frontend": {
+      "source": "Leonxlnx/taste-skill",
+      "sourceType": "github",
+      "skillPath": "skills/taste-skill/SKILL.md",
+      "computedHash": "b10eab0a9684cd09cf34c31ef04a3bf530a5f4404422f9c520d42372d670c7fc"
+    },
     "eino-agent": {
       "source": "cloudwego/eino-ext",
       "ref": "main",
       "sourceType": "github",
       "skillPath": "skills/eino-agent/SKILL.md",
-      "computedHash": "8fc2d18f1f7df836817ca3b1248fa24325e5a92450814ae144d515bf33aa06ba"
+      "computedHash": "916487e5e48f68fca08bbe6670f70936488cb52aad04633c7cc9b3997760645c"
     },
     "eino-component": {
       "source": "cloudwego/eino-ext",
       "ref": "main",
       "sourceType": "github",
       "skillPath": "skills/eino-component/SKILL.md",
-      "computedHash": "6f10ef68ccca529949f4af4b18e6b8e27a959e4dbc009c04010cb66365ab5d8e"
+      "computedHash": "e334ea77a49dfc8a440d87af4a271f4a328f671ee0ee268ca814c29f45022884"
     },
     "eino-compose": {
       "source": "cloudwego/eino-ext",
       "ref": "main",
       "sourceType": "github",
       "skillPath": "skills/eino-compose/SKILL.md",
-      "computedHash": "0407f3496f4bc4f916745a44473205f73cd4090f397aef2b57cae72500e72eed"
+      "computedHash": "eb7eea86f1c1dc75e5f4ee049f8734b3818b32a18c9bbf99bd01609791093791"
     },
     "eino-guide": {
       "source": "cloudwego/eino-ext",
       "ref": "main",
       "sourceType": "github",
       "skillPath": "skills/eino-guide/SKILL.md",
-      "computedHash": "849dd1c50298a85ae774b13a74d421158b7c7a6dcc0530de013aeded59207329"
+      "computedHash": "61079f47f9b7079886e98a675cc04403e2726c07ad88860bce6d8b45fa26f732"
     },
     "hallmark": {
       "source": "nutlope/hallmark",
       "sourceType": "github",
       "skillPath": "skills/hallmark/SKILL.md",
-      "computedHash": "579f86b27cdd7eb972107f7aecedd537f472891c5fd7c7c821bea15f64e0fe86"
+      "computedHash": "c5ae622ff654348da6e650400a17f7b28a3ad0b3a1be3944c1213101e71d6346"
     },
     "native-feel-cross-platform-desktop": {
       "source": "yetone/native-feel-skill",
       "sourceType": "github",
       "skillPath": "SKILL.md",
-      "computedHash": "7f8cabfd619108eb5058087ea8bb09fbbe1edc23891bf387278d95cc564bb0f9"
+      "computedHash": "80d1e61a0853859ae1c2dd993ea91642ea88e9d2a5267920e30cdb87d28b2dca"
     }
   }
 }
