@@ -61,6 +61,7 @@ func init() {
 	application.RegisterEvent[services.GroupsChangedEvent](services.EventGroupsChanged)
 	application.RegisterEvent[services.GroupEvent]("group:<id>:event")
 	application.RegisterEvent[services.NotificationOpenEvent](services.EventNotificationOpen)
+	application.RegisterEvent[services.WebhooksChangedEvent](services.EventWebhooksChanged)
 }
 
 // wailsEmitter adapts services.Emitter onto the Wails event bus. The app
@@ -305,6 +306,9 @@ func runDesktop(ctx context.Context, app *cli.App, emitter *wailsEmitter, opener
 			application.NewService(app.Services.Schedule),
 			application.NewService(app.Services.Knowledge),
 			application.NewService(app.Services.Channels),
+			// The webhook trigger service (add-webhook-triggers tasks 7.1):
+			// endpoint management, deliveries log, self-test, listener state.
+			application.NewService(app.Services.Webhooks),
 			// The notifications preferences service (add-desktop-notifications
 			// design D5) and the Wails notifications service itself (its
 			// platform startup installs the UNUserNotificationCenter delegate
@@ -362,7 +366,7 @@ func runDesktop(ctx context.Context, app *cli.App, emitter *wailsEmitter, opener
 		Width:  minWindowWidth,
 		Height: minWindowHeight,
 		Mac: application.MacWindow{
-			InvisibleTitleBarHeight: 25,
+			InvisibleTitleBarHeight: 50,
 			// Window-level Liquid Glass (native NSGlassEffectView on macOS
 			// 26+; behind-window NSVisualEffectView vibrancy fallback below
 			// that). Its material draws a permanent specular edge highlight

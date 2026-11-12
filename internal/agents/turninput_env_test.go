@@ -116,6 +116,34 @@ func TestTurnInput_TelegramOriginRequest(t *testing.T) {
 		"a telegram-origin turn request renders the telegram presence line")
 }
 
+// TestEnvironmentBlock_WebhookOrigin covers the webhooks spec' scenario
+// (add-webhook-triggers "Endpoints target an agent or a group", autonomous-run
+// stamping): a turn whose request carries hooks.OriginWebhook — a webhook
+// trigger — renders the webhook origin line in the environment block, never
+// the user origin, and its presence line reads as the generic non-user
+// (autonomous) form, like every other trigger surface.
+func TestEnvironmentBlock_WebhookOrigin(t *testing.T) {
+	block := environmentBlock("gemini", "some-model", hooks.OriginWebhook, "", time.Date(2026, 10, 24, 9, 30, 0, 0, time.UTC))
+	require.Contains(t, block, "Origin: "+hooks.OriginWebhook, "the block names the webhook origin")
+	require.Contains(t, block, "Origin: webhook — ", "the origin line carries its presence designation")
+	require.Contains(t, block, "the user is not present", "the webhook presence line is the autonomous-run form")
+	require.NotContains(t, block, "Origin: "+hooks.OriginUser, "the block never reports the user origin for a webhook turn")
+}
+
+// TestTurnInput_WebhookOriginRequest covers the real seam for the same
+// scenario: a turn request stamped with hooks.OriginWebhook composes the
+// instruction with the webhook origin line in its environment block.
+func TestTurnInput_WebhookOriginRequest(t *testing.T) {
+	stubClock(t, time.Date(2026, 10, 24, 9, 30, 0, 0, time.UTC))
+
+	instruction, _, err := assembleTurnInput(persona{}, sessions.Checkpoint{}, nil,
+		turnRequest{message: "hi", origin: hooks.OriginWebhook},
+		turnComposer{providerType: "gemini", model: "some-model"})
+	require.NoError(t, err)
+	require.Contains(t, instruction, "Origin: webhook — the user is not present",
+		"a webhook-origin turn request renders the webhook presence line")
+}
+
 // TestEnvironmentBlock_NoMountGuidance pins design D4's exclusion: the
 // environment block never restates the workspace mount or jail — the
 // filesystem middleware appends its own guidance, and duplication would

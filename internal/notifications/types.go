@@ -20,6 +20,13 @@ const (
 	// CategoryGroups reports group task terminals (completed, failed,
 	// paused).
 	CategoryGroups Category = "groups"
+	// CategoryWebhooks reports agent-target webhook-fire completions
+	// (add-webhook-triggers spec "Agent-target completions notify"): the
+	// webhook announcer is the sole notifier for webhook fires, mirroring
+	// the scheduled-run completion path. Group-target deliveries raise
+	// nothing here — they surface as transcript rows and delivery-log
+	// entries.
+	CategoryWebhooks Category = "webhooks"
 )
 
 // Origin names who started the run that produced a turn candidate — the
@@ -39,6 +46,11 @@ const (
 	// started; the channel delivers results in-chat, so these are dropped
 	// entirely.
 	OriginTelegram Origin = "telegram"
+	// OriginWebhook is the origin of a turn an inbound webhook trigger
+	// started (add-webhook-triggers); the webhook announcer reports the
+	// fire through the Webhooks category, so these are dropped on the turn
+	// path like scheduler-origin turns.
+	OriginWebhook Origin = "webhook"
 )
 
 // Values is the engine's cached settings snapshot: the master flag plus one
@@ -83,9 +95,10 @@ type Candidate struct {
 	Category Category
 	// Origin names who started the run, set on turn candidates only: the
 	// dedup matrix (design D2) drops scheduler-origin turns (reported
-	// through Schedules instead) and telegram-origin turns (reported
-	// in-chat) on the turn path. Empty reads as user, matching the runtime's
-	// dispatch convention.
+	// through Schedules instead), telegram-origin turns (reported in-chat),
+	// and webhook-origin turns (reported through Webhooks by the webhook
+	// announcer, the sole notifier for webhook fires) on the turn path.
+	// Empty reads as user, matching the runtime's dispatch convention.
 	Origin Origin
 	// NameKey is the identifier the engine resolves to the notification's
 	// title through the constructor's name resolvers — the agent ID for

@@ -139,6 +139,12 @@ func categoryDelivers(v Values, c Category) bool {
 		return v.Schedules
 	case CategoryGroups:
 		return v.Groups
+	case CategoryWebhooks:
+		// The webhooks category has no settings toggle of its own yet
+		// (add-webhook-triggers): it delivers under the master flag. A
+		// per-category toggle arrives with the settings surface and wires
+		// here.
+		return true
 	default:
 		return false
 	}
@@ -146,14 +152,16 @@ func categoryDelivers(v Values, c Category) bool {
 
 // matrixDrops reports whether the dedup matrix (design D2) excludes the
 // candidate from the turn path: scheduler-origin turns report through the
-// Schedules category via the announcer seam instead, and telegram-origin
-// turns are delivered in-chat by the channel. Empty origin reads as user —
-// the runtime's dispatch convention — so it delivers.
+// Schedules category via the announcer seam instead, telegram-origin turns
+// are delivered in-chat by the channel, and webhook-origin turns report
+// through the Webhooks category via the webhook announcer — the sole
+// notifier for webhook fires. Empty origin reads as user — the runtime's
+// dispatch convention — so it delivers.
 func matrixDrops(c Candidate) bool {
 	if c.Category != CategoryTurns {
 		return false
 	}
-	return c.Origin == OriginScheduler || c.Origin == OriginTelegram
+	return c.Origin == OriginScheduler || c.Origin == OriginTelegram || c.Origin == OriginWebhook
 }
 
 // suppressed applies the foreground-suppression rule (design D3): silence
@@ -194,11 +202,13 @@ func (e *Engine) title(c Candidate) string {
 }
 
 // resolveName picks the category's resolver and applies it to the NameKey;
-// an unknown category, a nil resolver, or an empty key yields no name.
+// an unknown category, a nil resolver, or an empty key yields no name. The
+// webhooks category resolves through the agent resolver: a webhook fire is
+// an agent-target run (add-webhook-triggers).
 func (e *Engine) resolveName(c Candidate) string {
 	var resolve func(id string) string
 	switch c.Category {
-	case CategoryTurns, CategoryAttention:
+	case CategoryTurns, CategoryAttention, CategoryWebhooks:
 		resolve = e.names.Agent
 	case CategorySchedules:
 		resolve = e.names.Schedule

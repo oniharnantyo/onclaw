@@ -29,6 +29,7 @@ import (
 	"github.com/oniharnantyo/buddies/internal/store"
 	"github.com/oniharnantyo/buddies/internal/store/sqlite"
 	"github.com/oniharnantyo/buddies/internal/vault"
+	"github.com/oniharnantyo/buddies/internal/webhooks"
 	"github.com/oniharnantyo/buddies/internal/workspaces"
 )
 
@@ -78,6 +79,11 @@ type App struct {
 	// the store go down.
 	tg *telegram.Service
 
+	// webhooks is the attached webhook receiver; Close closes its listener
+	// with the same bounded join before the gateway and the store go down
+	// (add-webhook-triggers task 7.3).
+	webhooks *webhooks.Service
+
 	closeOnce sync.Once
 	closeErr  error
 }
@@ -97,6 +103,10 @@ type ServiceSet struct {
 	// (add-desktop-notifications design D5): get/save settings with the
 	// engine cache refresh, plus the frontend's focus reports.
 	Notifications *services.NotificationsService
+	// Webhooks is the bound webhook trigger service (add-webhook-triggers
+	// tasks 7.1): endpoint CRUD with write-only secrets, deliveries read,
+	// test, listener state and address.
+	Webhooks *services.WebhookService
 }
 
 // AssembleOption customizes assembly. The production entrypoints (the root
@@ -447,6 +457,30 @@ func Assemble(ctx context.Context, emitter services.Emitter, opener services.URL
 	channelsSvc := services.NewChannelService(st, emitter)
 	channelsSvc.OnChange = func(channelID string) { tg.ConfigChanged() }
 
+	// The webhook trigger surface (add-webhook-triggers design D1/D9): the
+	// receiver's own listener over the same seams the scheduler and the
+	// Telegram channel use — schedule-shaped agent fires, group sends as the
+	// user, the gateway state read direct, and the notifications engine.
+	// Construction is wiring only — nothing binds until Attach below
+	// observes the gateway running, and both hosts start the gateway after
+	// Assemble.
+	whRuns := &webhookRuns{}
+	whRuns.runtime, whRuns.sessions, whRuns.notifEngine = runtime, sessionSvc, notifEngine
+	whsvc := webhooks.NewService(st, whRuns, groupSender{groups: groupSvc, msgs: st.Groups()})
+	// The listener address rides the gateway settings row (design D7);
+	// apply the saved one before attaching so the first Running binds to it.
+	if saved, err := st.GatewaySettings().Get(ctx); err == nil && saved != nil && saved.WebhookAddr != "" {
+		whsvc.Reconfigure(saved.WebhookAddr)
+	}
+	// The listener lifecycle follows the gateway (the scheduler ticker's
+	// attach pattern): up on the first Running — kept up through Paused so
+	// the pause gate can answer 503 — closed on Stopped and at Close.
+	whsvc.Attach(gw)
+	// A saved listener address kicks the runtime rebind (the channel
+	// runtime's OnChange kick pattern), applying without a restart.
+	webhooksSvc := services.NewWebhookService(st, emitter, whsvc)
+	webhooksSvc.OnAddrChange = whsvc.Reconfigure
+
 	return &App{
 		Layout:    layout,
 		Store:     st,
@@ -457,6 +491,7 @@ func Assemble(ctx context.Context, emitter services.Emitter, opener services.URL
 		sched:     sched,
 		memTicker: memTicker,
 		tg:        tg,
+		webhooks:  whsvc,
 		Services: ServiceSet{
 			AppInfo: services.NewAppInfo(),
 			Agents:  agentsSvc,
@@ -479,6 +514,10 @@ func Assemble(ctx context.Context, emitter services.Emitter, opener services.URL
 			// D5): get/save settings — the save path refreshes the engine
 			// cache — and the frontend's focus reports.
 			Notifications: services.NewNotificationsService(st.NotificationSettings(), notifEngine),
+			// The webhook trigger service (add-webhook-triggers tasks 7.1):
+			// the Channels pane's Webhooks section reads and writes through
+			// it on both hosts.
+			Webhooks: webhooksSvc,
 		},
 		NotificationsEngine: notifEngine,
 	}, nil
@@ -551,9 +590,10 @@ func (t telegramArtifacts) Read(ctx context.Context, agentID, relPath string) ([
 	return []byte(content), nil
 }
 
-// Close shuts the application down: it stops the scheduler's tick loop and
-// the Telegram channel's goroutines (so no tick or channel goroutine races
-// the teardown below), stops the gateway (unless already stopped), tears down
+// Close shuts the application down: it stops the scheduler's tick loop, the
+// Telegram channel's goroutines, and the webhook listener (each with its
+// bounded join, so no tick, channel, or receiver goroutine races the
+// teardown below), stops the gateway (unless already stopped), tears down
 // the MCP connection cache (reaping any stdio children), and closes the
 // store. It is idempotent; the first call's result is returned on every call.
 func (a *App) Close() error {
@@ -564,6 +604,12 @@ func (a *App) Close() error {
 		// channel design D1): a hung API call must not block the gateway or
 		// store teardown below.
 		a.tg.Stop()
+		// The webhook listener closes with its bounded join
+		// (add-webhook-triggers task 7.3, the same slot as tg.Stop):
+		// in-flight deliveries get connection errors — the normal "receiver
+		// down" condition every sender already handles — and a hung handler
+		// must not block the gateway or store teardown below.
+		a.webhooks.Stop()
 		// The memory sweep ticker's loop stops first too, so no sweep races
 		// the gateway or store teardown below (an in-flight sweep completes
 		// before Stop returns).

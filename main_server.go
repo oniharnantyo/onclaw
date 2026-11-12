@@ -52,6 +52,7 @@ func init() {
 	application.RegisterEvent[services.GroupsChangedEvent](services.EventGroupsChanged)
 	application.RegisterEvent[services.GroupEvent]("group:<id>:event")
 	application.RegisterEvent[services.NotificationOpenEvent](services.EventNotificationOpen)
+	application.RegisterEvent[services.WebhooksChangedEvent](services.EventWebhooksChanged)
 }
 
 // serverNotifier is the headless host's no-op notifier

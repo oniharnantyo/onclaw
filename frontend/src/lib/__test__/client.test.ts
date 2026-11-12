@@ -861,6 +861,9 @@ function makeTransport(): MockTransport {
     // SAFETY: no case drives the Channels pane's backend surface; the empty
     // stub satisfies the transport contract like agents above.
     channels: {} as Transport["channels"],
+    // SAFETY: no case drives the Webhooks section's backend surface; the
+    // empty stub satisfies the transport contract like agents above.
+    webhooks: {} as Transport["webhooks"],
     windowTheme,
     onEvent: (name: string, handler: EventHandler) => {
       calls.push(`onEvent:${name}`);

@@ -9,8 +9,14 @@ import type {
   ChannelChatView,
   ChannelStateEvent,
   ChannelView,
+  WebhookEndpointView,
+  WebhookListenerView,
 } from "../../../../bindings/github.com/oniharnantyo/buddies/internal/services/models";
-import type { Client, ChannelsStateHandler } from "../../../lib/client";
+import type {
+  ChannelsStateHandler,
+  Client,
+  WebhooksChangedHandler,
+} from "../../../lib/client";
 
 import ChannelsPane from "../components/ChannelsPane";
 import type { SettingsPaneConfig } from "../types";
@@ -32,11 +38,17 @@ let pairings: ChannelPairing[];
 
 let agents: Agent[];
 
+let webhookEndpoints: WebhookEndpointView[];
+
+let webhookListener: WebhookListenerView;
+
 /** Handlers captured from the event subscriptions; a test fires them to
  * simulate the backend's channels:changed / channels:state pushes. */
 const changedHandlers: (() => void)[] = [];
 
 const stateHandlers: ChannelsStateHandler[] = [];
+
+const webhooksChangedHandlers: WebhooksChangedHandler[] = [];
 
 vi.mock("../../../lib/client", () => ({
   client: {
@@ -117,6 +129,31 @@ vi.mock("../../../lib/client", () => ({
 
         return (): void => undefined;
       }),
+      onWebhooksChanged: vi.fn((handler: WebhooksChangedHandler) => {
+        webhooksChangedHandlers.push(handler);
+
+        return (): void => undefined;
+      }),
+    },
+    // The pane's Webhooks section (add-webhook-triggers task 8.1) reads its
+    // own surface; the section's dedicated suites cover it in depth — this
+    // stub keeps the pane's channel assertions isolated.
+    webhooks: {
+      list: vi.fn(async (): Promise<WebhookEndpointView[]> => [
+        ...webhookEndpoints,
+      ]),
+      listenerState: vi.fn(async (): Promise<WebhookListenerView> => ({
+        ...webhookListener,
+      })),
+      presets: vi.fn(async (): Promise<never[]> => []),
+      deliveries: vi.fn(async (): Promise<never[]> => []),
+      get: vi.fn(),
+      create: vi.fn(),
+      update: vi.fn(),
+      delete: vi.fn(),
+      setEnabled: vi.fn(),
+      setListenerAddress: vi.fn(),
+      test: vi.fn(),
     },
   },
 }));
@@ -140,9 +177,14 @@ type MockedClient = Client & {
     setHomeChat: MockFn;
     setChatFreeResponse: MockFn;
   };
+  webhooks: {
+    list: MockFn;
+    listenerState: MockFn;
+  };
   events: {
     onChannelsChanged: MockFn;
     onChannelsState: MockFn;
+    onWebhooksChanged: MockFn;
   };
 };
 
@@ -198,6 +240,17 @@ function makeChannel(patch: Partial<ChannelView> = {}): ChannelView {
   };
 }
 
+function makeWebhookListener(
+  patch: Partial<WebhookListenerView> = {}
+): WebhookListenerView {
+  return {
+    serving: true,
+    boundAddr: "127.0.0.1:8787",
+    bindError: "",
+    ...patch,
+  };
+}
+
 function makeChat(patch: Partial<ChannelChatView>): ChannelChatView {
   return {
     chatId: 101,
@@ -231,8 +284,11 @@ describe("ChannelsPane", () => {
     chats = [];
     pairings = [];
     agents = [];
+    webhookEndpoints = [];
+    webhookListener = makeWebhookListener();
     changedHandlers.length = 0;
     stateHandlers.length = 0;
+    webhooksChangedHandlers.length = 0;
     vi.clearAllMocks();
   });
 

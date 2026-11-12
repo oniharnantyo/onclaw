@@ -100,6 +100,33 @@ func TestSubmit_SchedulerOriginThenUserSend_HookOriginsFollow(t *testing.T) {
 	require.Equal(t, hooks.OriginUser, evs[1].Origin)
 }
 
+// TestSubmit_WebhookOrigin_HookCarriesWebhookOrigin pins the webhook seam
+// (add-webhook-triggers "Endpoints target an agent or a group"): a
+// webhook-origin Submit delivers origin "webhook" on its hook events, the
+// same stamping every trigger surface gets.
+func TestSubmit_WebhookOrigin_HookCarriesWebhookOrigin(t *testing.T) {
+	markers := filepath.Join(t.TempDir(), "markers")
+	f := newFixture(t, func(_ []*schema.Message) fakeReply {
+		return fakeReply{text: "done", promptTokens: 1, completionTokens: 1}
+	})
+	f.wireRealHooks()
+	seedRunStartedHook(t, f, markers)
+	sess := f.newSession(t)
+
+	turn, err := f.mgr.Submit(t.Context(), SendRequest{
+		SessionID: sess.ID,
+		Message:   "trigger payload",
+		Origin:    hooks.OriginWebhook,
+	})
+	require.NoError(t, err)
+	require.NoError(t, turn.Wait())
+	waitHookPayload(t, markers, `"origin":"webhook"`)
+
+	evs := hookEventsFrom(t, markers)
+	require.Len(t, evs, 1)
+	require.Equal(t, hooks.OriginWebhook, evs[0].Origin)
+}
+
 // TestSubmit_EmptyOrigin_ReadsAsUser pins the normalization contract: an
 // origin-less Submit is a user run's hook events.
 func TestSubmit_EmptyOrigin_ReadsAsUser(t *testing.T) {

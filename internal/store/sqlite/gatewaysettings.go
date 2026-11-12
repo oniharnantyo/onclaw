@@ -16,8 +16,8 @@ func (g *gatewaySettingsStore) Get(ctx context.Context) (*store.GatewaySettings,
 	var updatedAt string
 
 	row := g.e.QueryRowContext(ctx,
-		`SELECT enabled, default_agent_id, updated_at FROM gateway_settings WHERE id = 1`)
-	err := row.Scan(&settings.Enabled, &settings.DefaultAgentID, &updatedAt)
+		`SELECT enabled, default_agent_id, webhook_addr, updated_at FROM gateway_settings WHERE id = 1`)
+	err := row.Scan(&settings.Enabled, &settings.DefaultAgentID, &settings.WebhookAddr, &updatedAt)
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return nil, nil
@@ -34,13 +34,14 @@ func (g *gatewaySettingsStore) Save(ctx context.Context, settings *store.Gateway
 	settings.UpdatedAt = nowUTC()
 
 	_, err := g.e.ExecContext(ctx, `
-INSERT INTO gateway_settings (id, enabled, default_agent_id, updated_at)
-VALUES (1, ?, ?, ?)
+INSERT INTO gateway_settings (id, enabled, default_agent_id, webhook_addr, updated_at)
+VALUES (1, ?, ?, ?, ?)
 ON CONFLICT (id) DO UPDATE SET
 enabled = excluded.enabled,
 default_agent_id = excluded.default_agent_id,
+webhook_addr = excluded.webhook_addr,
 updated_at = excluded.updated_at`,
-		boolInt(settings.Enabled), settings.DefaultAgentID, formatTime(settings.UpdatedAt),
+		boolInt(settings.Enabled), settings.DefaultAgentID, settings.WebhookAddr, formatTime(settings.UpdatedAt),
 	)
 	if err != nil {
 		return fmt.Errorf("save gateway settings: %w", err)

@@ -1015,6 +1015,174 @@ export interface WebSearchProviderInfo {
 }
 
 /**
+ * WebhookDeliveryView is one row of an endpoint's delivery log, newest
+ * first. Every field is non-secret: Note carries the human-readable refusal
+ * reason, Via the preset label that authenticated the delivery.
+ */
+export interface WebhookDeliveryView {
+    "id": string;
+    "attemptedAt": string;
+    "status": number;
+    "outcome": string;
+
+    /**
+     * SessionID locates the agent-target fire session and MessageID the
+     * group transcript message; exactly the produced one is set when the
+     * delivery dispatched (the UI's link target).
+     */
+    "sessionId": string;
+    "messageId": string;
+    "via": string;
+
+    /**
+     * SenderDeliveryID is the sender's own delivery id (the retry-dedupe
+     * marker) when present.
+     */
+    "senderDeliveryId": string;
+    "note": string;
+    "createdAt": string;
+}
+
+/**
+ * WebhookEndpointInput is one endpoint's write shape. Exactly one of
+ * AgentID or GroupID must name an existing target at save time; verifiers
+ * require at least one row (the ≥1-credential rule).
+ */
+export interface WebhookEndpointInput {
+    "name": string;
+    "agentId": string;
+    "groupId": string;
+    "prompt": string;
+    "enabled": boolean;
+    "verifiers": WebhookVerifierInput[] | null;
+}
+
+/**
+ * WebhookEndpointView is one webhook endpoint's read shape, as bound to the
+ * frontend: the secret-free projection (verifier rows carry presence and
+ * hints only), the generated delivery URL, and the last delivery's outcome
+ * for the list row.
+ */
+export interface WebhookEndpointView {
+    "id": string;
+    "name": string;
+
+    /**
+     * AgentID and GroupID locate the target; exactly one is set. TargetName
+     * is the resolved display name — empty when the target no longer exists
+     * (the dead-target state the delivery log then explains).
+     */
+    "agentId": string;
+    "groupId": string;
+    "targetName": string;
+    "prompt": string;
+    "enabled": boolean;
+    "verifiers": WebhookVerifierView[] | null;
+
+    /**
+     * URL is the delivery URL on the configured listener address, including
+     * the path-token segment when the endpoint verifies one. Copy it into
+     * the sender's webhook configuration.
+     */
+    "url": string;
+
+    /**
+     * LastOutcome, LastStatus, and LastAttemptedAt summarize the endpoint's
+     * newest delivery log row; zero-valued when nothing was delivered yet.
+     */
+    "lastOutcome": string;
+    "lastStatus": number;
+    "lastAttemptedAt": string;
+    "createdAt": string;
+    "updatedAt": string;
+}
+
+/**
+ * WebhookListenerView is the receiver's live serving state, as bound to the
+ * frontend: a bind failure reads as Serving=false with BindError set (the
+ * browser-use lockfile precedent — never a silent dead port).
+ */
+export interface WebhookListenerView {
+    "serving": boolean;
+    "boundAddr": string;
+    "bindError": string;
+}
+
+/**
+ * WebhookPresetView is one sender preset's gallery card: the stable name the
+ * save payload references, the display title, the where-to-find-it hint, and
+ * the verifier rows the preset seeds (non-secret configuration only — the
+ * wizard renders one secret field over them).
+ */
+export interface WebhookPresetView {
+    "name": string;
+    "title": string;
+    "hint": string;
+    "verifiers": WebhookVerifierView[] | null;
+}
+
+/**
+ * WebhookVerifierInput is one verifier row's write shape: the engine kind,
+ * its non-secret configuration, and the secret. The secret is write-only —
+ * a blank Secret on an update keeps the stored one (per row position,
+ * mirroring SaveChannel's blank-keeps), a non-blank one replaces it.
+ */
+export interface WebhookVerifierInput {
+    "kind": string;
+    "preset": string;
+    "headerName": string;
+    "timestampHeader": string;
+    "algo": string;
+    "encoding": string;
+    "prefix": string;
+    "scheme": string;
+    "secret": string;
+}
+
+/**
+ * WebhookVerifierView is one verifier row's read shape, as bound to the
+ * frontend. It deliberately carries no secret material (design D6, the
+ * channel-token precedent): callers see only whether a secret is stored and
+ * its non-secret last-four-style hint, never the value.
+ */
+export interface WebhookVerifierView {
+    "id": string;
+    "position": number;
+
+    /**
+     * Kind is one of the store.WebhookVerifier* engine kinds.
+     */
+    "kind": string;
+
+    /**
+     * Preset names the gallery card the row was configured from; empty for
+     * manually built rows. It doubles as the delivery log's via label.
+     */
+    "preset": string;
+    "headerName": string;
+    "timestampHeader": string;
+    "algo": string;
+    "encoding": string;
+    "prefix": string;
+    "scheme": string;
+
+    /**
+     * SecretSet and SecretHint are the secret-free views: only whether a
+     * secret is stored and its last four characters, empty when unset.
+     */
+    "secretSet": boolean;
+    "secretHint": string;
+}
+
+/**
+ * WebhooksChangedEvent is the payload of EventWebhooksChanged. EndpointID
+ * names the mutated endpoint (add-webhook-triggers task 7.1).
+ */
+export interface WebhooksChangedEvent {
+    "endpointId": string;
+}
+
+/**
  * WorkspaceEntry is one listed workspace child (design D8).
  */
 export interface WorkspaceEntry {

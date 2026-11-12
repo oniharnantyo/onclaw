@@ -63,6 +63,9 @@ type Store struct {
 	agentGroupTasks     map[string]store.AgentGroupTask    // key: task id
 	agentGroupSummaries map[string]store.AgentGroupSummary // key: group id
 	vaultItems          map[string]store.VaultItem         // key: item id
+	webhookEndpoints    map[string]store.WebhookEndpoint   // key: endpoint id
+	webhookVerifiers    map[string][]store.WebhookVerifier // key: endpoint id, kept in Position order
+	webhookDeliveries   map[string][]store.WebhookDelivery // key: endpoint id, kept newest-first
 	// templateDir is the lazily created directory the filesystem-backed
 	// template store roots at (see documenttemplates.go); empty until a
 	// template is first stored or looked up through the aggregate.
@@ -106,6 +109,9 @@ func New() *Store {
 		agentGroupTasks:     make(map[string]store.AgentGroupTask),
 		agentGroupSummaries: make(map[string]store.AgentGroupSummary),
 		vaultItems:          make(map[string]store.VaultItem),
+		webhookEndpoints:    make(map[string]store.WebhookEndpoint),
+		webhookVerifiers:    make(map[string][]store.WebhookVerifier),
+		webhookDeliveries:   make(map[string][]store.WebhookDelivery),
 	}
 }
 
@@ -135,6 +141,7 @@ func (s *Store) ProviderModels() store.ProviderModelStore   { return &providerMo
 func (s *Store) Memory() store.MemoryStore                  { return &memoryStore{s} }
 func (s *Store) Groups() store.AgentGroupStore              { return &agentGroupStore{s} }
 func (s *Store) VaultItems() store.VaultItemStore           { return &vaultItemStore{s} }
+func (s *Store) Webhooks() store.WebhookStore               { return &webhookStore{s} }
 
 func (s *Store) Create(ctx context.Context, model *store.ProviderModel) error {
 	return (&providerModelStore{s}).Create(ctx, model)

@@ -38,6 +38,15 @@ func tableExists(t *testing.T, db *sql.DB, name string) bool {
 	return n > 0
 }
 
+// countRows returns the number of rows in a table, for cascade and eviction
+// assertions that bypass the store.
+func countRows(t *testing.T, db *sql.DB, table string) int {
+	t.Helper()
+	var n int
+	require.NoError(t, db.QueryRow(`SELECT COUNT(*) FROM `+table).Scan(&n))
+	return n
+}
+
 // eventBatch builds len(ids) events sharing one kind and unique payloads.
 func eventBatch(ids ...string) []store.SessionEvent {
 	out := make([]store.SessionEvent, 0, len(ids))

@@ -14,6 +14,7 @@ import type {
   NotificationOpenEvent,
   SchedulesChangedEvent,
   TurnsChangedEvent,
+  WebhooksChangedEvent,
 } from "../../bindings/github.com/oniharnantyo/buddies/internal/services/models";
 
 /** Event carrying gateway lifecycle changes; payload is GatewayStateEvent. */
@@ -111,6 +112,18 @@ export const NOTIFICATIONS_OPEN_EVENT = "notifications:open";
 /** The generated payload of NOTIFICATIONS_OPEN_EVENT, re-exported so callers
  * keep one import surface beside the constant. */
 export type { NotificationOpenEvent };
+
+/**
+ * Event announcing any webhook endpoint mutation (add-webhook-triggers task
+ * 7.1): saves, the enable toggle, deletes, and completed self-tests emit it;
+ * payload is WebhooksChangedEvent, so the Channels pane's Webhooks section
+ * refetches.
+ */
+export const WEBHOOKS_CHANGED_EVENT = "webhooks:changed";
+
+/** The generated payload of WEBHOOKS_CHANGED_EVENT, re-exported so callers
+ * keep one import surface beside the constant. */
+export type { WebhooksChangedEvent };
 
 /**
  * Event announcing one agent-group's live transcript and task updates

@@ -115,7 +115,7 @@ func (r *scheduleRuns) announceCompletion(ctx context.Context, sessionID string,
 		return
 	}
 
-	excerpt := r.turnExcerpt(ctx, sessionID, turn.TurnID())
+	excerpt := turnExcerpt(ctx, r.sessions, sessionID, turn.TurnID())
 	if excerpt == "" && outcome == outcomeFailed {
 		excerpt = truncateRunes(waitErr.Error(), maxExcerptRunes)
 	}
@@ -152,10 +152,11 @@ func (r *scheduleRuns) announceCompletion(ctx context.Context, sessionID string,
 // turnExcerpt replays the session's persisted events and returns the turn's
 // final assistant message, truncated to maxExcerptRunes without splitting a
 // rune. Empty when the turn produced none. Events persisted before turn ids
-// existed count as the session's — a scheduled fire session holds a single
-// turn.
-func (r *scheduleRuns) turnExcerpt(ctx context.Context, sessionID, turnID string) string {
-	evs, err := r.sessions.Events(ctx, sessionID)
+// existed count as the session's — a fire session (scheduled or webhook)
+// holds a single turn. Shared by the scheduler and webhook completion
+// announcers (add-webhook-triggers design D2).
+func turnExcerpt(ctx context.Context, sessSvc sessions.Service, sessionID, turnID string) string {
+	evs, err := sessSvc.Events(ctx, sessionID)
 	if err != nil {
 		slog.WarnContext(ctx, "schedule runs: completion excerpt read failed",
 			"session_id", sessionID, "error", err)

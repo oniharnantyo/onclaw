@@ -25,6 +25,7 @@ import { Toggle } from "../../../components/ui/Toggle";
 import { BrandMark } from "../../../lib/brandMarks";
 import { client } from "../../../lib/client";
 import type { SettingsPaneConfig } from "../types";
+import WebhooksSection from "./webhooks/WebhooksSection";
 
 /**
  * Display names per channel id; the BrandMark renders the glyph (the
@@ -456,7 +457,9 @@ type ChannelStateMap = Record<string, ChannelStateEvent>;
  * ChannelsPane: every configured channel renders as its own card (task 9.3)
  * — brand mark, live connection state, enable toggle, then the channel's
  * own body. The pane is channel-agnostic: adding a channel means a row in
- * CHANNEL_NAMES and a body in `channelBody`.
+ * CHANNEL_NAMES and a body in `channelBody`. Below the cards sits the
+ * pane's Webhooks section (add-webhook-triggers task 8.1) — a
+ * self-contained component with its own data and events subscription.
  */
 export default function ChannelsPane(_props: {
   pane: SettingsPaneConfig;
@@ -564,6 +567,9 @@ export default function ChannelsPane(_props: {
           </div>
         ))
       )}
+      {/* The pane's Webhooks section (add-webhook-triggers task 8.1):
+          listener state + address, endpoint list, wizard, deliveries. */}
+      <WebhooksSection />
     </div>
   );
 }

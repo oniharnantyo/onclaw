@@ -46,3 +46,12 @@ func ScheduleNotificationID(scheduleID, runID string) string {
 func GroupNotificationID(groupID, taskID string) string {
 	return "group:" + groupID + ":" + taskID
 }
+
+// WebhookNotificationID builds the deterministic notification ID for a
+// webhook-fire completion (add-webhook-triggers, mirroring
+// ScheduleNotificationID): webhook:<sessionID>:<turnID>. A fire session is
+// 1:1 with its delivery, so sessionID+turnID are the deterministic key the
+// webhook announcer holds.
+func WebhookNotificationID(sessionID, turnID string) string {
+	return "webhook:" + sessionID + ":" + turnID
+}

@@ -52,6 +52,7 @@ func (s *Store) WithTx(ctx context.Context, fn func(store.Store) error) error {
 		memory:      &memoryStore{tx},
 		groups:      &agentGroupStore{tx},
 		vault:       &vaultItemStore{tx},
+		webhooks:    &webhookStore{tx},
 	}
 
 	if err := fn(txStore); err != nil {

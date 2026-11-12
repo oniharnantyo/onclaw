@@ -25,6 +25,7 @@ import * as knowledgeBindings from "../../bindings/github.com/oniharnantyo/buddi
 import * as notificationsBindings from "../../bindings/github.com/oniharnantyo/buddies/internal/services/notificationsservice";
 import * as scheduleBindings from "../../bindings/github.com/oniharnantyo/buddies/internal/services/scheduleservice";
 import * as settingsBindings from "../../bindings/github.com/oniharnantyo/buddies/internal/services/settingsservice";
+import * as webhookBindings from "../../bindings/github.com/oniharnantyo/buddies/internal/services/webhookservice";
 import * as windowThemeModule from "../../bindings/github.com/oniharnantyo/buddies/windowthemeservice";
 
 /** Unsubscribe function returned by event subscriptions. */
@@ -37,8 +38,9 @@ export type Unsubscribe = () => void;
  * carries SchedulesChangedEvents, the turns channel carries
  * TurnsChangedEvents, the channels channels carry the channel change and
  * state events, the groups channels carry the group event and
- * groups-changed payloads, and the notifications channel carries the
- * notification-open payload. The runtime hands all of them to `onEvent`, so
+ * groups-changed payloads, the notifications channel carries the
+ * notification-open payload, and the webhooks channel carries the webhook
+ * endpoint change payload. The runtime hands all of them to `onEvent`, so
  * this is the single documented place where the domains meet before the
  * client narrows them.
  */
@@ -53,7 +55,8 @@ export type EventPayload =
   | serviceModels.MCPOAuthCompletedEvent
   | serviceModels.NotificationOpenEvent
   | serviceModels.SchedulesChangedEvent
-  | serviceModels.TurnsChangedEvent;
+  | serviceModels.TurnsChangedEvent
+  | serviceModels.WebhooksChangedEvent;
 
 /** Handler receiving the payload data of one emitted event. */
 export type EventHandler = (data: EventPayload) => void;
@@ -529,6 +532,39 @@ export interface Transport {
       free: boolean
     ): Promise<serviceModels.ChannelChatView>;
   };
+  /**
+   * The Channels pane's Webhooks section (add-webhook-triggers tasks 7.1):
+   * the generated WebhookService binding's methods, structurally mirrored
+   * like every other service section. Secrets are write-only — the read
+   * shapes carry presence and last-four hints only.
+   */
+  webhooks: {
+    ListEndpoints(): Promise<serviceModels.WebhookEndpointView[] | null>;
+    GetEndpoint(id: string): Promise<serviceModels.WebhookEndpointView>;
+    CreateEndpoint(
+      input: serviceModels.WebhookEndpointInput
+    ): Promise<serviceModels.WebhookEndpointView>;
+    UpdateEndpoint(
+      id: string,
+      input: serviceModels.WebhookEndpointInput
+    ): Promise<serviceModels.WebhookEndpointView>;
+    DeleteEndpoint(id: string): Promise<void>;
+    SetEnabled(
+      id: string,
+      enabled: boolean
+    ): Promise<serviceModels.WebhookEndpointView>;
+    /** One endpoint's delivery log, newest first. */
+    Deliveries(
+      endpointID: string
+    ): Promise<serviceModels.WebhookDeliveryView[] | null>;
+    ListenerState(): Promise<serviceModels.WebhookListenerView>;
+    /** Stores the listener address; empty resets to the loopback default. */
+    SetListenerAddress(addr: string): Promise<void>;
+    /** The self-test: a signed delivery through the real listener. */
+    Test(endpointID: string): Promise<void>;
+    /** The sender preset catalog with where-to-find-it hints. */
+    Presets(): Promise<serviceModels.WebhookPresetView[] | null>;
+  };
   knowledge: {
     /** Every cataloged document in name order; scope indexes are never listed. */
     List(): Promise<serviceModels.KnowledgeDocument[] | null>;
@@ -610,6 +646,7 @@ export function createWailsTransport(): Transport {
     knowledge: knowledgeBindings,
     schedules: scheduleBindings,
     channels: channelBindings,
+    webhooks: webhookBindings,
     notifications: notificationsBindings,
     windowTheme: windowThemeModule,
     onEvent: (name: string, handler: EventHandler): Unsubscribe =>

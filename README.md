@@ -61,6 +61,56 @@ is required. The server binds loopback unless explicitly told otherwise.
 > build-tag gap, but runs fully headless. The Linux build (and the Docker
 > image) are genuinely GUI-free.
 
+## Webhooks
+
+Webhooks are the third inbound trigger surface, next to cron schedules and
+Telegram chat: external systems (GitLab, GitHub, Stripe, CI, automation
+tools) start agent or group work by POSTing an HTTP webhook to the running
+gateway. Endpoints are managed in Settings > Channels > Webhooks; each
+endpoint pairs a unique name with a target — an agent or an agent group — a
+prompt template, an enabled flag, and at least one credential, and gets a
+delivery URL on the webhook listener (`POST /webhooks/<endpoint id>`,
+loopback `127.0.0.1:8787` by default).
+
+The listener follows the gateway lifecycle: while the gateway is Running it
+serves deliveries; while Paused it answers `503` with a `Retry-After` hint
+(the sender's retry policy is the queue); when stopped, or on app close, it
+shuts down with a bounded teardown. The listen address is configurable in
+the same section and applies without a restart, and the listener behaves
+identically on desktop and server hosts.
+
+A delivery to an agent target fires a fresh titled session per delivery
+(`<endpoint name> — <delivery time>`), submitting the prompt template with
+the request body appended as a fenced payload block (`json`-fenced when the
+body parses as JSON, plain-fenced otherwise). The turn is stamped with the
+webhook origin so hooks treat it as an autonomous run, and its completion
+raises a desktop notification that routes to the session. A delivery to a
+group target appends the rendered text as an ordinary user message in the
+group's transcript — mentions route to named members, untargeted text to
+the lead.
+
+Credentials use five verifier engines — URL path token, static header
+equality, raw-body HMAC, Standard Webhooks HMAC-SHA256 (with a
+`webhook-timestamp` replay window), and timestamp-composite HMAC (the
+Stripe and Slack/Zoom compositions) — with one-secret-field presets for
+GitLab, GitHub, Stripe, Slack, Zoom, Shopify, Linear, and plain header
+senders, plus a manual builder over the raw engines. Any verifier pass
+authenticates a delivery; a request carrying an expected signature header
+that fails verification is refused `401` with no fall-through to weaker
+credentials. Secrets are write-only: shown once at creation or
+regeneration, never returned by reads, and a blank secret save keeps the
+stored one.
+
+Every delivery attempt lands in a bounded per-endpoint log (last 50):
+HTTP status, outcome, the session or transcript message it produced, the
+verifier that authenticated it, and the sender's `webhook-id` when present
+— a repeat delivery with the same `webhook-id` answers `200 duplicate`
+without firing twice. Accepted deliveries answer `202`; bodies beyond
+1 MiB answer `413`; unknown or disabled routes answer `404`. The Test
+button composes and self-signs a delivery through the real listener, so
+address binding, credentials, and dispatch are proven in one step (logged
+as `self-test`).
+
 ## Data layout
 
 All app data lives under `~/.buddies` (created on first run, permissions 0700):

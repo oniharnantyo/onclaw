@@ -4,8 +4,8 @@ package hooks
 // are distinguishable to hooks", design D6): Origin names who started the
 // run, so a hook can treat an unattended run differently from a user turn.
 // The agents runtime stamps it from the send request; trigger surfaces
-// extend the set — the scheduler fire today, and the Telegram channel
-// (add-telegram-channel) now.
+// extend the set — the scheduler fire today, the Telegram channel
+// (add-telegram-channel), and the webhook endpoint (add-webhook-triggers).
 const (
 	// OriginUser is the origin of a turn a user started — the default: an
 	// unknown or empty origin reads as a user turn.
@@ -18,6 +18,11 @@ const (
 	// non-user trigger, and that names the chat the reply delivers to (the
 	// initiator delivery rule).
 	OriginTelegram = "telegram"
+	// OriginWebhook is the origin of a run an inbound webhook trigger started
+	// (add-webhook-triggers spec "Endpoints target an agent or a group"): an
+	// autonomous run the turn environment treats as non-user, like every
+	// other trigger surface.
+	OriginWebhook = "webhook"
 )
 
 // Origin is the run-origin concept the constants above spell: a string

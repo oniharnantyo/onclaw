@@ -277,6 +277,13 @@ export interface ChannelPairing {
 export interface GatewaySettings {
     "Enabled": boolean;
     "DefaultAgentID": string;
+
+    /**
+     * WebhookAddr is the webhook receiver's listen address
+     * (add-webhook-triggers design D7); empty means unset — callers apply
+     * the loopback default.
+     */
+    "WebhookAddr": string;
     "UpdatedAt": string;
 }
 

@@ -137,6 +137,10 @@ func RunServerHost(ctx context.Context, host *App, emitter services.Emitter, ass
 		application.NewService(host.Services.Schedule),
 		application.NewService(host.Services.Knowledge),
 		application.NewService(host.Services.Channels),
+		// The webhook trigger service serves endpoint management, the
+		// deliveries log, the self-test, and the listener state in server
+		// mode (add-webhook-triggers tasks 7.1, spec host-parity).
+		application.NewService(host.Services.Webhooks),
 		// The notifications service serves get/save settings and focus
 		// reports in server mode (add-desktop-notifications design D5, spec
 		// host-parity): sends themselves are the host's no-op notifier.

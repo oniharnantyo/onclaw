@@ -56,6 +56,26 @@ vi.mock("../../../lib/client", () => ({
       chats: vi.fn(async () => []),
       pendingPairings: vi.fn(async () => []),
     },
+    // The Channels pane's Webhooks section (add-webhook-triggers task 8.1)
+    // mounts below the channel cards; the section's dedicated suites cover
+    // it in depth — this stub keeps the view's pane-switching isolated.
+    webhooks: {
+      list: vi.fn(async () => []),
+      listenerState: vi.fn(async () => ({
+        serving: false,
+        boundAddr: "",
+        bindError: "",
+      })),
+      presets: vi.fn(async () => []),
+      deliveries: vi.fn(async () => []),
+      get: vi.fn(),
+      create: vi.fn(),
+      update: vi.fn(),
+      delete: vi.fn(),
+      setEnabled: vi.fn(),
+      setListenerAddress: vi.fn(),
+      test: vi.fn(),
+    },
     // The Notifications pane reads the singleton on selection
     // (add-desktop-notifications 6.1); defaults are all-on.
     notifications: {
@@ -76,6 +96,7 @@ vi.mock("../../../lib/client", () => ({
       onMcpOAuthCompleted: vi.fn((): (() => void) => (): void => undefined),
       onChannelsChanged: vi.fn((): (() => void) => (): void => undefined),
       onChannelsState: vi.fn((): (() => void) => (): void => undefined),
+      onWebhooksChanged: vi.fn((): (() => void) => (): void => undefined),
     },
   },
 }));
@@ -166,8 +187,8 @@ describe("SettingsView", () => {
   it("groups the sidebar into APP, MODELS, INTEGRATIONS, and AUTOMATION sections in that order", async () => {
     const { getByTestId } = await renderUI(<SettingsView />);
 
-    const sections = ["app", "models", "integrations", "automation"].map(
-      (id) => getByTestId(`settings-nav-section-${id}`)
+    const sections = ["app", "models", "integrations", "automation"].map((id) =>
+      getByTestId(`settings-nav-section-${id}`)
     );
     for (const el of sections) {
       expect(el).toBeTruthy();

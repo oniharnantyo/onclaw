@@ -44,6 +44,11 @@ type Store interface {
 	// (add-browser-login-handover design D5): metadata in the clear,
 	// secrets as opaque sealed blobs.
 	VaultItems() VaultItemStore
+	// Webhooks returns the webhook trigger aggregate store
+	// (add-webhook-triggers design D7): endpoints, ordered verifiers, and
+	// the bounded per-endpoint delivery log. The listener address rides
+	// GatewaySettings.
+	Webhooks() WebhookStore
 	// WithTx runs fn atomically: every write fn makes through the Store it
 	// receives commits together, or — when fn returns an error — rolls
 	// back, leaving no partial rows.

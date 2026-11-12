@@ -69,7 +69,7 @@ export const settingsPaneSections: SettingsPaneSection[] = [
         label: "Channels",
         icon: "message",
         description:
-          "Connect the Telegram bot — token, pairing approvals, and per-chat behavior.",
+          "The Telegram bot and webhook endpoints — the two inbound channel triggers.",
       },
       {
         key: "browseruse",
@@ -249,7 +249,7 @@ export default function SettingsView(): ReactElement {
       data-testid="settings-view"
     >
       <nav
-        className="od-scroll flex w-full shrink-0 flex-col gap-0.5 overflow-x-auto border-b border-linesoft py-3 md:w-56 md:flex-col md:overflow-x-hidden md:overflow-y-auto md:border-b-0 md:border-r md:py-3 md:px-0 lg:pt-10"
+        className="titlebar-drag od-scroll flex w-full shrink-0 flex-col gap-0.5 overflow-x-auto border-b border-linesoft py-3 md:w-56 md:flex-col md:overflow-x-hidden md:overflow-y-auto md:border-b-0 md:border-r md:py-3 md:px-0 lg:pt-10"
         role="tablist"
         aria-label="Settings sections"
         data-testid="settings-nav"
@@ -313,7 +313,7 @@ export default function SettingsView(): ReactElement {
           names the pane in the shared PaneHeader treatment — the same style
           as the knowledge/scheduler views — and the muted line carries its
           description. */}
-      <div className="od-scroll min-w-0 flex-1 overflow-y-auto p-4 md:p-6 lg:p-8 lg:pt-10">
+      <div className="titlebar-drag od-scroll min-w-0 flex-1 overflow-y-auto p-4 md:p-6 lg:p-8 lg:pt-10">
         <div className="mx-auto max-w-5xl">
           <div className="mb-6">
             <PaneHeader

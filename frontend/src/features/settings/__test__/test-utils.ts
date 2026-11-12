@@ -19,6 +19,7 @@ type Bound = BoundFunctions<typeof queries>;
 
 type RenderResult = { [K in keyof Bound]: Bound[K] } & {
   container: HTMLElement;
+  rerender: (ui: React.ReactElement) => Promise<void>;
   unmount: () => Promise<void>;
 };
 
@@ -39,6 +40,12 @@ export async function renderUI(ui: React.ReactElement): Promise<RenderResult> {
   return {
     container,
     ...getQueriesForElement(container),
+    /** Re-renders the root with new props (prop-change assertions). */
+    rerender: async (next: React.ReactElement): Promise<void> => {
+      await act(async () => {
+        root.current!.render(next);
+      });
+    },
     unmount: async (): Promise<void> => {
       await act(async () => {
         root.current!.unmount();

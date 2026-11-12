@@ -184,6 +184,18 @@ func TestCompileMatcher_Matches(t *testing.T) {
 			want:    false,
 		},
 		{
+			name:    "origin value set: webhook selected",
+			matcher: "scheduler|webhook",
+			value:   "webhook",
+			want:    true,
+		},
+		{
+			name:    "origin value set: webhook not selected",
+			matcher: "scheduler",
+			value:   "webhook",
+			want:    false,
+		},
+		{
 			name:    "anchored regex on origins hit",
 			matcher: "^(user|scheduler)$",
 			value:   "user",
@@ -263,6 +275,9 @@ func TestMatchedValue(t *testing.T) {
 	}
 	if got := MatchedValue(Event{Event: EventUserPromptSubmit, Origin: "scheduler"}); got != "scheduler" {
 		t.Errorf("prompt matched value = %q, want scheduler", got)
+	}
+	if got := MatchedValue(Event{Event: EventRunStarted, Origin: "webhook"}); got != "webhook" {
+		t.Errorf("run_started matched value = %q, want webhook", got)
 	}
 	if got := MatchedValue(Event{Event: EventRunFinished, Status: "failed"}); got != "failed" {
 		t.Errorf("run_finished matched value = %q, want failed", got)

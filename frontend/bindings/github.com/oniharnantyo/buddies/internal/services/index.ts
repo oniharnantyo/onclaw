@@ -12,6 +12,7 @@ import * as KnowledgeService from "./knowledgeservice.js";
 import * as NotificationsService from "./notificationsservice.js";
 import * as ScheduleService from "./scheduleservice.js";
 import * as SettingsService from "./settingsservice.js";
+import * as WebhookService from "./webhookservice.js";
 export {
     AgentsService,
     AppInfo,
@@ -23,7 +24,8 @@ export {
     KnowledgeService,
     NotificationsService,
     ScheduleService,
-    SettingsService
+    SettingsService,
+    WebhookService
 };
 
 export type {
@@ -73,6 +75,14 @@ export type {
     WebSearchConfig,
     WebSearchConfigInput,
     WebSearchProviderInfo,
+    WebhookDeliveryView,
+    WebhookEndpointInput,
+    WebhookEndpointView,
+    WebhookListenerView,
+    WebhookPresetView,
+    WebhookVerifierInput,
+    WebhookVerifierView,
+    WebhooksChangedEvent,
     WorkspaceEntry,
     WorkspaceFileBinaryContent,
     WorkspaceSkill

@@ -20,6 +20,7 @@ func TestNotificationIDSchemes(t *testing.T) {
 		{"park", "park:sess-1:int-3", ParkNotificationID("sess-1", "int-3")},
 		{"schedule", "sched:sched-1:run-5", ScheduleNotificationID("sched-1", "run-5")},
 		{"group", "group:group-1:task-2", GroupNotificationID("group-1", "task-2")},
+		{"webhook", "webhook:sess-1:turn-9", WebhookNotificationID("sess-1", "turn-9")},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

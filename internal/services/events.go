@@ -46,6 +46,11 @@ const (
 	// change (add-agent-groups design D9) — so the frontend refetches the
 	// group list instead of polling. The payload is a GroupsChangedEvent.
 	EventGroupsChanged = "groups:changed"
+	// EventWebhooksChanged announces a webhook endpoint mutation — save,
+	// enable toggle, delete, a completed self-test (add-webhook-triggers
+	// task 7.1) — so the Channels pane's Webhooks section refetches. The
+	// payload is a WebhooksChangedEvent.
+	EventWebhooksChanged = "webhooks:changed"
 	// EventNotificationOpen announces a clicked notification
 	// (add-desktop-notifications design D5) so the frontend navigates to the
 	// session or group the notification concerned. The payload is a
@@ -146,6 +151,12 @@ const (
 // fields: the change is list-wide from the surfaces' point of view, so they
 // simply refetch the group list (add-agent-groups design D9).
 type GroupsChangedEvent struct{}
+
+// WebhooksChangedEvent is the payload of EventWebhooksChanged. EndpointID
+// names the mutated endpoint (add-webhook-triggers task 7.1).
+type WebhooksChangedEvent struct {
+	EndpointID string `json:"endpointId"`
+}
 
 // GroupEvent is the payload of GroupEventName(groupID): one per-group live
 // update — an appended transcript row or a task state change

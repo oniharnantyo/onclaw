@@ -54,6 +54,12 @@ import type {
   WebSearchConfig,
   WebSearchConfigInput,
   WebSearchProviderInfo,
+  WebhookDeliveryView,
+  WebhookEndpointInput,
+  WebhookEndpointView,
+  WebhookListenerView,
+  WebhookPresetView,
+  WebhooksChangedEvent,
   WorkspaceEntry,
   WorkspaceFileBinaryContent,
   WorkspaceSkill,
@@ -90,6 +96,7 @@ import {
   SCHEDULES_CHANGED_EVENT,
   SETTINGS_OPEN_EVENT,
   TURNS_CHANGED_EVENT,
+  WEBHOOKS_CHANGED_EVENT,
   groupEventName,
   sessionEventName,
   type KnowledgeChangedEvent,
@@ -234,6 +241,10 @@ export type GroupEventHandler = (event: GroupEvent) => void;
 /** Handler receiving one clicked-notification deep link (add-desktop-
  * notifications design D5): the payload names the session or group to open. */
 export type NotificationOpenHandler = (event: NotificationOpenEvent) => void;
+
+/** Handler receiving one webhook endpoint mutation (add-webhook-triggers
+ * task 7.1): the payload names the endpoint that changed. */
+export type WebhooksChangedHandler = (event: WebhooksChangedEvent) => void;
 
 export interface Client {
   appInfo: {
@@ -857,6 +868,54 @@ export interface Client {
       free: boolean
     ): Promise<ChannelChatView>;
   };
+  /**
+   * The Channels pane's Webhooks section (add-webhook-triggers tasks 7.1):
+   * endpoint CRUD with write-only verifier secrets (a blank secret on an
+   * update keeps the stored one), the deliveries log, the self-test, and
+   * the listener state and address.
+   */
+  webhooks: {
+    /** Every endpoint's secret-free view, in name order. */
+    list(): Promise<WebhookEndpointView[]>;
+    /** One endpoint's view; an unknown id rejects. */
+    get(id: string): Promise<WebhookEndpointView>;
+    /**
+     * Validates and stores a new endpoint; the store assigns the ID. A name
+     * already in use (case-insensitively) rejects, and the target must name
+     * an existing agent or group.
+     */
+    create(input: WebhookEndpointInput): Promise<WebhookEndpointView>;
+    /**
+     * Rewrites an endpoint's definition and verifier list. A blank Secret on
+     * a verifier row keeps the stored secret (write-only, design D6); a
+     * non-blank one rotates it.
+     */
+    update(
+      id: string,
+      input: WebhookEndpointInput
+    ): Promise<WebhookEndpointView>;
+    /** Removes the endpoint; its verifiers and delivery log go with it. */
+    delete(id: string): Promise<void>;
+    /** Toggles the endpoint without touching its definition or secrets. */
+    setEnabled(id: string, enabled: boolean): Promise<WebhookEndpointView>;
+    /** One endpoint's delivery log, newest first. */
+    deliveries(endpointID: string): Promise<WebhookDeliveryView[]>;
+    /** The receiver's live serving state (a bind failure reads as
+     * serving=false with bindError set). */
+    listenerState(): Promise<WebhookListenerView>;
+    /**
+     * Stores the receiver's listen address (empty resets the loopback
+     * default); the listener rebinds without an app restart.
+     */
+    setListenerAddress(addr: string): Promise<void>;
+    /**
+     * Delivers a self-signed test payload through the real listener; a
+     * failed test rejects with the surfaced error.
+     */
+    test(endpointID: string): Promise<void>;
+    /** The sender preset catalog with where-to-find-it hints. */
+    presets(): Promise<WebhookPresetView[]>;
+  };
   knowledge: {
     /** Every cataloged document, in the store's name order. */
     list(): Promise<KnowledgeDocument[]>;
@@ -962,6 +1021,13 @@ export interface Client {
      * surfaces re-list.
      */
     onGroupsChanged(handler: GroupsChangedHandler): Unsubscribe;
+    /**
+     * Subscribes to webhook endpoint mutations (`webhooks:changed`,
+     * add-webhook-triggers task 7.1): emitted for every save, enable
+     * toggle, delete, and completed self-test, so the Webhooks section
+     * refetches.
+     */
+    onWebhooksChanged(handler: WebhooksChangedHandler): Unsubscribe;
   };
   windowTheme: {
     /** Forces the native window appearance to match the app theme. */
@@ -1543,6 +1609,33 @@ export function createClient(transport: Transport = wailsTransport): Client {
       ): Promise<ChannelChatView> =>
         transport.channels.SetChatFreeResponse(chatID, free),
     },
+    webhooks: {
+      list: async (): Promise<WebhookEndpointView[]> =>
+        unwrap(await transport.webhooks.ListEndpoints()),
+      get: (id: string): Promise<WebhookEndpointView> =>
+        transport.webhooks.GetEndpoint(id),
+      create: (input: WebhookEndpointInput): Promise<WebhookEndpointView> =>
+        transport.webhooks.CreateEndpoint(input),
+      update: (
+        id: string,
+        input: WebhookEndpointInput
+      ): Promise<WebhookEndpointView> =>
+        transport.webhooks.UpdateEndpoint(id, input),
+      delete: (id: string): Promise<void> =>
+        transport.webhooks.DeleteEndpoint(id),
+      setEnabled: (id: string, enabled: boolean): Promise<WebhookEndpointView> =>
+        transport.webhooks.SetEnabled(id, enabled),
+      deliveries: async (endpointID: string): Promise<WebhookDeliveryView[]> =>
+        unwrap(await transport.webhooks.Deliveries(endpointID)),
+      listenerState: (): Promise<WebhookListenerView> =>
+        transport.webhooks.ListenerState(),
+      setListenerAddress: (addr: string): Promise<void> =>
+        transport.webhooks.SetListenerAddress(addr),
+      test: (endpointID: string): Promise<void> =>
+        transport.webhooks.Test(endpointID),
+      presets: async (): Promise<WebhookPresetView[]> =>
+        unwrap(await transport.webhooks.Presets()),
+    },
     knowledge: {
       list: async (): Promise<KnowledgeDocument[]> =>
         unwrap(await transport.knowledge.List()),
@@ -1649,6 +1742,17 @@ export function createClient(transport: Transport = wailsTransport): Client {
           // SAFETY: GROUPS_CHANGED_EVENT carries an empty payload; the event
           // object itself is the whole notification.
           handler({} as GroupsChangedEvent);
+        }),
+      /**
+       * Subscribes to webhook endpoint mutations (`webhooks:changed`,
+       * add-webhook-triggers task 7.1): emitted for every save, enable
+       * toggle, delete, and completed self-test, so the Webhooks section
+       * refetches.
+       */
+      onWebhooksChanged: (handler: WebhooksChangedHandler): Unsubscribe =>
+        transport.onEvent(WEBHOOKS_CHANGED_EVENT, (data: EventPayload): void => {
+          // SAFETY: WEBHOOKS_CHANGED_EVENT only carries WebhooksChangedEvents.
+          handler(data as WebhooksChangedEvent);
         }),
     },
     windowTheme: {

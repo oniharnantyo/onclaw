@@ -58,3 +58,8 @@ export const SchedulesChanged = "schedules:changed";
  */
 export const TurnsChanged = "turns:changed";
 
+/**
+ * Name of the custom event "webhooks:changed".
+ */
+export const WebhooksChanged = "webhooks:changed";
+

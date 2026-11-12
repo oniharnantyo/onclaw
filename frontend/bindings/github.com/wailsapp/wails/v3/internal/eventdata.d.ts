@@ -22,6 +22,7 @@ declare module "@wailsio/runtime" {
             "notifications:open": services$0.NotificationOpenEvent;
             "schedules:changed": services$0.SchedulesChangedEvent;
             "turns:changed": services$0.TurnsChangedEvent;
+            "webhooks:changed": services$0.WebhooksChangedEvent;
         }
     }
 }

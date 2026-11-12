@@ -285,7 +285,11 @@ type Hook struct {
 type GatewaySettings struct {
 	Enabled        bool
 	DefaultAgentID string
-	UpdatedAt      time.Time
+	// WebhookAddr is the webhook receiver's listen address
+	// (add-webhook-triggers design D7); empty means unset — callers apply
+	// the loopback default.
+	WebhookAddr string
+	UpdatedAt   time.Time
 }
 
 // NotificationSettings is the singleton desktop-notification configuration
@@ -317,6 +321,145 @@ func DefaultNotificationSettings() NotificationSettings {
 		Schedules: true,
 		Groups:    true,
 	}
+}
+
+// Webhook verifier engine kinds — the WebhookVerifier.Kind vocabulary
+// (add-webhook-triggers design D3/D7). Every engine compares in constant
+// time; presets (GitLab, GitHub, Stripe, Slack, Zoom, Shopify, Linear,
+// Header) are named configs over these engines.
+const (
+	// WebhookVerifierPath authenticates the path token segment of the
+	// endpoint URL.
+	WebhookVerifierPath = "path"
+	// WebhookVerifierHeader compares a named header against a shared
+	// static value.
+	WebhookVerifierHeader = "header"
+	// WebhookVerifierRawHMAC verifies an HMAC over the exact raw body bytes
+	// (GitHub, Shopify, Linear).
+	WebhookVerifierRawHMAC = "raw-hmac"
+	// WebhookVerifierStdWeb verifies the Standard Webhooks scheme
+	// (webhook-id / webhook-timestamp / webhook-signature).
+	WebhookVerifierStdWeb = "stdweb"
+	// WebhookVerifierTsHMAC verifies a timestamp-composite HMAC over the
+	// raw body (Stripe, Slack, Zoom).
+	WebhookVerifierTsHMAC = "ts-hmac"
+)
+
+// Webhook delivery outcomes — the WebhookDelivery.Outcome vocabulary. An
+// outcome records why the receiver answered the way it did; Status carries
+// the HTTP status that went with it.
+const (
+	// WebhookOutcomeAccepted marks a delivery whose payload was accepted
+	// for dispatch (202).
+	WebhookOutcomeAccepted = "accepted"
+	// WebhookOutcomeAuthFailed marks a delivery carrying an expected
+	// signature that failed verification (401, fail-closed).
+	WebhookOutcomeAuthFailed = "auth-failed"
+	// WebhookOutcomePaused marks a delivery refused while the gateway is
+	// paused or stopped (503; sender retry is the queue).
+	WebhookOutcomePaused = "paused"
+	// WebhookOutcomeTooLarge marks a delivery over the body size cap (413).
+	WebhookOutcomeTooLarge = "too-large"
+	// WebhookOutcomeDuplicate marks a redelivered sender delivery id
+	// answered from the log without re-firing (200).
+	WebhookOutcomeDuplicate = "duplicate"
+	// WebhookOutcomeFailed marks a delivery that could not be dispatched
+	// (dead target, dispatch error).
+	WebhookOutcomeFailed = "failed"
+	// WebhookOutcomeRan marks a delivery whose dispatch started
+	// successfully (session or group message produced).
+	WebhookOutcomeRan = "ran"
+)
+
+// WebhookEndpoint is one inbound webhook trigger (add-webhook-triggers
+// design D7): a named route whose deliveries render the sender's payload
+// into Prompt and dispatch to an agent (fresh fire session) or a group
+// (transcript ingress as the user).
+type WebhookEndpoint struct {
+	ID   string
+	Name string
+	// AgentID and GroupID locate the target; exactly one is set. Neither is
+	// a foreign key — the endpoint survives its target's deletion so
+	// dispatch can record the dead target (add-webhook-triggers task 5.4),
+	// mirroring the agent_groups precedent for columns that outlive the
+	// referenced row.
+	AgentID string
+	GroupID string
+	// Prompt is the template every delivery renders its payload block into.
+	Prompt  string
+	Enabled bool
+	// Verifiers is the endpoint's ordered credential list, populated by
+	// reads and replaced wholesale by SaveVerifiers; Save does not write
+	// it.
+	Verifiers []WebhookVerifier
+	CreatedAt time.Time
+	UpdatedAt time.Time
+}
+
+// WebhookVerifier is one ordered credential row of an endpoint
+// (add-webhook-triggers design D7): an engine kind, its non-secret
+// configuration, and the secret material. Any verifier passing
+// authenticates the delivery.
+type WebhookVerifier struct {
+	ID         string
+	EndpointID string
+	// Position orders the verifiers within the endpoint; the store assigns
+	// it from the slice order on save.
+	Position int
+	// Kind is one of the WebhookVerifier* engine constants.
+	Kind string
+	// Preset names the preset gallery card the verifier was configured
+	// from; empty for manually built verifiers. It doubles as the `via`
+	// label the delivery log records.
+	Preset string
+	// HeaderName, Algo, Encoding, Prefix, Scheme, and TimestampHeader are
+	// the engine's non-secret configuration (add-webhook-triggers design
+	// D7: explicit columns, not JSON); each engine reads the subset it
+	// needs and leaves the rest empty.
+	HeaderName      string
+	Algo            string
+	Encoding        string
+	Prefix          string
+	Scheme          string
+	TimestampHeader string
+	// Secret is the verifier's secret material. Stored in the clear
+	// locally (channels.BotToken precedent), write-only through the
+	// service layer: a blank save keeps the stored secret and no read
+	// surfaces it to the frontend.
+	Secret    string
+	CreatedAt time.Time
+	UpdatedAt time.Time
+}
+
+// WebhookDelivery is one row of an endpoint's bounded delivery log
+// (add-webhook-triggers design D7): what the receiver answered and what the
+// delivery became, kept per endpoint newest-first with the oldest rows
+// evicted past WebhookDeliveryRetention.
+type WebhookDelivery struct {
+	ID         string
+	EndpointID string
+	// AttemptedAt is when the receiver answered the delivery.
+	AttemptedAt time.Time
+	// Status is the HTTP status the receiver answered with.
+	Status int
+	// Outcome is one of the WebhookOutcome* constants.
+	Outcome string
+	// SessionID locates the agent-target fire session and MessageID the
+	// group transcript message; exactly the produced one is set when the
+	// delivery dispatched.
+	SessionID string
+	MessageID string
+	// Via is the preset label of the verifier that authenticated the
+	// delivery; empty when none did (or none was configured).
+	Via string
+	// SenderDeliveryID is the sender's own delivery id (Standard Webhooks
+	// webhook-id) when present — the retry-dedupe marker.
+	SenderDeliveryID string
+	// Note is the human-readable reason recorded with the delivery — why
+	// it failed or was refused (dead target, disabled endpoint); empty
+	// when nothing needs explaining.
+	Note      string
+	CreatedAt time.Time
 }
 
 // SessionEvent is one record of the append-only session event log. Seq is

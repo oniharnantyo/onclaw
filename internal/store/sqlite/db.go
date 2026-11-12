@@ -55,6 +55,7 @@ type Store struct {
 	groups    *agentGroupStore
 	vault     *vaultItemStore
 	notifs    *notificationSettingsStore
+	webhooks  *webhookStore
 }
 
 // Open connects to (creating if necessary) the SQLite database at path,
@@ -160,6 +161,7 @@ func newStore(db *sql.DB, dataDir string) *Store {
 	s.groups = &agentGroupStore{db}
 	s.vault = &vaultItemStore{db}
 	s.notifs = &notificationSettingsStore{db}
+	s.webhooks = &webhookStore{db}
 	return s
 }
 
@@ -188,6 +190,7 @@ func (s *Store) Memory() store.MemoryStore                             { return 
 func (s *Store) Groups() store.AgentGroupStore                         { return s.groups }
 func (s *Store) VaultItems() store.VaultItemStore                      { return s.vault }
 func (s *Store) NotificationSettings() store.NotificationSettingsStore { return s.notifs }
+func (s *Store) Webhooks() store.WebhookStore                          { return s.webhooks }
 
 func (s *Store) Create(ctx context.Context, model *store.ProviderModel) error {
 	return s.models.Create(ctx, model)

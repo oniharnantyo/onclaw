@@ -30,20 +30,21 @@ func TestOpen_MigratesFreshV0Database(t *testing.T) {
 		"agent_groups", "agent_group_members", "agent_group_messages",
 		"agent_group_contexts", "agent_group_tasks", "agent_group_summaries",
 		"vault_items", "notification_settings",
+		"webhook_endpoints", "webhook_verifiers", "webhook_deliveries",
 	} {
 		require.True(t, tableExists(t, db, table), "table %s must exist after migration", table)
 	}
 
 	var version int
 	require.NoError(t, db.QueryRow(`SELECT COALESCE(MAX(version), 0) FROM schema_migrations`).Scan(&version))
-	require.Equal(t, 22, version, "the latest embedded schema version must be recorded as applied")
+	require.Equal(t, 23, version, "the latest embedded schema version must be recorded as applied")
 
 	// Second open: idempotent, still fully applied.
 	st2, err := Open(ctx, path)
 	require.NoError(t, err)
 	require.NoError(t, st2.Close())
 	require.NoError(t, db.QueryRow(`SELECT COALESCE(MAX(version), 0) FROM schema_migrations`).Scan(&version))
-	require.Equal(t, 22, version, "re-opening must not re-apply migrations")
+	require.Equal(t, 23, version, "re-opening must not re-apply migrations")
 }
 
 // TestOpen_EnablesWALAndBusyTimeout covers design D2's concurrency
@@ -90,7 +91,7 @@ func TestOpen_FailingMigrationPreventsStartup(t *testing.T) {
 
 	var version int
 	require.NoError(t, db.QueryRow(`SELECT COALESCE(MAX(version), 0) FROM schema_migrations`).Scan(&version))
-	require.Equal(t, 22, version,
+	require.Equal(t, 23, version,
 		"the embedded migrations commit; the failed migration's version must not be recorded")
 
 	// A corrected run — the embedded list only — opens cleanly against the
