@@ -12,6 +12,13 @@
         "type": "stdio",
         "command": "computer-use-mcp",
         "args": []
+      },
+      "figcraft": {
+        "type": "stdio",
+        "command": "/Users/oniharnantyo/Downloads/figcraft-cli-0.17.0-macos-universal/figcraft-cli",
+        "args": [
+          "mcp"
+        ]
       }
     }
   },
@@ -46,5 +53,12 @@
         }
       ]
     }
+  },
+  "plugins": {
+    "enabledPlugins": {
+      "design@zcode-plugins-official": true,
+      "visualize@zcode-plugins-official": true
+    },
+    "visualizeDefaultOffMigrated": true
   }
 }

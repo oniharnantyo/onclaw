@@ -26,3 +26,6 @@ build/android/gen/
 # local agent tool state
 .openidea/
 .tasks/
+# design-audit scratch: chrome CDP profiles and screen captures
+.taste-skill/
+shots/
