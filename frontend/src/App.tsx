@@ -284,10 +284,13 @@ function Shell(): ReactElement {
 
   return (
     <div className="flex h-dvh w-full flex-col gap-2 p-2">
-      {/* Title bar (web at every width; desktop below lg) */}
+      {/* Title bar (web at every width; desktop below lg). A title-bar
+       * carrier: its box holds the invisible-titlebar band, so dragging it
+       * moves the window and a double-click performs the system
+       * double-click-title-bar action (styles.css title-bar drag). */}
       <header
         className={cn(
-          "glass-chrome flex h-11 shrink-0 select-none items-center gap-2 rounded-lg border border-line bg-surface",
+          "glass-chrome titlebar-drag flex h-11 shrink-0 select-none items-center gap-2 rounded-lg border border-line bg-surface",
           isDesktopApp ? "ps-20" : "ps-4",
           "lg:hidden"
         )}
@@ -324,7 +327,10 @@ function Shell(): ReactElement {
             railCollapsed ? "w-20" : "w-56"
           )}
         >
-          <div className="flex items-center justify-end p-2 pt-6">
+          {/* Title-bar carrier (styles.css title-bar drag): the row's
+           * padding holds the rail's slice of the invisible-titlebar band,
+           * and the collapse button opts out via the controls rule. */}
+          <div className="titlebar-drag flex items-center justify-end p-2 pt-6">
             {!railCollapsed && (
               <IconButton
                 label="Collapse navigation"
@@ -363,7 +369,7 @@ function Shell(): ReactElement {
          * column starts higher and would collide with a corner button.
          * The button sits in the window's invisible titlebar band (first
          * 25px), so it opts out of window dragging via
-         * `--wails-draggable: nodrag`; worst case on a runtime without
+         * `--wails-draggable: no-drag`; worst case on a runtime without
          * per-element opt-out, one 28px corner spot stops dragging the
          * window. lg-only, mirroring the rail's own visibility. */}
         {railCollapsed && menu !== "chat" && (
@@ -372,7 +378,7 @@ function Shell(): ReactElement {
             aria-label="Expand navigation"
             data-testid="btn-toggle-rail"
             onClick={toggleRail}
-            style={{ "--wails-draggable": "nodrag" } as CSSProperties}
+            style={{ "--wails-draggable": "no-drag" } as CSSProperties}
             className="absolute left-[100px] top-[14px] z-20 hidden h-7 w-7 items-center justify-center rounded-md border border-line bg-surface text-muted shadow-sm transition-colors hover:text-fg lg:flex"
           >
             <PanelLeftOpen aria-hidden="true" className="size-3.5" />

@@ -6,6 +6,8 @@
  */
 import { act, createElement, type ReactElement } from "react";
 import { fireEvent, screen, within } from "@testing-library/dom";
+import { readFileSync } from "node:fs";
+import { resolve } from "node:path";
 import { beforeEach, describe, expect, it, vi } from "vite-plus/test";
 
 import type {
@@ -543,6 +545,60 @@ describe("App shell nav grammar", () => {
     expect(
       document.querySelector("main")?.getAttribute("data-active-menu")
     ).toBe("knowledge");
+    await view.unmount();
+  });
+});
+
+describe("App shell titlebar drag", () => {
+  // jsdom never compiles the imported styles.css, so the class assertions
+  // below pin only the wiring; a source-level guard (the composerContext
+  // token-contract pattern) reads the stylesheet directly to pin the flag
+  // arithmetic the Wails double-click-to-zoom bridge depends on.
+  const stylesCss = readFileSync(
+    resolve(import.meta.dirname, "../styles.css"),
+    "utf8"
+  );
+
+  it("keeps the drag-flag arithmetic in styles.css (source contract)", () => {
+    expect(stylesCss).toMatch(
+      /\.titlebar-drag \{\s*--wails-draggable: drag;\s*\}/
+    );
+    expect(stylesCss).toMatch(
+      /\.titlebar-drag > \* \{\s*--wails-draggable: no-drag;\s*\}[\s\S]*?\.titlebar-drag > h1 \{\s*--wails-draggable: [\s\S]*?drag;/
+    );
+    expect(stylesCss).toMatch(
+      /button,\s*\n\[role="button"\],[\s\S]{0,300}?--wails-draggable: no-drag;/
+    );
+    // The flag must stay scoped to the carriers — the template's body-wide
+    // default would make every background a drag handle.
+    expect(stylesCss).not.toMatch(/body\s*\{[^}]*--wails-draggable: drag/);
+    expect(stylesCss).not.toMatch(/html\s*\{[^}]*--wails-draggable: drag/);
+    expect(stylesCss).not.toMatch(
+      /html, body[\s\S]{0,80}--wails-draggable: drag/
+    );
+  });
+
+  it("flags the band carriers in the shell chrome", async () => {
+    const view = await renderUI(<App />);
+    // One carrier per band slice: the header (web / below-lg), the nav
+    // rail's cleared row, and the sessions column's cleared strip.
+    expect(
+      document.querySelector("header")?.classList.contains("titlebar-drag")
+    ).toBe(true);
+    const rail = screen.getByTestId("nav-rail");
+    expect(rail.querySelectorAll(".titlebar-drag").length).toBe(1);
+    expect(
+      screen
+        .getByTestId("chat-session-rail")
+        .classList.contains("titlebar-drag")
+    ).toBe(true);
+    // Controls inside a carrier opt out: the collapse button must not be a
+    // drag handle.
+    expect(
+      within(rail)
+        .getByTestId("btn-toggle-rail")
+        .classList.contains("titlebar-drag")
+    ).toBe(false);
     await view.unmount();
   });
 });

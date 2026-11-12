@@ -85,7 +85,10 @@ export function ChatHeader(): ReactElement {
 
   return (
     <div
-      className="flex shrink-0 items-center gap-2 border-b border-line bg-surface px-3 py-1.5 lg:pt-6"
+      // Title-bar carrier (styles.css title-bar drag): the pt-6 padding
+      // holds the chat column's slice of the invisible-titlebar band, and
+      // the session title stays a drag target via the > h1 rule.
+      className="titlebar-drag flex shrink-0 items-center gap-2 border-b border-line bg-surface px-3 py-1.5 lg:pt-6"
       data-testid="chat-header"
     >
       <h1

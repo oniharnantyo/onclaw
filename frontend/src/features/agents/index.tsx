@@ -136,7 +136,7 @@ export default function AgentsView(): ReactElement {
   return (
     // lg:pt-10 clears the window's first 25px native invisible titlebar drag band
     <div
-      className="flex h-full min-h-0 min-w-0 flex-1 overflow-hidden lg:pt-10"
+      className="titlebar-drag flex h-full min-h-0 min-w-0 flex-1 overflow-hidden lg:pt-10"
       data-testid="agents-view"
     >
       {/* List Column (~w-72 fixed width) */}

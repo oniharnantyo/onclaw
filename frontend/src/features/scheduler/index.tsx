@@ -164,7 +164,7 @@ export default function SchedulesView(): ReactElement {
 
   return (
     <div
-      className="flex h-full min-h-0 min-w-0 flex-1 flex-col gap-4 p-6 lg:pt-10"
+      className="titlebar-drag flex h-full min-h-0 min-w-0 flex-1 flex-col gap-4 p-6 lg:pt-10"
       data-testid="schedules-view"
     >
       <PaneHeader

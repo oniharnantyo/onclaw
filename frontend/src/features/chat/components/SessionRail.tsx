@@ -432,7 +432,9 @@ export function SessionRail(): ReactElement {
     <aside
       ref={asideRef}
       className={cn(
-        "relative hidden w-[var(--rail-width)] shrink-0 flex-col border-e border-line md:flex lg:pt-2",
+        // Title-bar carrier (styles.css title-bar drag): the band strip is
+        // this column's own padding; rows opt out through the > * rule.
+        "titlebar-drag relative hidden w-[var(--rail-width)] shrink-0 flex-col border-e border-line md:flex lg:pt-2",
         // Design D8: the column's inline width animates on the shared
         // motion grammar — but a live drag must track the pointer 1:1, so
         // the transition drops while dragging and re-arms on release.
@@ -456,7 +458,7 @@ export function SessionRail(): ReactElement {
           above the SESSIONS label, when the nav rail is collapsed. lg-only:
           below lg the nav rail is hidden, so there is nothing to expand. */}
       {railCollapsed && (
-        <div className="hidden items-center px-3 lg:flex lg:pt-4">
+        <div className="titlebar-drag hidden items-center px-3 lg:flex lg:pt-4">
           <IconButton
             label="Expand navigation"
             size="sm"

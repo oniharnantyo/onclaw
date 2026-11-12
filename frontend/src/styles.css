@@ -164,6 +164,39 @@ code,
   user-select: text;
 }
 
+/* ── Title-bar drag (native double-click-to-zoom) ───────────────────────
+ * The window's first 25px is the macOS invisible titlebar (main.go
+ * InvisibleTitleBarHeight): its first click already drags natively, but the
+ * double-click-title-bar action (zoom, or minimize per the user's
+ * AppleActionOnDoubleClick) is bridged by the Wails runtime only where the
+ * computed --wails-draggable is exactly "drag" — never set elsewhere, the
+ * template body-wide default was retired with the daisyUI layers. Carriers
+ * (.titlebar-drag) are the elements whose boxes hold the band: the shell
+ * header, the nav rail's cleared strip, and each view's cleared top band.
+ * The flag inherits, so a carrier's direct children opt back out — only the
+ * carrier's own padding (the quiet band strip) drags — while a title re-opts
+ * in (native: the title text zooms too). Interactive controls are never
+ * drag handles anywhere. */
+.titlebar-drag {
+  --wails-draggable: drag;
+}
+.titlebar-drag > * {
+  --wails-draggable: no-drag;
+}
+.titlebar-drag > h1 {
+  --wails-draggable: drag;
+}
+button,
+[role="button"],
+a,
+label,
+summary,
+select,
+input,
+textarea {
+  --wails-draggable: no-drag;
+}
+
 /* Reduced motion (OS setting) collapses all app motion to opacity-only
  * fades of at most 150ms: no transform or translate travel, no looping
  * animations, instant focus rings. State changes still land — colors swap
